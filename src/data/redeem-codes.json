@@ -1,0 +1,19 @@
+{
+  "_note": "Non-working example codes only. Replace with official active codes, rewards, and expiry dates when confirmed.",
+  "codes": [
+    {
+      "code": "DEMO-ANIIMO-2026",
+      "status": "Example only — not redeemable",
+      "rewards": ["Example catching items", "Example Glimmer"],
+      "details": "Placeholder record to demonstrate the code list. Replace with official code and redemption instructions.",
+      "expires": "Not applicable"
+    },
+    {
+      "code": "WELCOME-WAYFARER",
+      "status": "Example only — not redeemable",
+      "rewards": ["Example outfit", "Example accessory"],
+      "details": "Placeholder record to demonstrate how rewards and code notes will appear.",
+      "expires": "Not applicable"
+    }
+  ]
+}

@@ -1,0 +1,30 @@
+{
+  "_note": "Editable region reference data. Map image URLs are from AniimoTools (unofficial fan site). Descriptions and availableAniimoNumbers are starter examples; verify and update them in-game.",
+  "mapSource": "https://aniimotools.dev/map/",
+  "regions": [
+    {
+      "id": "breezy-plains",
+      "name": "Breezy Plains",
+      "picture": "https://aniimotools.dev/assets/map/breezy-plains.webp?v=ea293e57",
+      "thumbnail": "https://aniimotools.dev/assets/map/ui/thumb-breezy-plains.webp",
+      "description": "The starting region of Aniimo. Update this description with landmarks, routes, and gathering notes.",
+      "availableAniimoNumbers": ["001", "007", "008", "009", "010"]
+    },
+    {
+      "id": "astra",
+      "name": "Astra",
+      "picture": "https://aniimotools.dev/assets/map/astra.webp?v=fb6be84c",
+      "thumbnail": "https://aniimotools.dev/assets/map/ui/thumb-astra.webp",
+      "description": "The city hub of Idyll. Add services, points of interest, and travel notes here.",
+      "availableAniimoNumbers": []
+    },
+    {
+      "id": "whisperwake-isles",
+      "name": "Whisperwake Isles",
+      "picture": "https://aniimotools.dev/assets/map/whisperwake-isles.webp",
+      "thumbnail": "https://aniimotools.dev/assets/map/ui/thumb-whisperwake-isles.webp",
+      "description": "An archipelago region of Aniimo. Add exploration notes and confirmed Aniimo sightings here.",
+      "availableAniimoNumbers": []
+    }
+  ]
+}

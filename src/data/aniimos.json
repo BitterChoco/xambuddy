@@ -1,0 +1,136 @@
+{
+  "_note": "Editable starter catalog. Names, numbers, and elements are seeded from the IGN Aniimo directory; image URLs are hosted by IGN. Replace picture URLs if needed. Habitat, information, and evolution paths are starter notes; verify and update with confirmed in-game details.",
+  "aniimos": [
+    {
+      "number": "001",
+      "name": "Emberpup",
+      "picture": "https://oyster.ignimgs.com/mediawiki/apis.ign.com/aniimo/c/c7/Emberpup.png?width=1200&dpr=2&format=jpg&auto=webp&quality=80",
+      "information": "A Fire-aligned Aniimo. Add confirmed abilities, behavior, and collection notes here.",
+      "habitat": "Not recorded yet",
+      "evolutionPath": ["001", "002", "003"],
+      "skillTypes": ["Fire"]
+    },
+    {
+      "number": "002",
+      "name": "Flameruff",
+      "picture": "https://oyster.ignimgs.com/mediawiki/apis.ign.com/aniimo/c/c0/Flameruff.png?width=1200&dpr=2&format=jpg&auto=webp&quality=80",
+      "information": "A Fire-aligned Aniimo. Add confirmed abilities, behavior, and collection notes here.",
+      "habitat": "Not recorded yet",
+      "evolutionPath": ["001", "002", "003"],
+      "skillTypes": ["Fire"]
+    },
+    {
+      "number": "003",
+      "name": "Scorchhowl",
+      "picture": "https://oyster.ignimgs.com/mediawiki/apis.ign.com/aniimo/6/6c/Scorchhowl.png?width=1200&dpr=2&format=jpg&auto=webp&quality=80",
+      "information": "A Fire-aligned Aniimo. Add confirmed abilities, behavior, and collection notes here.",
+      "habitat": "Not recorded yet",
+      "evolutionPath": ["001", "002", "003"],
+      "skillTypes": ["Fire"]
+    },
+    {
+      "number": "004",
+      "name": "Inferlupa",
+      "picture": "https://oyster.ignimgs.com/mediawiki/apis.ign.com/aniimo/c/cf/Inferlupa.png?width=1200&dpr=2&format=jpg&auto=webp&quality=80",
+      "information": "An Aniimo listed with Fire and Dark elements. Add confirmed abilities and field notes here.",
+      "habitat": "Not recorded yet",
+      "skillTypes": ["Fire", "Dark"]
+    },
+    {
+      "number": "005",
+      "name": "Celestis",
+      "picture": "https://oyster.ignimgs.com/mediawiki/apis.ign.com/aniimo/8/89/Celestis.png?width=1200&dpr=2&format=jpg&auto=webp&quality=80",
+      "information": "A Dark-aligned Aniimo. Add confirmed abilities, behavior, and collection notes here.",
+      "habitat": "Not recorded yet",
+      "skillTypes": ["Dark"]
+    },
+    {
+      "number": "006",
+      "name": "Stellarys",
+      "picture": "https://oyster.ignimgs.com/mediawiki/apis.ign.com/aniimo/5/50/Stellarys.png?width=1200&dpr=2&format=jpg&auto=webp&quality=80",
+      "information": "A Dark-aligned Aniimo. Add confirmed abilities, behavior, and collection notes here.",
+      "habitat": "Not recorded yet",
+      "skillTypes": ["Dark"]
+    },
+    {
+      "number": "007",
+      "name": "Chirpi",
+      "picture": "https://oyster.ignimgs.com/mediawiki/apis.ign.com/aniimo/4/46/Chirpi.png?width=1200&dpr=2&format=jpg&auto=webp&quality=80",
+      "information": "A Wind-aligned Aniimo. Add confirmed abilities, behavior, and collection notes here.",
+      "habitat": "Not recorded yet",
+      "skillTypes": ["Wind"]
+    },
+    {
+      "number": "008",
+      "name": "Tromber",
+      "picture": "https://oyster.ignimgs.com/mediawiki/apis.ign.com/aniimo/a/ab/Tromber.png?width=1200&dpr=2&format=jpg&auto=webp&quality=80",
+      "information": "A Wind-aligned Aniimo. Add confirmed abilities, behavior, and collection notes here.",
+      "habitat": "Not recorded yet",
+      "skillTypes": ["Wind"]
+    },
+    {
+      "number": "009",
+      "name": "Cornet",
+      "picture": "https://oyster.ignimgs.com/mediawiki/apis.ign.com/aniimo/b/b4/Cornet.png?width=1200&dpr=2&format=jpg&auto=webp&quality=80",
+      "information": "A Wind-aligned Aniimo. Add confirmed abilities, behavior, and collection notes here.",
+      "habitat": "Not recorded yet",
+      "skillTypes": ["Wind"]
+    },
+    {
+      "number": "010",
+      "name": "Tubster",
+      "picture": "https://oyster.ignimgs.com/mediawiki/apis.ign.com/aniimo/2/21/Tubster.png?width=1200&dpr=2&format=jpg&auto=webp&quality=80",
+      "information": "A Wind-aligned Aniimo. Add confirmed abilities, behavior, and collection notes here.",
+      "habitat": "Not recorded yet",
+      "skillTypes": ["Wind"]
+    },
+    {
+      "number": "011",
+      "name": "Iris",
+      "picture": "https://oyster.ignimgs.com/mediawiki/apis.ign.com/aniimo/5/5c/Iris.png?width=1200&dpr=2&format=jpg&auto=webp&quality=80",
+      "information": "A Grass-aligned Aniimo. Add confirmed abilities, behavior, and collection notes here.",
+      "habitat": "Not recorded yet",
+      "skillTypes": ["Grass"]
+    },
+    {
+      "number": "012",
+      "name": "Irisal",
+      "picture": "https://oyster.ignimgs.com/mediawiki/apis.ign.com/aniimo/d/d8/Irisal.png?width=1200&dpr=2&format=jpg&auto=webp&quality=80",
+      "information": "A Grass-aligned Aniimo. Add confirmed abilities, behavior, and collection notes here.",
+      "habitat": "Not recorded yet",
+      "skillTypes": ["Grass"]
+    },
+    {
+      "number": "013",
+      "name": "Skippy",
+      "picture": "https://oyster.ignimgs.com/mediawiki/apis.ign.com/aniimo/4/48/Skippy.png?width=1200&dpr=2&format=jpg&auto=webp&quality=80",
+      "information": "A Water-aligned Aniimo. Add confirmed abilities, behavior, and collection notes here.",
+      "habitat": "Not recorded yet",
+      "skillTypes": ["Water"]
+    },
+    {
+      "number": "014",
+      "name": "Pranky",
+      "picture": "https://oyster.ignimgs.com/mediawiki/apis.ign.com/aniimo/e/e7/Pranky.png?width=1200&dpr=2&format=jpg&auto=webp&quality=80",
+      "information": "A Water-aligned Aniimo. Add confirmed abilities, behavior, and collection notes here.",
+      "habitat": "Not recorded yet",
+      "skillTypes": ["Water"]
+    },
+    {
+      "number": "015",
+      "name": "Glacy",
+      "picture": "https://oyster.ignimgs.com/mediawiki/apis.ign.com/aniimo/f/f1/Glacy.png?width=1200&dpr=2&format=jpg&auto=webp&quality=80",
+      "information": "An Aniimo listed with Water and Ice elements. Add confirmed field notes here.",
+      "habitat": "Not recorded yet",
+      "skillTypes": ["Water", "Ice"]
+    },
+    {
+      "number": "016",
+      "name": "Leafy",
+      "picture": "https://oyster.ignimgs.com/mediawiki/apis.ign.com/aniimo/4/4c/Leafy.png?width=1200&dpr=2&format=jpg&auto=webp&quality=80",
+      "information": "An Aniimo listed with Grass and Water elements. Add confirmed field notes here.",
+      "habitat": "Not recorded yet",
+      "skillTypes": ["Grass", "Water"]
+    }
+  ]
+}

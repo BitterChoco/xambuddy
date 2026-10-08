@@ -1,0 +1,59 @@
+{
+  "_note": "Editable example counter chart. These relationships are generic placeholders and are not verified Aniimo game mechanics; confirm and update before relying on them.",
+  "skillTypes": [
+    {
+      "name": "Fire",
+      "icon": "🔥",
+      "strongAgainst": ["Grass", "Ice"],
+      "weakAgainst": ["Water", "Earth"]
+    },
+    {
+      "name": "Water",
+      "icon": "💧",
+      "strongAgainst": ["Fire", "Earth"],
+      "weakAgainst": ["Grass", "Electric"]
+    },
+    {
+      "name": "Earth",
+      "icon": "🪨",
+      "strongAgainst": ["Electric", "Fire"],
+      "weakAgainst": ["Water", "Grass"]
+    },
+    {
+      "name": "Wind",
+      "icon": "🌬️",
+      "strongAgainst": ["Grass"],
+      "weakAgainst": ["Ice", "Electric"]
+    },
+    {
+      "name": "Grass",
+      "icon": "🌿",
+      "strongAgainst": ["Water", "Earth"],
+      "weakAgainst": ["Fire", "Ice"]
+    },
+    {
+      "name": "Electric",
+      "icon": "⚡",
+      "strongAgainst": ["Water", "Wind"],
+      "weakAgainst": ["Earth", "Grass"]
+    },
+    {
+      "name": "Ice",
+      "icon": "❄️",
+      "strongAgainst": ["Wind", "Grass"],
+      "weakAgainst": ["Fire", "Earth"]
+    },
+    {
+      "name": "Dark",
+      "icon": "🌑",
+      "strongAgainst": ["Light"],
+      "weakAgainst": ["Light"]
+    },
+    {
+      "name": "Light",
+      "icon": "✨",
+      "strongAgainst": ["Dark"],
+      "weakAgainst": ["Dark"]
+    }
+  ]
+}

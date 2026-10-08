@@ -1,0 +1,21 @@
+{
+  "_note": "Example event records for layout/testing only. Replace dates, pictures, and rewards with official current event information.",
+  "events": [
+    {
+      "id": "wayfarer-welcome",
+      "title": "Wayfarer Welcome",
+      "picture": "https://worldx-website-cdn.aniimo.com/official-website/worldx-global-stage/office/aniimo/1%E8%81%94%E7%BB%93%E5%8D%96%E7%82%B9-6.17-1920x1080_sm2v43q0.jpg?x-oss-process=image/resize,w_1200/quality,q_85/format,webp",
+      "date": "Example dates — update from official announcements",
+      "description": "A sample event entry. Add the event story, participation steps, and eligibility details.",
+      "rewards": ["Example reward", "Example currency"]
+    },
+    {
+      "id": "breezy-plains-expedition",
+      "title": "Breezy Plains Expedition",
+      "picture": "https://worldx-website-cdn.aniimo.com/official-website/worldx-global-stage/office/aniimo/0108-%E5%AE%B6%E5%9B%AD_1ujOoISk.jpg?x-oss-process=image/resize,w_1200/quality,q_85/format,webp",
+      "date": "Example dates — update from official announcements",
+      "description": "A sample exploration event. Replace this text with accurate objectives, location, and rules.",
+      "rewards": ["Example accessory", "Example catching items"]
+    }
+  ]
+}
