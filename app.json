@@ -1,0 +1,40 @@
+{
+  "expo": {
+    "name": "PetCareCompanion",
+    "slug": "petcarecompanion",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "scheme": "petcarecompanion",
+    "userInterfaceStyle": "automatic",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.petcarecompanion.app"
+    },
+    "android": {
+      "package": "com.petcarecompanion.app",
+      "adaptiveIcon": {
+        "backgroundColor": "#F4EDE3"
+      }
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-notifications",
+        {
+          "defaultChannel": "care-reminders"
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow PetCareCompanion to select photos for pet profiles.",
+          "microphonePermission": false
+        }
+      ],
+      "@react-native-community/datetimepicker"
+    ],
+    "experiments": {
+      "typedRoutes": false
+    }
+  }
+}
