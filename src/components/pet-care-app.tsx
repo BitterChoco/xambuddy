@@ -1,4 +1,5 @@
 import { Image } from "expo-image";
+import Constants from "expo-constants";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import React, { useContext, useMemo, useState } from "react";
 import {
@@ -11,12 +12,13 @@ import {
   StyleSheet,
   Text as NativeText,
   TextInput as NativeTextInput,
-  useWindowDimensions,
   View as NativeView,
 } from "react-native";
 import type { ComponentProps } from "react";
 import { SafeAreaView as NativeSafeAreaView } from "react-native-safe-area-context";
-import { CareToolsScreen } from "@/components/care-tools";
+import { CareToolsScreen, initializeCareNotifications } from "@/components/care-tools";
+import { EXPENSE_CURRENCY_OPTIONS, EXPENSE_CURRENCY_STORAGE_KEY, ExpensesScreen } from "@/components/expenses";
+import type { ExpenseCurrencyCode } from "@/components/expenses";
 
 
 type Pet = {
@@ -89,7 +91,7 @@ const EMPTY_PET_DETAILS: PetDetails[] = [];
 const EMPTY_SETTINGS = {
   theme: "light" as ThemeName,
   filters: { favoritesOnly: false },
-  availableThemes: ["light", "dark", "blue", "orange", "green", "yellow"] as ThemeName[],
+  availableThemes: ["light", "blue", "orange", "green", "yellow", "rose", "dark", "midnight", "charcoal"] as ThemeName[],
   autoSyncEnabled: true,
 };
 
@@ -109,6 +111,12 @@ const DATA_CACHE_KEYS = {
   settings: "petcare-data-settings",
   manifest: "petcare-manifest",
 } as const;
+
+const PERSONAL_REMINDER_KEY = "petcare-reminders-v1";
+const PERSONAL_PETS_KEY = "petcare-personal-pets-v1";
+
+type HomeReminder = { id: string; petId: string; title: string; dueAt: string };
+type HomePet = { id: string; name: string };
 
 function applyDataBundle({
   categories,
@@ -336,7 +344,7 @@ const CARD = "#FFFFFF";
 const LINE = "#E9E8E1";
 const GREEN = "#557B5D";
 
-type ThemeName = "light" | "dark" | "blue" | "orange" | "green" | "yellow";
+type ThemeName = "light" | "dark" | "blue" | "orange" | "green" | "yellow" | "rose" | "midnight" | "charcoal";
 type ThemePalette = {
   bg: string;
   card: string;
@@ -345,6 +353,8 @@ type ThemePalette = {
   muted: string;
   line: string;
   primary: string;
+  action: string;
+  menuIcon: string;
   soft: string;
   hero: string;
   heroArt: string;
@@ -353,12 +363,15 @@ type ThemePalette = {
 };
 
 const THEME_PALETTES: Record<ThemeName, ThemePalette> = {
-  light: { bg: CANVAS, card: CARD, cardAlt: "#F7F8F4", text: INK, muted: "#626E65", line: "#D6D9D1", primary: "#416B49", soft: "#E8EDE5", hero: "#E8ECE3", heroArt: "#DCE3D6", highlight: "#F4F0DF", caution: "#F1EEDF" },
-  dark: { bg: "#1B211F", card: "#272F2C", cardAlt: "#2C3431", text: "#EEF2ED", muted: "#A8B2AA", line: "#3B4540", primary: "#A3C39A", soft: "#313C35", hero: "#29342F", heroArt: "#35443B", highlight: "#414436", caution: "#403B2E" },
-  blue: { bg: "#F1F6FA", card: "#FFFFFF", cardAlt: "#F5F9FC", text: "#253847", muted: "#5D7180", line: "#C7D5DE", primary: "#23658A", soft: "#DFEBF2", hero: "#DFEAF1", heroArt: "#CEDFE9", highlight: "#F2EFDF", caution: "#ECEFE8" },
-  orange: { bg: "#FBF4ED", card: "#FFFFFF", cardAlt: "#FFF8F1", text: "#45352B", muted: "#765F51", line: "#E4CDBB", primary: "#A94F22", soft: "#F3E3D5", hero: "#F2E3D6", heroArt: "#E9D2BF", highlight: "#F8ECD8", caution: "#F3E8DC" },
-  green: { bg: "#F1F6F0", card: "#FFFFFF", cardAlt: "#F5F9F3", text: "#2D3E31", muted: "#5D7060", line: "#C9D9C8", primary: "#356B40", soft: "#DDE9DC", hero: "#DFEADF", heroArt: "#CCDECA", highlight: "#F1EFDC", caution: "#E9EBDD" },
-  yellow: { bg: "#FBF8EC", card: "#FFFFFF", cardAlt: "#FFFBEF", text: "#403B27", muted: "#6D6549", line: "#DED4AD", primary: "#806300", soft: "#F0E9CB", hero: "#F0E9D0", heroArt: "#E5D9AD", highlight: "#F6EDC9", caution: "#F0E8D0" },
+  light: { bg: CANVAS, card: CARD, cardAlt: "#F7F8F4", text: INK, muted: "#626E65", line: "#D6D9D1", primary: "#3F6347", action: "#3F6347", menuIcon: "#52785A", soft: "#E8EDE5", hero: "#E8ECE3", heroArt: "#DCE3D6", highlight: "#F4F0DF", caution: "#F1EEDF" },
+  dark: { bg: "#1B211F", card: "#272F2C", cardAlt: "#2C3431", text: "#EEF2ED", muted: "#A8B2AA", line: "#3B4540", primary: "#A3C39A", action: "#5F765C", menuIcon: "#789273", soft: "#313C35", hero: "#29342F", heroArt: "#35443B", highlight: "#414436", caution: "#403B2E" },
+  blue: { bg: "#F1F6FA", card: "#FFFFFF", cardAlt: "#F5F9FC", text: "#253847", muted: "#5D7180", line: "#C7D5DE", primary: "#2E5D78", action: "#2E5D78", menuIcon: "#40718B", soft: "#DFEBF2", hero: "#DFEAF1", heroArt: "#CEDFE9", highlight: "#F2EFDF", caution: "#ECEFE8" },
+  orange: { bg: "#FBF4ED", card: "#FFFFFF", cardAlt: "#FFF8F1", text: "#45352B", muted: "#765F51", line: "#E4CDBB", primary: "#94502F", action: "#94502F", menuIcon: "#A76342", soft: "#F3E3D5", hero: "#F2E3D6", heroArt: "#E9D2BF", highlight: "#F8ECD8", caution: "#F3E8DC" },
+  green: { bg: "#F1F6F0", card: "#FFFFFF", cardAlt: "#F5F9F3", text: "#2D3E31", muted: "#5D7060", line: "#C9D9C8", primary: "#3F6345", action: "#3F6345", menuIcon: "#527956", soft: "#DDE9DC", hero: "#DFEADF", heroArt: "#CCDECA", highlight: "#F1EFDC", caution: "#E9EBDD" },
+  yellow: { bg: "#FBF8EC", card: "#FFFFFF", cardAlt: "#FFFBEF", text: "#403B27", muted: "#6D6549", line: "#DED4AD", primary: "#705D17", action: "#705D17", menuIcon: "#887331", soft: "#F0E9CB", hero: "#F0E9D0", heroArt: "#E5D9AD", highlight: "#F6EDC9", caution: "#F0E8D0" },
+  rose: { bg: "#FBF2F4", card: "#FFFFFF", cardAlt: "#FFF7F8", text: "#49343B", muted: "#806A72", line: "#E5CDD4", primary: "#914F64", action: "#914F64", menuIcon: "#A46478", soft: "#F2DFE5", hero: "#F3E2E7", heroArt: "#EACFD8", highlight: "#F7EAD9", caution: "#F3E8E2" },
+  midnight: { bg: "#171D2A", card: "#222B3B", cardAlt: "#293448", text: "#EEF2FA", muted: "#AAB6CC", line: "#3A465C", primary: "#9BB9F2", action: "#5A6F9B", menuIcon: "#7185AD", soft: "#2C3B57", hero: "#26344B", heroArt: "#344966", highlight: "#3C3A4D", caution: "#403A3A" },
+  charcoal: { bg: "#211F1D", card: "#302D2A", cardAlt: "#393531", text: "#F3F0EC", muted: "#B7AEA5", line: "#4A433D", primary: "#E0AE83", action: "#92704F", menuIcon: "#A07D5E", soft: "#49392E", hero: "#3C312A", heroArt: "#514035", highlight: "#514538", caution: "#4C3A34" },
 };
 
 function getDefaultSettings() {
@@ -462,7 +475,7 @@ function TextInput(props: ComponentProps<typeof NativeTextInput>) {
   );
 }
 
-type Screen = "menu" | "pets" | "settings" | "care";
+type Screen = "menu" | "pets" | "settings" | "care" | "reminders" | "expenses";
 function matchesPetSearch(pet: Pet, query: string) {
   if (!query) return true;
   return `${pet.name} ${pet.type}`.toLocaleLowerCase().includes(query);
@@ -488,6 +501,48 @@ function IconButton({
     >
       {children}
     </Pressable>
+  );
+}
+
+function SolidMenuIcon({ kind }: { kind: "book" | "paw" | "wallet" }) {
+  const { palette } = useContext(PetCareThemeContext);
+  if (kind === "wallet") {
+    return (
+      <View style={styles.solidMenuIconCanvas}>
+        <View style={[styles.walletBack, { backgroundColor: palette.menuIcon }]} />
+        <View style={[styles.walletBody, { backgroundColor: palette.menuIcon }]}>
+          <View style={[styles.walletFlap, { backgroundColor: palette.menuIcon, borderColor: palette.soft }]} />
+          <View style={[styles.walletSnap, { backgroundColor: palette.soft }]} />
+        </View>
+      </View>
+    );
+  }
+
+  if (kind === "book") {
+    return (
+      <View style={styles.solidMenuIconCanvas}>
+        <View style={[styles.bookLeftPage, { backgroundColor: palette.menuIcon }]} />
+        <View style={[styles.bookRightPage, { backgroundColor: palette.menuIcon }]} />
+        <View style={[styles.bookSpine, { backgroundColor: palette.soft }]} />
+        <View style={styles.bookPawMark}>
+          <View style={[styles.bookPawToe, styles.bookPawToeOne, { backgroundColor: palette.soft }]} />
+          <View style={[styles.bookPawToe, styles.bookPawToeTwo, { backgroundColor: palette.soft }]} />
+          <View style={[styles.bookPawToe, styles.bookPawToeThree, { backgroundColor: palette.soft }]} />
+          <View style={[styles.bookPawToe, styles.bookPawToeFour, { backgroundColor: palette.soft }]} />
+          <View style={[styles.bookPawPad, { backgroundColor: palette.soft }]} />
+        </View>
+      </View>
+    );
+  }
+
+  return (
+    <View style={styles.solidMenuIconCanvas}>
+      <View style={[styles.menuPawToe, styles.menuPawToeOne, { backgroundColor: palette.menuIcon }]} />
+      <View style={[styles.menuPawToe, styles.menuPawToeTwo, { backgroundColor: palette.menuIcon }]} />
+      <View style={[styles.menuPawToe, styles.menuPawToeThree, { backgroundColor: palette.menuIcon }]} />
+      <View style={[styles.menuPawToe, styles.menuPawToeFour, { backgroundColor: palette.menuIcon }]} />
+      <View style={[styles.menuPawPad, { backgroundColor: palette.menuIcon }]} />
+    </View>
   );
 }
 
@@ -548,14 +603,16 @@ function Text({
   children,
   style,
   numberOfLines,
+  allowFontScaling = true,
 }: {
   children: React.ReactNode;
   style?: object;
   numberOfLines?: number;
+  allowFontScaling?: boolean;
 }) {
   const { palette } = useContext(PetCareThemeContext);
   return (
-    <NativeText numberOfLines={numberOfLines} style={themedStyle([{ color: INK }, scaleReadableTextStyle(style)], palette) as ComponentProps<typeof NativeText>["style"]}>
+    <NativeText allowFontScaling={allowFontScaling} numberOfLines={numberOfLines} style={themedStyle([{ color: INK }, scaleReadableTextStyle(style)], palette) as ComponentProps<typeof NativeText>["style"]}>
       {children}
     </NativeText>
   );
@@ -624,14 +681,66 @@ function LoadingScreen({
 function MenuScreen({
   onOpenPets,
   onOpenCare,
+  onOpenReminders,
+  onOpenExpenses,
   onOpenSettings,
+  onRefreshData,
+  isSyncing,
+  isOffline,
+  isStale,
 }: {
   onOpenPets: () => void;
   onOpenCare: () => void;
+  onOpenReminders: () => void;
+  onOpenExpenses: () => void;
   onOpenSettings: () => void;
+  onRefreshData: () => void;
+  isSyncing: boolean;
+  isOffline: boolean;
+  isStale: boolean;
 }) {
-  const { width } = useWindowDimensions();
-  const compact = width < 620;
+  const { palette } = useContext(PetCareThemeContext);
+  const [homeReminders, setHomeReminders] = useState<HomeReminder[]>([]);
+  const [homePetNames, setHomePetNames] = useState<Map<string, string>>(() => new Map());
+  const [remindersLoaded, setRemindersLoaded] = useState(false);
+
+  React.useEffect(() => {
+    let active = true;
+    Promise.all([
+      AsyncStorage.getItem(PERSONAL_REMINDER_KEY),
+      AsyncStorage.getItem(PERSONAL_PETS_KEY),
+    ]).then(([remindersRaw, petsRaw]) => {
+      const remindersValue: unknown = remindersRaw ? JSON.parse(remindersRaw) : [];
+      const petsValue: unknown = petsRaw ? JSON.parse(petsRaw) : [];
+      const reminders = Array.isArray(remindersValue)
+        ? remindersValue.filter((item): item is HomeReminder => item !== null
+          && typeof item === "object"
+          && typeof item.id === "string"
+          && typeof item.petId === "string"
+          && typeof item.title === "string"
+          && typeof item.dueAt === "string"
+          && !Number.isNaN(new Date(item.dueAt).getTime()))
+        : [];
+      const pets = Array.isArray(petsValue)
+        ? petsValue.filter((item): item is HomePet => item !== null
+          && typeof item === "object"
+          && typeof item.id === "string"
+          && typeof item.name === "string")
+        : [];
+      if (active) {
+        setHomeReminders(reminders.sort((a, b) => a.dueAt.localeCompare(b.dueAt)).slice(0, 3));
+        setHomePetNames(new Map(pets.map((pet) => [pet.id, pet.name])));
+      }
+    }).catch(() => {
+      if (active) {
+        setHomeReminders([]);
+        setHomePetNames(new Map());
+      }
+    }).finally(() => {
+      if (active) setRemindersLoaded(true);
+    });
+    return () => { active = false; };
+  }, []);
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -651,25 +760,51 @@ function MenuScreen({
           </View>
         </View>
 
-        <View style={[styles.hero, compact && styles.heroCompact]}>
-          <View style={[styles.heroArt, compact && styles.heroArtCompact]}>
-            <View style={styles.heroSun} />
-            <View style={styles.heroArch} />
-            <View style={styles.heroCircleOne}><Text style={styles.heroDecoration}>✦</Text></View>
-            <View style={styles.heroCircleTwo}><Text style={styles.heroDecoration}>✧</Text></View>
-            <Text style={styles.heroPet}>🐕</Text>
-            <View style={styles.heroBubble}><Text style={styles.heroBubbleText}>A little care goes a long way</Text></View>
-          </View>
-          <View style={[styles.heroCopy, compact && styles.heroCopyCompact]}>
-            <Text style={styles.heroLabel}>WELCOME TO YOUR CARE JOURNAL</Text>
-            <Text style={styles.heroTitle}>Every pet.{"\n"}A happier life.</Text>
-            <Text style={styles.heroDescription}>
-              A calm corner for the animals you love and the little things that keep them well.
+        {isSyncing || isOffline || isStale ? (
+          <View style={styles.homeSyncBanner}>
+            <Text style={styles.homeSyncBannerText}>
+              {isSyncing ? "Checking for pet-library updates…" : isOffline ? "Offline mode · showing saved pet data" : "Saved pet data may be out of date"}
             </Text>
-            <Pressable onPress={onOpenPets} style={({ pressed }) => [styles.primaryButton, pressed && styles.pressed]}>
-              <Text style={styles.primaryButtonText}>Explore pet categories <Text style={styles.buttonArrow}>↗</Text></Text>
+            {!isSyncing ? (
+              <Pressable accessibilityRole="button" accessibilityLabel="Retry pet-library sync" onPress={onRefreshData} style={styles.homeSyncButton}>
+                <Text style={styles.homeSyncButtonText}>Retry</Text>
+              </Pressable>
+            ) : null}
+          </View>
+        ) : null}
+
+        <View style={styles.homeRemindersSection}>
+          <View style={styles.homeRemindersHeader}>
+            <View>
+              <Text style={styles.sectionEyebrow}>YOUR CARE PLAN</Text>
+              <Text style={styles.sectionTitle}>Upcoming reminders</Text>
+            </View>
+            <Pressable accessibilityRole="button" accessibilityLabel="View all care reminders" onPress={onOpenReminders} style={styles.homeRemindersLink}>
+              <Text style={styles.homeRemindersLinkText}>View all →</Text>
             </Pressable>
           </View>
+          {!remindersLoaded ? (
+            <View style={styles.homeReminderEmpty}><Text style={styles.homeReminderEmptyText}>Loading reminders…</Text></View>
+          ) : homeReminders.length === 0 ? (
+            <Pressable accessibilityRole="button" accessibilityLabel="No reminders yet. Add a care reminder." onPress={onOpenReminders} style={({ pressed }) => [styles.homeReminderEmpty, pressed && styles.pressed]}>
+              <Text style={styles.homeReminderEmptyText}>No reminders yet. Add a care reminder to see it here.</Text>
+            </Pressable>
+          ) : homeReminders.map((reminder) => {
+            const due = new Date(reminder.dueAt);
+            const overdue = due.getTime() < Date.now();
+            return (
+              <Pressable key={reminder.id} accessibilityRole="button" onPress={onOpenReminders} style={({ pressed }) => [styles.homeReminderRow, pressed && styles.pressed]}>
+                <View style={styles.homeReminderMark}><Text style={styles.homeReminderGlyph}>◷</Text></View>
+                <View style={styles.homeReminderCopy}>
+                  <Text style={styles.homeReminderTitle} numberOfLines={1}>{reminder.title}</Text>
+                  <Text style={styles.homeReminderPet}>{homePetNames.get(reminder.petId) ?? "Pet"}</Text>
+                </View>
+                <Text style={[styles.homeReminderDate, overdue && styles.homeReminderOverdue]}>
+                  {overdue ? "Overdue · " : ""}{due.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}
+                </Text>
+              </Pressable>
+            );
+          })}
         </View>
 
         <View style={styles.sectionHeader}>
@@ -677,19 +812,19 @@ function MenuScreen({
             <Text style={styles.sectionEyebrow}>YOUR LIBRARY</Text>
             <Text style={styles.sectionTitle}>Where shall we begin?</Text>
           </View>
-          <Text style={styles.sectionCount}>02 / 02</Text>
+          <Text style={styles.sectionCount}>03 / 03</Text>
         </View>
 
-        <Pressable onPress={onOpenPets} style={({ pressed }) => [styles.menuCardPressable, pressed && styles.pressed]}>
+        <Pressable accessibilityRole="button" accessibilityLabel="Browse the Pet Directory" onPress={onOpenPets} style={({ pressed }) => [styles.menuCardPressable, pressed && styles.pressed]}>
           <View style={styles.menuCard}>
             <View style={styles.menuCardArt}>
               <View style={styles.menuCardSun} />
-              <Text style={styles.menuCardPet}>🐈</Text>
+              <SolidMenuIcon kind="book" />
               <View style={styles.menuCardSparkle}><Text style={styles.menuCardSparkleText}>✦</Text></View>
             </View>
             <View style={styles.menuCardCopy}>
               <View style={styles.cardTag}><Text style={styles.cardTagText}>THE STARTING POINT</Text></View>
-              <Text style={styles.menuCardTitle}>Pets List</Text>
+              <Text style={styles.menuCardTitle}>Pet Directory</Text>
               <Text style={styles.menuCardDescription}>Discover categories, save favourites, and find the care notes you need.</Text>
               <Text style={styles.menuCardAction}>Browse the collection <Text style={styles.menuCardArrow}>→</Text></Text>
             </View>
@@ -697,11 +832,11 @@ function MenuScreen({
           </View>
         </Pressable>
 
-        <Pressable onPress={onOpenCare} style={({ pressed }) => [styles.menuCardPressable, styles.myPetsMenuCard, pressed && styles.pressed]}>
+        <Pressable accessibilityRole="button" accessibilityLabel="Open My Pets and personal care tools" onPress={onOpenCare} style={({ pressed }) => [styles.menuCardPressable, styles.myPetsMenuCard, pressed && styles.pressed]}>
           <View style={styles.menuCard}>
             <View style={[styles.menuCardArt, styles.myPetsMenuArt]}>
               <View style={styles.menuCardSun} />
-              <Text style={styles.menuCardPet}>🐕</Text>
+              <SolidMenuIcon kind="paw" />
               <View style={styles.menuCardSparkle}><Text style={styles.menuCardSparkleText}>✚</Text></View>
             </View>
             <View style={styles.menuCardCopy}>
@@ -711,6 +846,23 @@ function MenuScreen({
               <Text style={styles.menuCardAction}>Open your care center <Text style={styles.menuCardArrow}>→</Text></Text>
             </View>
             <Text style={styles.menuCardNumber}>02</Text>
+          </View>
+        </Pressable>
+
+        <Pressable accessibilityRole="button" accessibilityLabel="Open pet-care expenses" onPress={onOpenExpenses} style={({ pressed }) => [styles.menuCardPressable, styles.expensesMenuCard, pressed && styles.pressed]}>
+          <View style={styles.menuCard}>
+            <View style={[styles.menuCardArt, styles.expensesMenuArt]}>
+              <View style={styles.menuCardSun} />
+              <Text style={[styles.expensesMenuSymbol, { color: palette.menuIcon }]}>$</Text>
+              <View style={styles.menuCardSparkle}><Text style={styles.menuCardSparkleText}>＋</Text></View>
+            </View>
+            <View style={styles.menuCardCopy}>
+              <View style={styles.cardTag}><Text style={styles.cardTagText}>PET-CARE BUDGET</Text></View>
+              <Text style={styles.menuCardTitle}>Expenses</Text>
+              <Text style={styles.menuCardDescription}>Track vet visits, food, medicine, and everyday costs with spending summaries.</Text>
+              <Text style={styles.menuCardAction}>Review expenses <Text style={styles.menuCardArrow}>→</Text></Text>
+            </View>
+            <Text style={styles.menuCardNumber}>03</Text>
           </View>
         </Pressable>
 
@@ -734,12 +886,15 @@ function MenuScreen({
 }
 
 const THEME_OPTIONS: { id: ThemeName; label: string; detail: string; swatches: string[] }[] = [
-  { id: "light", label: "Light", detail: "Soft and airy", swatches: ["#F7F6F1", "#FFFFFF", "#416B49"] },
-  { id: "dark", label: "Dark", detail: "Easy on the eyes", swatches: ["#1B211F", "#272F2C", "#A3C39A"] },
-  { id: "blue", label: "Blue", detail: "Calm coastal tones", swatches: ["#F1F6FA", "#FFFFFF", "#23658A"] },
-  { id: "orange", label: "Orange", detail: "Warm and sunny", swatches: ["#FBF4ED", "#FFFFFF", "#A94F22"] },
-  { id: "green", label: "Green", detail: "A little outdoorsy", swatches: ["#F1F6F0", "#FFFFFF", "#356B40"] },
-  { id: "yellow", label: "Yellow", detail: "Bright and gentle", swatches: ["#FBF8EC", "#FFFFFF", "#806300"] },
+  { id: "light", label: "Light", detail: "Soft and airy", swatches: ["#F7F6F1", "#FFFFFF", "#3F6347"] },
+  { id: "blue", label: "Blue", detail: "Calm coastal tones", swatches: ["#F1F6FA", "#FFFFFF", "#2E5D78"] },
+  { id: "orange", label: "Orange", detail: "Warm and sunny", swatches: ["#FBF4ED", "#FFFFFF", "#94502F"] },
+  { id: "green", label: "Green", detail: "A little outdoorsy", swatches: ["#F1F6F0", "#FFFFFF", "#3F6345"] },
+  { id: "yellow", label: "Yellow", detail: "Bright and gentle", swatches: ["#FBF8EC", "#FFFFFF", "#705D17"] },
+  { id: "rose", label: "Rose", detail: "Soft blush tones", swatches: ["#FBF2F4", "#FFFFFF", "#914F64"] },
+  { id: "dark", label: "Dark", detail: "Easy on the eyes", swatches: ["#1B211F", "#272F2C", "#5F765C"] },
+  { id: "midnight", label: "Midnight", detail: "Deep blue night", swatches: ["#171D2A", "#222B3B", "#5A6F9B"] },
+  { id: "charcoal", label: "Charcoal", detail: "Warm charcoal", swatches: ["#211F1D", "#302D2A", "#92704F"] },
 ];
 
 function SettingsScreen({
@@ -776,6 +931,27 @@ function SettingsScreen({
   isStale: boolean;
 }) {
   const { palette } = useContext(PetCareThemeContext);
+  const [expenseCurrency, setExpenseCurrency] = useState<ExpenseCurrencyCode>("USD");
+  const [expenseCurrencyLoaded, setExpenseCurrencyLoaded] = useState(false);
+
+  React.useEffect(() => {
+    let active = true;
+    AsyncStorage.getItem(EXPENSE_CURRENCY_STORAGE_KEY).then((savedCurrency) => {
+      if (active && EXPENSE_CURRENCY_OPTIONS.some((option) => option.code === savedCurrency)) {
+        setExpenseCurrency(savedCurrency as ExpenseCurrencyCode);
+      }
+    }).catch(() => {
+      // Keep USD as the fallback if the saved expense preference cannot be read.
+    }).finally(() => {
+      if (active) setExpenseCurrencyLoaded(true);
+    });
+    return () => { active = false; };
+  }, []);
+
+  React.useEffect(() => {
+    if (!expenseCurrencyLoaded) return;
+    AsyncStorage.setItem(EXPENSE_CURRENCY_STORAGE_KEY, expenseCurrency).catch(() => undefined);
+  }, [expenseCurrency, expenseCurrencyLoaded]);
 
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: palette.bg }]}>
@@ -794,7 +970,7 @@ function SettingsScreen({
             <Text style={styles.sectionEyebrow}>APPEARANCE</Text>
             <Text style={styles.sectionTitle}>Choose a theme</Text>
           </View>
-          <Text style={styles.sectionCount}>6 OPTIONS</Text>
+          <Text style={styles.sectionCount}>9 OPTIONS</Text>
         </View>
 
         <View style={styles.themeGrid}>
@@ -813,7 +989,7 @@ function SettingsScreen({
                   {option.swatches.map((color, index) => (
                     <NativeView
                       key={`${option.id}-${index}`}
-                      style={[styles.themeSwatch, { backgroundColor: color, borderColor: option.id === "dark" && index < 2 ? "#56615A" : "#00000012" }]}
+                      style={[styles.themeSwatch, { backgroundColor: color, borderColor: ["dark", "midnight", "charcoal"].includes(option.id) && index < 2 ? "#56615A" : "#00000012" }]}
                     />
                   ))}
                 </View>
@@ -838,7 +1014,7 @@ function SettingsScreen({
           <View style={styles.preferenceIcon}><Text style={styles.preferenceIconText}>♥</Text></View>
           <View style={styles.preferenceCopy}>
             <Text style={styles.preferenceTitle}>Open to favourites</Text>
-            <Text style={styles.preferenceDescription}>Start the Pets List with saved categories and pets only.</Text>
+            <Text style={styles.preferenceDescription}>Start the Pet Directory with saved categories and pets only.</Text>
           </View>
           <Pressable
             accessibilityRole="switch"
@@ -849,6 +1025,39 @@ function SettingsScreen({
           >
             <View style={[styles.toggleThumb, favoritesOnly && styles.toggleThumbOn]} />
           </Pressable>
+        </View>
+
+        <View style={styles.settingsSectionHeading}>
+          <View>
+            <Text style={styles.sectionEyebrow}>EXPENSES</Text>
+            <Text style={styles.sectionTitle}>Expense configurations</Text>
+          </View>
+        </View>
+        <View style={styles.expenseSettingsCard}>
+          <Text style={styles.preferenceTitle}>Currency</Text>
+          <Text style={styles.preferenceDescription}>Currency can be changed here. Changing currency does not convert expense amounts.</Text>
+          <View style={styles.expenseCurrencyOptions}>
+            {EXPENSE_CURRENCY_OPTIONS.map((option) => {
+              const selected = expenseCurrency === option.code;
+              return (
+                <Pressable
+                  key={option.code}
+                  accessibilityRole="radio"
+                  accessibilityState={{ selected }}
+                  accessibilityLabel={`${option.code} currency`}
+                  onPress={() => setExpenseCurrency(option.code)}
+                  style={[styles.expenseCurrencyOption, selected && styles.expenseCurrencyOptionSelected]}
+                >
+                  <Text style={[styles.expenseCurrencyOptionText, selected && styles.expenseCurrencyOptionTextSelected]}>{option.label}</Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        </View>
+
+        <View style={styles.settingsSavedNote}>
+          <Text style={styles.settingsSavedIcon}>✓</Text>
+          <Text style={styles.settingsSavedText}>Your choices are saved on this device.</Text>
         </View>
 
         <View style={styles.settingsSectionHeading}>
@@ -893,21 +1102,32 @@ function SettingsScreen({
           <Text style={styles.updatedText}>{lastCheckedAt ? new Date(lastCheckedAt).toLocaleString() : "Not checked yet"}</Text>
         </View>
 
-        <View style={styles.metaRow}>
-          <Text style={styles.metaLabel}>Source</Text>
-          <Text style={styles.metaValue}>{dataSource === "remote" ? "Remote" : "Cached"}</Text>
-          <Text style={styles.metaDivider}>•</Text>
-          <Text style={styles.metaLabel}>Version</Text>
-          <Text style={styles.metaValue}>{version}</Text>
-          <Text style={styles.metaDivider}>•</Text>
-          <Text style={styles.metaLabel}>Release date</Text>
-          <Text style={styles.metaValue}>{lastUpdatedAt ? new Date(lastUpdatedAt).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) : "—"}</Text>
+        <View style={styles.settingsSectionHeading}>
+          <View>
+            <Text style={styles.sectionEyebrow}>ABOUT</Text>
+            <Text style={styles.sectionTitle}>Application Information</Text>
+          </View>
         </View>
 
-        <View style={styles.settingsSavedNote}>
-          <Text style={styles.settingsSavedIcon}>✓</Text>
-          <Text style={styles.settingsSavedText}>Your choices are saved on this device.</Text>
+        <View style={styles.applicationInfoRows}>
+          <View style={styles.updatedBar}>
+            <Text style={styles.updatedLabel}>Source</Text>
+            <Text style={styles.updatedText}>{dataSource === "remote" ? "Remote" : "Cached"}</Text>
+          </View>
+          <View style={styles.updatedBar}>
+            <Text style={styles.updatedLabel}>Data version</Text>
+            <Text style={styles.updatedText}>{version}</Text>
+          </View>
+          <View style={styles.updatedBar}>
+            <Text style={styles.updatedLabel}>Data release date</Text>
+            <Text style={styles.updatedText}>{lastUpdatedAt ? new Date(lastUpdatedAt).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) : "—"}</Text>
+          </View>
+          <View style={styles.updatedBar}>
+            <Text style={styles.updatedLabel}>App version</Text>
+            <Text style={styles.updatedText}>v{Constants.expoConfig?.version ?? "—"}</Text>
+          </View>
         </View>
+
       </ScrollView>
     </SafeAreaView>
   );
@@ -1012,7 +1232,7 @@ function PetsListScreen({
       <ScrollView contentContainerStyle={styles.listContent} keyboardShouldPersistTaps="handled">
         <Header
           eyebrow="THE CARE LIBRARY"
-          title="Pets List"
+          title="Pet Directory"
           onBack={onBack}
           right={(
             <View style={styles.headerActions}>
@@ -1668,6 +1888,7 @@ export default function PetCareApp() {
   const [lastCheckedAt, setLastCheckedAt] = useState<string | null>(null);
   const [refreshMessage, setRefreshMessage] = useState<string | null>(null);
   const [dataSource, setDataSource] = useState<DataSource>("cached");
+  const [isOffline, setIsOffline] = useState(false);
   const [manifestVersion, setManifestVersion] = useState(0);
   const [isSyncing, setIsSyncing] = useState(false);
   const [autoSyncEnabled, setAutoSyncEnabled] = useState(DEFAULT_SETTINGS.autoSyncEnabled);
@@ -1676,6 +1897,10 @@ export default function PetCareApp() {
   const [bootStatus, setBootStatus] = useState("Checking resources");
   const [bootProgress, setBootProgress] = useState(10);
   const [bootError, setBootError] = useState<string | undefined>();
+
+  React.useEffect(() => {
+    initializeCareNotifications();
+  }, []);
 
   React.useEffect(() => {
     const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
@@ -1719,6 +1944,7 @@ export default function PetCareApp() {
     });
 
     setIsSyncing(false);
+    setIsOffline(Boolean(result.offline));
 
     if (result.updatedAt) {
       setLastUpdatedAt(result.updatedAt);
@@ -1898,7 +2124,13 @@ export default function PetCareApp() {
           <MenuScreen
             onOpenPets={() => setScreen("pets")}
             onOpenCare={() => setScreen("care")}
+            onOpenReminders={() => setScreen("reminders")}
+            onOpenExpenses={() => setScreen("expenses")}
             onOpenSettings={() => openSettings("menu")}
+            onRefreshData={() => void bootstrapResources(true)}
+            isSyncing={isSyncing}
+            isOffline={isOffline}
+            isStale={isStale}
           />
         ) : screen === "pets" ? (
           <PetsListScreen
@@ -1911,8 +2143,10 @@ export default function PetCareApp() {
             onTogglePetFavorite={(id) => toggleFavorite(id, favoritePets, setFavoritePets)}
             onBack={() => setScreen("menu")}
           />
-        ) : screen === "care" ? (
-          <CareToolsScreen palette={palette} onBack={() => setScreen("menu")} />
+        ) : screen === "care" || screen === "reminders" ? (
+          <CareToolsScreen palette={palette} onBack={() => setScreen("menu")} initialTab={screen === "reminders" ? "reminders" : "pets"} />
+        ) : screen === "expenses" ? (
+          <ExpensesScreen palette={palette} onBack={() => setScreen("menu")} />
         ) : (
           <SettingsScreen
             themeName={themeName}
@@ -1954,6 +2188,7 @@ const styles = StyleSheet.create({
   refreshDataButton: { alignSelf: "center", backgroundColor: "#E8EFE5", borderRadius: 999, paddingHorizontal: 10, paddingVertical: 7, marginLeft: 8 },
   refreshDataText: { color: GREEN, fontSize: 9, fontWeight: "800", letterSpacing: 0.9 },
   updatedBar: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12, marginTop: 12, marginBottom: 4, paddingHorizontal: 2 },
+  applicationInfoRows: { gap: 2 },
   updatedLabel: { color: MUTED, fontSize: 9, fontWeight: "700", letterSpacing: 1.1 },
   updatedText: { color: INK, fontSize: 9, fontWeight: "700", textAlign: "right", flexShrink: 1 },
   metaRow: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6, marginTop: 8, marginBottom: 8 },
@@ -1962,28 +2197,12 @@ const styles = StyleSheet.create({
   metaDivider: { color: MUTED, fontSize: 9 },
   syncBanner: { backgroundColor: "#E8EFE5", borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10, marginTop: 10 },
   syncBannerText: { color: GREEN, fontSize: 10, fontWeight: "800", letterSpacing: 0.6 },
+  homeSyncBanner: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10, marginTop: 12, paddingHorizontal: 13, paddingVertical: 10, borderRadius: 12, backgroundColor: "#E8EFE5" },
+  homeSyncBannerText: { flex: 1, color: GREEN, fontSize: 10, fontWeight: "700" },
+  homeSyncButton: { minHeight: 34, justifyContent: "center", paddingHorizontal: 12, borderRadius: 9, backgroundColor: CARD },
+  homeSyncButtonText: { color: GREEN, fontSize: 9, fontWeight: "800" },
   preferenceArrow: { color: GREEN, fontSize: 18, fontWeight: "700" },
-  hero: { marginTop: 34, borderRadius: 20, overflow: "hidden", backgroundColor: "#EDEFE8", minHeight: 330, flexDirection: "row" },
-  heroCompact: { minHeight: 0, flexDirection: "column" },
-  heroArt: { width: "50%", minHeight: 330, backgroundColor: "#E2E7DB", overflow: "hidden", alignItems: "center", justifyContent: "center" },
-  heroArtCompact: { width: "100%", height: 190, minHeight: 190 },
-  heroSun: { position: "absolute", width: 205, height: 205, borderRadius: 110, backgroundColor: "#F7F3E4", top: 44, left: "24%" },
-  heroArch: { position: "absolute", width: 154, height: 190, borderTopLeftRadius: 90, borderTopRightRadius: 90, backgroundColor: "#C7D5BF", bottom: -44, left: "34%" },
-  heroPet: { position: "absolute", fontSize: 136, bottom: 26, left: "29%", textShadowColor: "#48654D24", textShadowRadius: 20, textShadowOffset: { width: 2, height: 8 } },
-  heroCircleOne: { width: 42, height: 42, borderRadius: 22, backgroundColor: "#D4A87E", position: "absolute", top: 61, left: 39, alignItems: "center", justifyContent: "center" },
-  heroCircleTwo: { width: 33, height: 33, borderRadius: 17, backgroundColor: "#8FA88C", position: "absolute", top: 105, right: 34, alignItems: "center", justifyContent: "center" },
-  heroDecoration: { color: "#FFFFFF", fontSize: 21 },
-  heroBubble: { position: "absolute", bottom: 20, right: 16, backgroundColor: CARD, borderRadius: 12, paddingHorizontal: 11, paddingVertical: 8, transform: [{ rotate: "-3deg" }] },
-  heroBubbleText: { color: INK, fontSize: 10, fontWeight: "700" },
-  heroCopy: { flex: 1, paddingHorizontal: 34, paddingVertical: 38, justifyContent: "center" },
-  heroCopyCompact: { paddingHorizontal: 23, paddingVertical: 25 },
-  heroLabel: { color: GREEN, fontSize: 9, fontWeight: "800", letterSpacing: 1.7, marginBottom: 15 },
-  heroTitle: { color: INK, fontSize: 39, lineHeight: 43, fontWeight: "700", letterSpacing: -1.5 },
-  heroDescription: { color: "#68746A", fontSize: 13, lineHeight: 20, marginTop: 14, maxWidth: 295 },
-  primaryButton: { alignSelf: "flex-start", marginTop: 22, backgroundColor: GREEN, paddingHorizontal: 17, paddingVertical: 13, borderRadius: 12 },
-  primaryButtonText: { color: "#FFFFFF", fontSize: 11, fontWeight: "800", letterSpacing: 0.2 },
-  buttonArrow: { color: "#DDE8D9", fontSize: 14 },
-  sectionHeader: { marginTop: 39, marginBottom: 17, flexDirection: "row", justifyContent: "space-between", alignItems: "flex-end" },
+  sectionHeader: { marginTop: 24, marginBottom: 17, flexDirection: "row", justifyContent: "space-between", alignItems: "flex-end" },
   sectionEyebrow: { color: GREEN, fontSize: 9, fontWeight: "800", letterSpacing: 1.7, marginBottom: 7 },
   sectionTitle: { color: INK, fontSize: 22, fontWeight: "700", letterSpacing: -0.5 },
   sectionCount: { color: "#9AA197", fontSize: 9, fontWeight: "800", letterSpacing: 1.2 },
@@ -1991,7 +2210,27 @@ const styles = StyleSheet.create({
   menuCard: { flexDirection: "row", minHeight: 178, backgroundColor: CARD, borderWidth: 1, borderColor: LINE, borderRadius: 18, overflow: "hidden", position: "relative" },
   menuCardArt: { width: 162, backgroundColor: "#F0E8DE", alignItems: "center", justifyContent: "center", overflow: "hidden" },
   menuCardSun: { width: 100, height: 100, backgroundColor: "#FAF4E8", borderRadius: 55, position: "absolute", top: 20 },
-  menuCardPet: { fontSize: 81, marginTop: 13 },
+  solidMenuIconCanvas: { width: 92, height: 94, alignItems: "center", justifyContent: "center", marginTop: 8 },
+  bookLeftPage: { position: "absolute", left: 8, top: 22, width: 37, height: 53, borderTopLeftRadius: 8, borderBottomLeftRadius: 5, borderTopRightRadius: 13, borderBottomRightRadius: 4, transform: [{ rotate: "-5deg" }] },
+  bookRightPage: { position: "absolute", right: 8, top: 22, width: 37, height: 53, borderTopLeftRadius: 13, borderBottomLeftRadius: 4, borderTopRightRadius: 8, borderBottomRightRadius: 5, transform: [{ rotate: "5deg" }] },
+  bookSpine: { position: "absolute", top: 25, left: 44, width: 4, height: 49, borderRadius: 3 },
+  bookPawMark: { position: "absolute", right: 15, top: 34, width: 30, height: 33 },
+  bookPawToe: { position: "absolute", width: 6, height: 9, borderRadius: 4 },
+  bookPawToeOne: { left: 2, top: 2, transform: [{ rotate: "-18deg" }] },
+  bookPawToeTwo: { left: 10, top: 0 },
+  bookPawToeThree: { left: 18, top: 2, transform: [{ rotate: "18deg" }] },
+  bookPawToeFour: { left: 24, top: 7, width: 5, height: 7 },
+  bookPawPad: { position: "absolute", left: 7, top: 12, width: 18, height: 16, borderRadius: 9 },
+  menuPawToe: { position: "absolute", width: 17, height: 22, borderRadius: 10 },
+  menuPawToeOne: { left: 13, top: 20, transform: [{ rotate: "-18deg" }] },
+  menuPawToeTwo: { left: 32, top: 11 },
+  menuPawToeThree: { right: 22, top: 16, transform: [{ rotate: "18deg" }] },
+  menuPawToeFour: { right: 9, top: 32, width: 14, height: 18, transform: [{ rotate: "28deg" }] },
+  menuPawPad: { position: "absolute", left: 20, top: 39, width: 53, height: 42, borderRadius: 28, transform: [{ rotate: "-5deg" }] },
+  walletBack: { position: "absolute", top: 25, left: 17, width: 60, height: 43, borderRadius: 9, transform: [{ rotate: "-7deg" }] },
+  walletBody: { position: "absolute", top: 34, left: 10, width: 72, height: 43, borderRadius: 9, justifyContent: "center", paddingLeft: 43 },
+  walletFlap: { position: "absolute", left: 0, top: 8, width: 72, height: 27, borderTopWidth: 2, borderBottomWidth: 2, borderRadius: 5 },
+  walletSnap: { width: 8, height: 8, borderRadius: 5, zIndex: 1 },
   menuCardSparkle: { width: 25, height: 25, borderRadius: 13, backgroundColor: "#78917C", position: "absolute", top: 24, right: 25, alignItems: "center", justifyContent: "center" },
   menuCardSparkleText: { color: "#FFFFFF", fontSize: 14 },
   menuCardCopy: { flex: 1, justifyContent: "center", paddingHorizontal: 25, paddingVertical: 21 },
@@ -2005,6 +2244,23 @@ const styles = StyleSheet.create({
   comingSoon: { flexDirection: "row", alignItems: "center", marginTop: 12, paddingHorizontal: 15, paddingVertical: 13, borderRadius: 14, borderWidth: 1, borderColor: "#E8E9E2", borderStyle: "dashed" },
   myPetsMenuCard: { marginTop: 12 },
   myPetsMenuArt: { backgroundColor: "#E8EFE5" },
+  expensesMenuCard: { marginTop: 12 },
+  expensesMenuArt: { backgroundColor: "#F0E8DE" },
+  expensesMenuSymbol: { color: GREEN, fontSize: 82, lineHeight: 96, fontWeight: "800", marginTop: 6 },
+  homeRemindersSection: { marginTop: 30 },
+  homeRemindersHeader: { flexDirection: "row", alignItems: "flex-end", justifyContent: "space-between", gap: 12, marginBottom: 11 },
+  homeRemindersLink: { paddingHorizontal: 4, paddingVertical: 7 },
+  homeRemindersLinkText: { color: GREEN, fontSize: 9, fontWeight: "800" },
+  homeReminderRow: { minHeight: 66, flexDirection: "row", alignItems: "center", gap: 11, backgroundColor: CARD, borderWidth: 1, borderColor: LINE, borderRadius: 13, paddingHorizontal: 12, paddingVertical: 9, marginBottom: 7 },
+  homeReminderMark: { width: 34, height: 34, alignItems: "center", justifyContent: "center", borderRadius: 11, backgroundColor: "#E8EFE5" },
+  homeReminderGlyph: { color: GREEN, fontSize: 20, fontWeight: "700" },
+  homeReminderCopy: { flex: 1, gap: 4 },
+  homeReminderTitle: { color: INK, fontSize: 10, fontWeight: "800" },
+  homeReminderPet: { color: MUTED, fontSize: 8, fontWeight: "600" },
+  homeReminderDate: { color: GREEN, fontSize: 8, fontWeight: "800", textAlign: "right", maxWidth: 112 },
+  homeReminderOverdue: { color: "#C46C5C" },
+  homeReminderEmpty: { minHeight: 54, justifyContent: "center", backgroundColor: CARD, borderWidth: 1, borderColor: LINE, borderStyle: "dashed", borderRadius: 13, paddingHorizontal: 14, paddingVertical: 11 },
+  homeReminderEmptyText: { color: MUTED, fontSize: 9, lineHeight: 14 },
   comingSoonIcon: { width: 32, height: 32, borderRadius: 11, backgroundColor: "#EEF0E9", alignItems: "center", justifyContent: "center", marginRight: 11 },
   comingSoonGlyph: { color: GREEN, fontSize: 20 },
   comingSoonCopy: { flex: 1 },
@@ -2107,6 +2363,12 @@ const styles = StyleSheet.create({
   preferenceCopy: { flex: 1, gap: 4 },
   preferenceTitle: { color: INK, fontSize: 10, fontWeight: "800" },
   preferenceDescription: { color: MUTED, fontSize: 8, lineHeight: 13 },
+  expenseSettingsCard: { backgroundColor: CARD, borderWidth: 1, borderColor: LINE, borderRadius: 15, padding: 14, gap: 9 },
+  expenseCurrencyOptions: { flexDirection: "row", flexWrap: "wrap", gap: 7, marginTop: 2 },
+  expenseCurrencyOption: { minHeight: 34, justifyContent: "center", borderWidth: 1, borderColor: LINE, borderRadius: 10, backgroundColor: CARD, paddingHorizontal: 10, paddingVertical: 7 },
+  expenseCurrencyOptionSelected: { borderColor: GREEN, backgroundColor: "#E8EFE5" },
+  expenseCurrencyOptionText: { color: MUTED, fontSize: 8, fontWeight: "700" },
+  expenseCurrencyOptionTextSelected: { color: GREEN, fontWeight: "800" },
   settingsSavedNote: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7, marginTop: 19 },
   settingsSavedIcon: { color: GREEN, fontSize: 12, fontWeight: "800" },
   settingsSavedText: { color: MUTED, fontSize: 8 },

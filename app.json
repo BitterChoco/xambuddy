@@ -12,6 +12,9 @@
     },
     "android": {
       "package": "com.petcarecompanion.app",
+      "permissions": [
+        "SCHEDULE_EXACT_ALARM"
+      ],
       "adaptiveIcon": {
         "backgroundColor": "#F4EDE3"
       }
@@ -21,7 +24,8 @@
       [
         "expo-notifications",
         {
-          "defaultChannel": "care-reminders"
+          "defaultChannel": "care-reminders",
+          "color": "#E85D3F"
         }
       ],
       [
@@ -31,10 +35,17 @@
           "microphonePermission": false
         }
       ],
-      "@react-native-community/datetimepicker"
+      "@react-native-community/datetimepicker",
+      "expo-sharing"
     ],
     "experiments": {
       "typedRoutes": false
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "277b7a1f-dc5c-49f5-ba7f-05b94b204bea"
+      }
     }
   }
 }
