@@ -8,6 +8,7 @@ import {
   Modal,
   Platform,
   Pressable,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
@@ -18,6 +19,7 @@ import {
 import DateTimePicker from "@react-native-community/datetimepicker";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { csvCell, dateInput, filterExpenseHistory, parseDate, updateExpenseById } from "@/utils/expense-utils";
+import { ActionIcon } from "@/components/action-icon";
 
 type ExpensePalette = {
   bg: string;
@@ -61,11 +63,52 @@ const EXPENSE_STORAGE_KEY = "petcare-expenses-v1";
 const EXPENSE_PETS_KEY = "petcare-personal-pets-v1";
 export const EXPENSE_CURRENCY_STORAGE_KEY = "petcare-expense-currency-v1";
 const CATEGORIES: ExpenseCategory[] = ["General", "Vet care", "Food", "Medication", "Grooming", "Supplies"];
+type ExpenseScreenData = { expenses: Expense[]; pets: ExpensePet[]; currencyCode?: ExpenseCurrencyCode };
 const PERIOD_OPTIONS: { id: ExpensePeriod; label: string }[] = [
   { id: "week", label: "Weekly" },
   { id: "month", label: "Monthly" },
   { id: "year", label: "Yearly" },
 ];
+
+async function loadExpenseScreenData(): Promise<ExpenseScreenData> {
+  const [expenseRaw, petsRaw, currencyRaw] = await Promise.all([
+    AsyncStorage.getItem(EXPENSE_STORAGE_KEY),
+    AsyncStorage.getItem(EXPENSE_PETS_KEY),
+    AsyncStorage.getItem(EXPENSE_CURRENCY_STORAGE_KEY),
+  ]);
+  const storedExpenses: unknown = expenseRaw ? JSON.parse(expenseRaw) : [];
+  const storedPets: unknown = petsRaw ? JSON.parse(petsRaw) : [];
+  const expenses = Array.isArray(storedExpenses)
+    ? storedExpenses.filter((entry): entry is Expense => entry !== null
+      && typeof entry === "object"
+      && typeof entry.id === "string"
+      && typeof entry.petId === "string"
+      && typeof entry.title === "string"
+      && (CATEGORIES.includes(entry.category) || entry.category === "Other")
+      && typeof entry.amount === "number"
+      && Number.isFinite(entry.amount)
+      && typeof entry.date === "string"
+      && typeof entry.notes === "string"
+      && typeof entry.createdAt === "string")
+      .map((entry) => ({
+        ...entry,
+        category: (entry.category === "Other" ? "General" : entry.category) as ExpenseCategory,
+      }))
+    : [];
+  const pets = Array.isArray(storedPets)
+    ? storedPets.filter((pet): pet is ExpensePet => pet !== null
+      && typeof pet === "object"
+      && typeof pet.id === "string"
+      && typeof pet.name === "string")
+    : [];
+  return {
+    expenses,
+    pets,
+    currencyCode: EXPENSE_CURRENCY_OPTIONS.some((option) => option.code === currencyRaw)
+      ? currencyRaw as ExpenseCurrencyCode
+      : undefined,
+  };
+}
 
 function expenseId() {
   return `expense-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -390,11 +433,13 @@ export function ExpensesScreen({ palette, onBack }: { palette: ExpensePalette; o
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [pets, setPets] = useState<ExpensePet[]>([]);
   const [loaded, setLoaded] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [period, setPeriod] = useState<ExpensePeriod>("month");
   const [periodOffset, setPeriodOffset] = useState(0);
   const [historyCategory, setHistoryCategory] = useState<ExpenseCategory | "All">("All");
   const [historyPetId, setHistoryPetId] = useState("");
   const [editingExpenseId, setEditingExpenseId] = useState<string | null>(null);
+  const [expenseFormOpen, setExpenseFormOpen] = useState(false);
   const [petId, setPetId] = useState("");
   const [currencyCode, setCurrencyCode] = useState<ExpenseCurrencyCode>("USD");
   const [title, setTitle] = useState("");
@@ -409,42 +454,12 @@ export function ExpensesScreen({ palette, onBack }: { palette: ExpensePalette; o
 
   useEffect(() => {
     let active = true;
-    Promise.all([
-      AsyncStorage.getItem(EXPENSE_STORAGE_KEY),
-      AsyncStorage.getItem(EXPENSE_PETS_KEY),
-      AsyncStorage.getItem(EXPENSE_CURRENCY_STORAGE_KEY),
-    ])
-      .then(([expenseRaw, petsRaw, currencyRaw]) => {
-        const storedExpenses: unknown = expenseRaw ? JSON.parse(expenseRaw) : [];
-        const storedPets: unknown = petsRaw ? JSON.parse(petsRaw) : [];
-        const validExpenses = Array.isArray(storedExpenses)
-          ? storedExpenses.filter((entry): entry is Expense => entry !== null
-            && typeof entry === "object"
-            && typeof entry.id === "string"
-            && typeof entry.petId === "string"
-            && typeof entry.title === "string"
-            && (CATEGORIES.includes(entry.category) || entry.category === "Other")
-            && typeof entry.amount === "number"
-            && Number.isFinite(entry.amount)
-            && typeof entry.date === "string"
-            && typeof entry.notes === "string"
-            && typeof entry.createdAt === "string")
-            .map((entry) => ({
-              ...entry,
-              category: (entry.category === "Other" ? "General" : entry.category) as ExpenseCategory,
-            }))
-          : [];
-        const validPets = Array.isArray(storedPets)
-          ? storedPets.filter((pet): pet is ExpensePet => pet !== null
-            && typeof pet === "object"
-            && typeof pet.id === "string"
-            && typeof pet.name === "string")
-          : [];
-        if (active) {
-          setExpenses(validExpenses);
-          setPets(validPets);
-          if (EXPENSE_CURRENCY_OPTIONS.some((option) => option.code === currencyRaw)) setCurrencyCode(currencyRaw as ExpenseCurrencyCode);
-        }
+    loadExpenseScreenData()
+      .then((data) => {
+        if (!active) return;
+        setExpenses(data.expenses);
+        setPets(data.pets);
+        if (data.currencyCode) setCurrencyCode(data.currencyCode);
       })
       .catch(() => {
         if (active) setNotice("Saved expense data could not be loaded from this device.");
@@ -454,6 +469,22 @@ export function ExpensesScreen({ palette, onBack }: { palette: ExpensePalette; o
       });
     return () => { active = false; };
   }, []);
+
+  async function refreshExpenseData() {
+    if (refreshing || expenseFormOpen) return;
+    setNotice("");
+    setRefreshing(true);
+    try {
+      const data = await loadExpenseScreenData();
+      setExpenses(data.expenses);
+      setPets(data.pets);
+      if (data.currencyCode) setCurrencyCode(data.currencyCode);
+    } catch {
+      // Keep the current view unchanged when local refresh fails.
+    } finally {
+      setRefreshing(false);
+    }
+  }
 
   useEffect(() => {
     if (!loaded) return;
@@ -511,11 +542,19 @@ export function ExpensesScreen({ palette, onBack }: { palette: ExpensePalette; o
     setDate(dateInput(new Date()));
     setNotes("");
     setFormError("");
+    setExpenseFormOpen(false);
+  }
+
+  function beginAddExpense() {
+    resetExpenseForm();
+    setExpenseFormOpen(true);
   }
 
   function hasUnsavedExpenseChanges() {
     const original = expenses.find((expense) => expense.id === editingExpenseId);
-    if (!original) return false;
+    if (!original) {
+      return Boolean(title.trim() || amount.trim() || notes.trim() || petId || category !== "General");
+    }
     const parsedAmount = Number(amount.trim().replace(/,/g, ""));
     return title.trim() !== original.title
       || petId !== original.petId
@@ -527,17 +566,20 @@ export function ExpensesScreen({ palette, onBack }: { palette: ExpensePalette; o
   }
 
   function requestExpenseScreenBack() {
+    if (!expenseFormOpen) {
+      onBack();
+      return;
+    }
     if (hasUnsavedExpenseChanges()) {
       setLeaveEditConfirmationVisible(true);
       return;
     }
-    onBack();
+    resetExpenseForm();
   }
 
   function discardEditAndLeave() {
     setLeaveEditConfirmationVisible(false);
     resetExpenseForm();
-    onBack();
   }
 
   function beginEditExpense(expense: Expense) {
@@ -549,6 +591,7 @@ export function ExpensesScreen({ palette, onBack }: { palette: ExpensePalette; o
     setDate(expense.date);
     setNotes(expense.notes);
     setFormError("");
+    setExpenseFormOpen(true);
     setTimeout(() => expenseScrollRef.current?.scrollTo({ y: 0, animated: true }), 0);
   }
 
@@ -678,7 +721,20 @@ export function ExpensesScreen({ palette, onBack }: { palette: ExpensePalette; o
 
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: palette.bg }]}>
-      <ScrollView ref={expenseScrollRef} contentContainerStyle={[styles.content, compact && styles.compactContent]} keyboardShouldPersistTaps="handled">
+      <ScrollView
+        ref={expenseScrollRef}
+        contentContainerStyle={[styles.content, compact && styles.compactContent]}
+        keyboardShouldPersistTaps="handled"
+        refreshControl={(
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={() => void refreshExpenseData()}
+            tintColor={palette.primary}
+            colors={[palette.primary]}
+            progressBackgroundColor={palette.card}
+          />
+        )}
+      >
         <View style={[styles.header, { borderBottomColor: palette.line }]}>
           <Pressable accessibilityRole="button" accessibilityLabel="Back to home" onPress={requestExpenseScreenBack} style={[styles.backButton, { backgroundColor: palette.soft }]}>
             <Text style={[styles.backGlyph, { color: palette.primary }]}>‹</Text>
@@ -704,38 +760,9 @@ export function ExpensesScreen({ palette, onBack }: { palette: ExpensePalette; o
           </View>
         ) : null}
 
-        <View style={[styles.formCard, { backgroundColor: palette.card, borderColor: palette.line }]}>
-          <Text style={[styles.cardTitle, { color: palette.text }]}>{editingExpenseId ? "Edit expense" : "Add an expense"}</Text>
-          <View style={styles.inputRow}>
-            <TextInput value={title} onChangeText={setTitle} placeholder="Description (e.g. annual checkup)" placeholderTextColor={palette.muted} style={[styles.input, styles.descriptionInput, { backgroundColor: palette.bg, color: palette.text, borderColor: formError && !title.trim() ? "#C64040" : palette.line }]} />
-            <TextInput value={amount} onChangeText={setAmount} placeholder={`Amount (${currencyCode})`} placeholderTextColor={palette.muted} keyboardType="decimal-pad" style={[styles.input, styles.amountInput, { backgroundColor: palette.bg, color: palette.text, borderColor: formError && (!Number.isFinite(Number(amount)) || Number(amount) <= 0) ? "#C64040" : palette.line }]} />
-          </View>
-          <Text style={[styles.fieldLabel, { color: palette.muted }]}>PET · OPTIONAL</Text>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
-            {[{ id: "", name: "General" }, ...pets].map((pet) => (
-              <Pressable key={pet.id || "general"} accessibilityRole="radio" accessibilityState={{ selected: petId === pet.id }} onPress={() => setPetId(pet.id)} style={[styles.chip, { backgroundColor: petId === pet.id ? palette.action : palette.bg, borderColor: petId === pet.id ? palette.action : palette.line }]}>
-                <Text style={[styles.chipText, { color: petId === pet.id ? "#FFFFFF" : palette.text }]}>{pet.name}</Text>
-              </Pressable>
-            ))}
-          </ScrollView>
-          <Text style={[styles.fieldLabel, { color: palette.muted }]}>CATEGORY</Text>
-          <View style={styles.categoryRow}>
-            {CATEGORIES.map((item) => (
-              <Pressable key={item} accessibilityRole="radio" accessibilityState={{ selected: category === item }} onPress={() => setCategory(item)} style={[styles.chip, { backgroundColor: category === item ? palette.action : palette.bg, borderColor: category === item ? palette.action : palette.line }]}>
-                <Text style={[styles.chipText, { color: category === item ? "#FFFFFF" : palette.text }]}>{item}</Text>
-              </Pressable>
-            ))}
-          </View>
-          <Text style={[styles.fieldLabel, { color: palette.muted }]}>DATE</Text>
-          <ExpenseDatePicker value={date} onChange={setDate} palette={palette} error={Boolean(formError && (!parseDate(date) || (parseDate(date)?.getTime() ?? 0) > new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate()).getTime()))} />
-          <TextInput value={notes} onChangeText={setNotes} placeholder="Notes (optional)" placeholderTextColor={palette.muted} multiline style={[styles.input, styles.notesInput, { backgroundColor: palette.bg, color: palette.text, borderColor: palette.line }]} />
-          {formError ? <Text style={styles.errorText}>{formError}</Text> : null}
-          <View style={styles.formActions}>
-            <ExpenseButton title={editingExpenseId ? "Update expense" : "Save expense"} onPress={() => void saveExpense()} palette={palette} />
-            {editingExpenseId ? <ExpenseButton title="Cancel edit" onPress={resetExpenseForm} palette={palette} secondary /> : null}
-          </View>
+        <View style={styles.addExpenseAction}>
+          <ExpenseButton title="＋  Add expense" onPress={beginAddExpense} palette={palette} />
         </View>
-        <Text style={[styles.currencyInfo, { color: palette.muted }]}>Currency can be changed in Settings. Changing currency does not convert expense amounts.</Text>
 
         <View style={styles.sectionHeading}>
           <View>
@@ -852,13 +879,64 @@ export function ExpensesScreen({ palette, onBack }: { palette: ExpensePalette; o
             <View style={styles.expenseAmountWrap}>
               <Text style={[styles.expenseAmount, { color: palette.primary }]}>{currency(expense.amount, currencyCode)}</Text>
               <View style={styles.expenseActions}>
-                <Pressable accessibilityRole="button" accessibilityLabel={`Edit ${expense.title}`} onPress={() => beginEditExpense(expense)} style={styles.removeButton}><Text style={{ color: palette.primary }}>Edit</Text></Pressable>
-                <Pressable accessibilityRole="button" accessibilityLabel={`Remove ${expense.title}`} onPress={() => void removeExpense(expense)} style={styles.removeButton}><Text style={{ color: palette.muted }}>Remove</Text></Pressable>
+                <Pressable accessibilityRole="button" accessibilityLabel={`Edit ${expense.title}`} onPress={() => beginEditExpense(expense)} style={[styles.iconActionButton, { backgroundColor: palette.soft }]}><ActionIcon name="edit" color={palette.primary} cutout={palette.soft} size={18} /></Pressable>
+                <Pressable accessibilityRole="button" accessibilityLabel={`Remove ${expense.title}`} onPress={() => void removeExpense(expense)} style={[styles.iconActionButton, { backgroundColor: palette.soft }]}><ActionIcon name="remove" color={palette.primary} cutout={palette.soft} size={18} /></Pressable>
               </View>
             </View>
           </View>
         ))}
       </ScrollView>
+      <Modal
+        visible={expenseFormOpen}
+        animationType="slide"
+        presentationStyle="fullScreen"
+        onRequestClose={requestExpenseScreenBack}
+      >
+        <SafeAreaView style={[styles.safeArea, { backgroundColor: palette.bg }]}>
+          <ScrollView contentContainerStyle={[styles.content, compact && styles.compactContent]} keyboardShouldPersistTaps="handled">
+            <View style={[styles.header, { borderBottomColor: palette.line }]}>
+              <Pressable accessibilityRole="button" accessibilityLabel="Back to expense history" onPress={requestExpenseScreenBack} style={[styles.backButton, { backgroundColor: palette.soft }]}>
+                <Text style={[styles.backGlyph, { color: palette.primary }]}>‹</Text>
+              </Pressable>
+              <View style={styles.grow}>
+                <Text style={[styles.eyebrow, { color: palette.primary }]}>YOUR PET BUDGET</Text>
+                <Text style={[styles.headerTitle, { color: palette.text }]}>{editingExpenseId ? "Edit expense" : "Add an expense"}</Text>
+              </View>
+            </View>
+            <View style={[styles.formCard, { backgroundColor: palette.card, borderColor: palette.line }]}>
+              <View style={styles.inputRow}>
+                <TextInput value={title} onChangeText={setTitle} placeholder="Description (e.g. annual checkup)" placeholderTextColor={palette.muted} style={[styles.input, styles.descriptionInput, { backgroundColor: palette.bg, color: palette.text, borderColor: formError && !title.trim() ? "#C64040" : palette.line }]} />
+                <TextInput value={amount} onChangeText={setAmount} placeholder={`Amount (${currencyCode})`} placeholderTextColor={palette.muted} keyboardType="decimal-pad" style={[styles.input, styles.amountInput, { backgroundColor: palette.bg, color: palette.text, borderColor: formError && (!Number.isFinite(Number(amount)) || Number(amount) <= 0) ? "#C64040" : palette.line }]} />
+              </View>
+              <Text style={[styles.fieldLabel, { color: palette.muted }]}>PET · OPTIONAL</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
+                {[{ id: "", name: "General" }, ...pets].map((pet) => (
+                  <Pressable key={pet.id || "general"} accessibilityRole="radio" accessibilityState={{ selected: petId === pet.id }} onPress={() => setPetId(pet.id)} style={[styles.chip, { backgroundColor: petId === pet.id ? palette.action : palette.bg, borderColor: petId === pet.id ? palette.action : palette.line }]}>
+                    <Text style={[styles.chipText, { color: petId === pet.id ? "#FFFFFF" : palette.text }]}>{pet.name}</Text>
+                  </Pressable>
+                ))}
+              </ScrollView>
+              <Text style={[styles.fieldLabel, { color: palette.muted }]}>CATEGORY</Text>
+              <View style={styles.categoryRow}>
+                {CATEGORIES.map((item) => (
+                  <Pressable key={item} accessibilityRole="radio" accessibilityState={{ selected: category === item }} onPress={() => setCategory(item)} style={[styles.chip, { backgroundColor: category === item ? palette.action : palette.bg, borderColor: category === item ? palette.action : palette.line }]}>
+                    <Text style={[styles.chipText, { color: category === item ? "#FFFFFF" : palette.text }]}>{item}</Text>
+                  </Pressable>
+                ))}
+              </View>
+              <Text style={[styles.fieldLabel, { color: palette.muted }]}>DATE</Text>
+              <ExpenseDatePicker value={date} onChange={setDate} palette={palette} error={Boolean(formError && (!parseDate(date) || (parseDate(date)?.getTime() ?? 0) > new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate()).getTime()))} />
+              <TextInput value={notes} onChangeText={setNotes} placeholder="Notes (optional)" placeholderTextColor={palette.muted} multiline style={[styles.input, styles.notesInput, { backgroundColor: palette.bg, color: palette.text, borderColor: palette.line }]} />
+              {formError ? <Text style={styles.errorText}>{formError}</Text> : null}
+              <View style={styles.formActions}>
+                <ExpenseButton title={editingExpenseId ? "Update expense" : "Save expense"} onPress={() => void saveExpense()} palette={palette} />
+                <ExpenseButton title="Cancel" onPress={requestExpenseScreenBack} palette={palette} secondary />
+              </View>
+            </View>
+            <Text style={[styles.currencyInfo, { color: palette.muted }]}>Currency can be changed in Settings. Changing currency does not convert expense amounts.</Text>
+          </ScrollView>
+        </SafeAreaView>
+      </Modal>
       <Modal
         visible={leaveEditConfirmationVisible}
         transparent
@@ -923,6 +1001,7 @@ const styles = StyleSheet.create({
   periodPickerOption: { width: "22%", minHeight: 40, borderRadius: 10, alignItems: "center", justifyContent: "center" },
   periodPickerCancel: { alignSelf: "flex-end", paddingHorizontal: 8, paddingVertical: 7 },
   button: { minHeight: 40, borderRadius: 10, paddingHorizontal: 15, alignItems: "center", justifyContent: "center" },
+  addExpenseAction: { marginTop: 8 },
   buttonText: { fontSize: 9, fontWeight: "800" },
   sectionHeading: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-end", gap: 10, marginTop: 24, marginBottom: 10 },
   sectionTitle: { fontSize: 17, fontWeight: "800" },
@@ -961,7 +1040,7 @@ const styles = StyleSheet.create({
   expenseMeta: { fontSize: 8, lineHeight: 12 },
   expenseNotes: { fontSize: 8, lineHeight: 12 },
   expenseAmountWrap: { alignItems: "flex-end", gap: 7 },
-  expenseActions: { flexDirection: "row", alignItems: "center", gap: 10 },
+  expenseActions: { flexDirection: "row", alignItems: "center", gap: 8 },
   expenseAmount: { fontSize: 10, fontWeight: "800" },
-  removeButton: { paddingVertical: 3, paddingHorizontal: 2 },
+  iconActionButton: { width: 32, height: 32, alignItems: "center", justifyContent: "center", borderRadius: 10 },
 });

@@ -1,10 +1,15 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as ImagePicker from "expo-image-picker";
+import * as DocumentPicker from "expo-document-picker";
+import * as FileSystem from "expo-file-system/legacy";
+import * as Sharing from "expo-sharing";
 import Constants, { AppOwnership } from "expo-constants";
 import { Image } from "expo-image";
 import DateTimePicker, { type DateTimePickerEvent } from "@react-native-community/datetimepicker";
 import React, { useEffect, useMemo, useState } from "react";
 import {
+  ActivityIndicator,
+  AppState,
   Alert,
   BackHandler,
   Modal,
@@ -19,8 +24,11 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { GestureHandlerRootView } from "react-native-gesture-handler";
+import DraggableFlatList, { ScaleDecorator } from "react-native-draggable-flatlist";
 import { nextRecurringDueDate } from "@/utils/care-reminders";
-import { birthdayDateInMonth, calendarMonthDates } from "@/utils/care-calendar";
+import { ActionIcon } from "@/components/action-icon";
+import { CARE_TAB_ITEMS, type CareTab } from "./care-tabs";
 
 function Text({ style, ...props }: React.ComponentProps<typeof NativeText>) {
   const flattenedStyle = StyleSheet.flatten(style);
@@ -47,15 +55,27 @@ type PetProfile = {
   id: string;
   name: string;
   species: string;
+  gender?: "Female" | "Male" | "Unknown";
+  microchipNumber?: string;
   breed: string;
   birthDate: string;
   weight: string;
   allergies: string;
   birthdayReminderEnabled?: boolean;
   profilePhotoUri?: string;
-  otherPhotoUris?: string[];
+  albumPhotos?: PetAlbumPhoto[];
   createdAt: string;
 };
+
+type PetAlbumPhoto = {
+  id: string;
+  uri: string;
+  description: string;
+  pinned: boolean;
+};
+
+const MAX_PET_ALBUM_PHOTOS = 50;
+const MAX_PINNED_PET_ALBUM_PHOTOS = 5;
 
 type WeightMeasurement = {
   id: string;
@@ -73,7 +93,16 @@ type JournalEntry = {
   title: string;
   notes: string;
   icon?: string;
+  photos?: string[];
+  documents?: JournalDocument[];
   createdAt: string;
+};
+
+type JournalDocument = {
+  id: string;
+  name: string;
+  uri: string;
+  mimeType?: string;
 };
 
 type HealthRecord = {
@@ -87,20 +116,25 @@ type HealthRecord = {
   clinic: string;
   notes: string;
   icon?: string;
+  photos?: string[];
+  documents?: JournalDocument[];
   createdAt: string;
 };
 
 type ReminderRepeat = "once" | "daily" | "weekly" | "monthly" | "yearly";
+type ReminderSnoozeMinutes = 15 | 30 | 60;
 type CareReminder = {
   id: string;
   petId: string;
   title: string;
+  notes?: string;
   dueAt: string;
   repeat: ReminderRepeat;
   notificationId: string | null;
   healthRecordId?: string;
   icon?: string;
   snoozedFrom?: string;
+  snoozeMinutes?: ReminderSnoozeMinutes;
 };
 type ReminderCompletion = {
   id: string;
@@ -108,17 +142,21 @@ type ReminderCompletion = {
   petId: string;
   petName: string;
   title: string;
+  notes?: string;
   scheduledFor: string;
   completedAt: string;
   repeat?: ReminderRepeat;
+  snoozeMinutes?: ReminderSnoozeMinutes;
   icon?: string;
   healthRecordId?: string;
   restoredReminderId?: string;
 };
 
-type CareTab = "pets" | "journal" | "reminders" | "calendar";
 type NotificationsModule = typeof import("expo-notifications");
 const REMINDER_NOTIFICATION_COLOR = "#E85D3F";
+const REMINDER_NOTIFICATION_CATEGORY = "CARE_REMINDER_ACTIONS";
+const REMINDER_DONE_ACTION = "CARE_REMINDER_DONE";
+const REMINDER_SNOOZE_ACTION = "CARE_REMINDER_SNOOZE";
 
 const STORAGE_KEYS = {
   pets: "petcare-personal-pets-v1",
@@ -129,13 +167,12 @@ const STORAGE_KEYS = {
   weightMeasurements: "petcare-weight-measurements-v1",
 } as const;
 
-const MAX_OTHER_PHOTOS = 5;
 const GENERAL_REMINDER_PET_ID = "__general__";
 const DEFAULT_HEALTH_RECORD_TYPES = ["Vet visit", "Vaccine", "4-in-1 vaccine", "Anti-rabies vaccine", "Other vaccine", "Medication", "Procedure", "Test / screening", "Other"];
 const JOURNAL_TYPE_ICONS: Record<string, string> = {
   Health: "health",
   Meals: "food",
-  "Vet visit": "paw",
+  "Vet visit": "dog",
   Weight: "weight",
   Other: "note",
 };
@@ -146,9 +183,10 @@ const HEALTH_RECORD_ICONS: Record<string, string> = {
   Procedure: "hospital",
   "Test / screening": "test",
   Other: "note",
-  Custom: "note",
 };
 const REMINDER_ICON_OPTIONS = [
+  { value: "general", label: "General" },
+  { value: "training", label: "Training" },
   { value: "dog", label: "Vet visit" },
   { value: "vaccine", label: "Vaccine" },
   { value: "medication", label: "Medication" },
@@ -163,11 +201,6 @@ const REMINDER_ICON_OPTIONS = [
   { value: "waterDrop", label: "Water" },
   { value: "note", label: "Other" },
 ] as const;
-const LEGACY_ICON_NAMES: Record<string, string> = {
-  "🐾": "dog", paw: "dog", "💉": "vaccine", "💊": "medication", "🏥": "hospital", "🧪": "test",
-  "📝": "note", "✨": "dog", "🩺": "stethoscope", "🍽️": "food", "🎂": "gift", birthday: "gift",
-  "🏃": "activity", "🧴": "bath", "⚖️": "weight", "🧫": "test", "🐶": "dog", bone: "treat", water: "waterDrop", waterBowl: "waterDrop",
-};
 const REPEAT_OPTIONS: { id: ReminderRepeat; label: string }[] = [
   { id: "once", label: "Once" },
   { id: "daily", label: "Daily" },
@@ -175,14 +208,18 @@ const REPEAT_OPTIONS: { id: ReminderRepeat; label: string }[] = [
   { id: "monthly", label: "Monthly" },
   { id: "yearly", label: "Yearly" },
 ];
+const SNOOZE_OPTIONS: { id: ReminderSnoozeMinutes; label: string }[] = [
+  { id: 15, label: "15 min" },
+  { id: 30, label: "30 min" },
+  { id: 60, label: "1 hour" },
+];
 
 function getJournalIcon(type: string) {
   return JOURNAL_TYPE_ICONS[type] ?? "note";
 }
 
-function normalizeIconName(icon: string | undefined) {
-  if (!icon) return "dog";
-  return LEGACY_ICON_NAMES[icon] ?? icon;
+export function iconNameOrDefault(icon: string | undefined) {
+  return icon ?? "dog";
 }
 
 function getHealthRecordIcon(record: Pick<HealthRecord, "type" | "customType">) {
@@ -191,14 +228,11 @@ function getHealthRecordIcon(record: Pick<HealthRecord, "type" | "customType">) 
 
 function getHealthRecordCategory(record: Pick<HealthRecord, "type" | "customType">) {
   if (["4-in-1 vaccine", "Anti-rabies vaccine", "Other vaccine"].includes(record.type)) return "Vaccine";
-  if (record.type === "Deworming") return "Medication";
-  if (record.type === "Other healthcare") return "Other";
-  if (record.type === "Custom") return "Other";
   return DEFAULT_HEALTH_RECORD_TYPES.includes(record.type) ? record.type : "Other";
 }
 
 function getHealthRecordTypeName(record: HealthRecord) {
-  if (record.type === "Custom" || record.type === "Other") return record.customType?.trim() || "Other";
+  if (record.type === "Other") return record.customType?.trim() || "Other";
   return record.type;
 }
 
@@ -212,7 +246,7 @@ function getReminderIcon(reminder: CareReminder, healthRecords: HealthRecord[]) 
     : healthRecords.find((record) => record.petId === reminder.petId
       && reminder.title === `${getHealthRecordTypeName(record)} due`);
   if (linkedRecord) return getHealthRecordIcon(linkedRecord);
-  return normalizeIconName(reminder.icon);
+  return iconNameOrDefault(reminder.icon);
 }
 
 function makeId() {
@@ -317,6 +351,8 @@ function notificationsAvailable() {
 }
 
 let notificationHandlerConfigured = false;
+let notificationResponseSubscription: ReturnType<NotificationsModule["addNotificationResponseReceivedListener"]> | null = null;
+const handledNotificationResponses = new Set<string>();
 
 function getNotificationsModule(): NotificationsModule | null {
   if (!notificationsAvailable()) return null;
@@ -340,8 +376,145 @@ function getNotificationsModule(): NotificationsModule | null {
   }
 }
 
+export async function updateOverdueReminderBadge(reminders?: readonly Pick<CareReminder, "dueAt">[]) {
+  const Notifications = getNotificationsModule();
+  if (!Notifications) return;
+  try {
+    let remindersToCount = reminders;
+    if (!remindersToCount) {
+      const storedReminders = await AsyncStorage.getItem(STORAGE_KEYS.reminders);
+      const parsed: unknown = storedReminders ? JSON.parse(storedReminders) : [];
+      remindersToCount = Array.isArray(parsed)
+        ? parsed.filter((reminder): reminder is Pick<CareReminder, "dueAt"> => reminder !== null
+          && typeof reminder === "object"
+          && typeof reminder.dueAt === "string")
+        : [];
+    }
+    const now = Date.now();
+    const overdueCount = remindersToCount.filter((reminder) => {
+      const dueAt = new Date(reminder.dueAt).getTime();
+      return Number.isFinite(dueAt) && dueAt < now;
+    }).length;
+    await Notifications.setBadgeCountAsync(overdueCount);
+  } catch {
+    // Badge updates are best-effort and do not affect in-app reminders.
+  }
+}
+
+export async function dismissPresentedCareNotifications() {
+  const Notifications = getNotificationsModule();
+  if (!Notifications) return false;
+  try {
+    const presentedNotifications = await Notifications.getPresentedNotificationsAsync();
+    if (presentedNotifications.length === 0) return false;
+    await Notifications.dismissAllNotificationsAsync();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function initializeCareNotifications() {
-  getNotificationsModule();
+  const Notifications = getNotificationsModule();
+  if (!Notifications || notificationResponseSubscription) return;
+
+  void Notifications.setNotificationCategoryAsync(REMINDER_NOTIFICATION_CATEGORY, [
+    { identifier: REMINDER_DONE_ACTION, buttonTitle: "Mark Done", options: { opensAppToForeground: true } },
+    { identifier: REMINDER_SNOOZE_ACTION, buttonTitle: "Snooze", options: { opensAppToForeground: true } },
+  ]).catch(() => undefined);
+
+  notificationResponseSubscription = Notifications.addNotificationResponseReceivedListener((response) => {
+    void handleReminderNotificationResponse(response).catch(() => undefined);
+  });
+  void Notifications.getLastNotificationResponseAsync()
+    .then((response) => response ? handleReminderNotificationResponse(response) : undefined)
+    .catch(() => undefined);
+}
+
+async function handleReminderNotificationResponse(
+  response: Parameters<NotificationsModule["addNotificationResponseReceivedListener"]>[0] extends (value: infer T) => void ? T : never,
+) {
+  const action = response.actionIdentifier;
+  if (action !== REMINDER_DONE_ACTION && action !== REMINDER_SNOOZE_ACTION) return;
+
+  const reminderId = response.notification.request.content.data?.reminderId;
+  if (typeof reminderId !== "string") return;
+  const responseKey = `${response.notification.request.identifier}:${action}`;
+  if (handledNotificationResponses.has(responseKey)) return;
+  handledNotificationResponses.add(responseKey);
+
+  const [savedReminders, savedHistory, savedPets] = await Promise.all([
+    AsyncStorage.getItem(STORAGE_KEYS.reminders),
+    AsyncStorage.getItem(STORAGE_KEYS.reminderHistory),
+    AsyncStorage.getItem(STORAGE_KEYS.pets),
+  ]);
+  const reminders: CareReminder[] = savedReminders ? JSON.parse(savedReminders) as CareReminder[] : [];
+  const history: ReminderCompletion[] = savedHistory ? JSON.parse(savedHistory) as ReminderCompletion[] : [];
+  const pets: PetProfile[] = savedPets ? JSON.parse(savedPets) as PetProfile[] : [];
+  const reminder = reminders.find((item) => item.id === reminderId);
+  if (!reminder) return;
+
+  const Notifications = getNotificationsModule();
+  if (reminder.notificationId && Notifications) {
+    await Notifications.cancelScheduledNotificationAsync(reminder.notificationId).catch(() => undefined);
+  }
+
+  if (action === REMINDER_SNOOZE_ACTION) {
+    const snoozeMinutes = reminder.snoozeMinutes ?? 60;
+    const snoozedUntil = new Date(Date.now() + snoozeMinutes * 60 * 1000);
+    let notificationId: string | null = null;
+    try {
+      notificationId = await scheduleReminder(
+        reminder.title,
+        pets.find((pet) => pet.id === reminder.petId)?.name ?? "General",
+        snoozedUntil.toISOString(),
+        reminder.id,
+        reminder.notes,
+      );
+    } catch {
+      // The snoozed reminder remains available in-app if the OS cannot reschedule it.
+    }
+    const nextReminders = reminders.map((item) => item.id === reminder.id
+      ? { ...item, dueAt: snoozedUntil.toISOString(), notificationId, snoozedFrom: item.snoozedFrom ?? item.dueAt }
+      : item);
+    await AsyncStorage.setItem(STORAGE_KEYS.reminders, JSON.stringify(nextReminders));
+    await Notifications?.clearLastNotificationResponseAsync().catch(() => undefined);
+    return;
+  }
+
+  const petName = pets.find((pet) => pet.id === reminder.petId)?.name ?? "General";
+  const completed: ReminderCompletion = {
+    id: makeId(),
+    reminderId: reminder.id,
+    petId: reminder.petId,
+    petName,
+    title: reminder.title,
+    notes: reminder.notes,
+    scheduledFor: reminder.snoozedFrom ?? reminder.dueAt,
+    completedAt: new Date().toISOString(),
+    repeat: reminder.repeat,
+    snoozeMinutes: reminder.snoozeMinutes ?? 60,
+    icon: reminder.icon,
+    healthRecordId: reminder.healthRecordId,
+  };
+  let nextReminders = reminders.filter((item) => item.id !== reminder.id);
+  if (reminder.repeat !== "once") {
+    const nextDue = nextRecurringDueDate(reminder.snoozedFrom ?? reminder.dueAt, reminder.repeat, new Date());
+    let notificationId: string | null = null;
+    try {
+      notificationId = await scheduleReminder(reminder.title, petName, nextDue.toISOString(), reminder.id, reminder.notes);
+    } catch {
+      // Keep the next recurring reminder available in-app if scheduling fails.
+    }
+    nextReminders = reminders.map((item) => item.id === reminder.id
+      ? { ...item, dueAt: nextDue.toISOString(), notificationId, snoozedFrom: undefined }
+      : item);
+  }
+  await Promise.all([
+    AsyncStorage.setItem(STORAGE_KEYS.reminders, JSON.stringify(nextReminders)),
+    AsyncStorage.setItem(STORAGE_KEYS.reminderHistory, JSON.stringify([completed, ...history].slice(0, 200))),
+  ]);
+  await Notifications?.clearLastNotificationResponseAsync().catch(() => undefined);
 }
 
 async function requestReminderPermission() {
@@ -365,7 +538,7 @@ async function requestReminderPermission() {
   return permission.granted;
 }
 
-async function scheduleReminder(title: string, petName: string, dueAt: string) {
+async function scheduleReminder(title: string, petName: string, dueAt: string, reminderId?: string, notes?: string) {
   const Notifications = getNotificationsModule();
   if (!Notifications) return null;
   const permitted = await requestReminderPermission();
@@ -373,11 +546,12 @@ async function scheduleReminder(title: string, petName: string, dueAt: string) {
   return Notifications.scheduleNotificationAsync({
     content: {
       title: `${title} · ${petName}`,
-      body: "It's time for a pet-care task.",
+      body: notes?.trim() || "It's time for a pet-care task.",
       sound: "default",
       badge: 1,
       color: REMINDER_NOTIFICATION_COLOR,
-      data: { screen: "care-reminders" },
+      categoryIdentifier: REMINDER_NOTIFICATION_CATEGORY,
+      data: { screen: "care-reminders", reminderId },
     },
     trigger: {
       type: Notifications.SchedulableTriggerInputTypes.DATE,
@@ -417,13 +591,48 @@ function CareButton({
   );
 }
 
-function SolidPetIcon({ name, color, size = 22, cutout = "#FFFFFF" }: { name: string; color: string; size?: number; cutout?: string }) {
+function IconActionButton({
+  icon,
+  label,
+  onPress,
+  palette,
+}: {
+  icon: "edit" | "remove";
+  label: string;
+  onPress: () => void;
+  palette: CarePalette;
+  destructive?: boolean;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      onPress={onPress}
+      style={({ pressed }) => [styles.iconActionButton, { backgroundColor: palette.soft, opacity: pressed ? 0.72 : 1 }]}
+    >
+      <ActionIcon name={icon} color={palette.primary} cutout={palette.soft} size={20} />
+    </Pressable>
+  );
+}
+
+export function SolidPetIcon({ name, color, size = 22, cutout = "#FFFFFF" }: { name: string; color: string; size?: number; cutout?: string }) {
   const unit = size / 24;
   const shape = (left: number, top: number, width: number, height: number, radius = 3, extra: object = {}, fill = color) => (
     <View style={[styles.solidIconPart, { left: left * unit, top: top * unit, width: width * unit, height: height * unit, borderRadius: radius * unit, backgroundColor: fill }, extra]} />
   );
 
   switch (name) {
+    case "general":
+      return <View style={{ width: size, height: size }}>
+        {shape(10, 2, 4, 20, 2)}{shape(2, 10, 20, 4, 2)}
+        {shape(4, 4, 4, 4, 2)}{shape(16, 16, 4, 4, 2)}
+      </View>;
+    case "training":
+      return <View style={{ width: size, height: size }}>
+        {shape(6, 10, 12, 4, 2)}
+        {shape(2, 6, 4, 12, 2)}{shape(18, 6, 4, 12, 2)}
+        {shape(0, 8, 3, 8, 1)}{shape(21, 8, 3, 8, 1)}
+      </View>;
     case "dog":
       return <View style={{ width: size, height: size }}>
         {shape(2, 3, 7, 10, 3, { transform: [{ rotate: "-18deg" }] })}{shape(15, 3, 7, 10, 3, { transform: [{ rotate: "18deg" }] })}
@@ -750,6 +959,7 @@ export function CareToolsScreen({
   const [pets, setPets] = useState<PetProfile[]>([]);
   const [journal, setJournal] = useState<JournalEntry[]>([]);
   const [reminders, setReminders] = useState<CareReminder[]>([]);
+  const [reminderBadgeClock, setReminderBadgeClock] = useState(() => Date.now());
   const [reminderHistory, setReminderHistory] = useState<ReminderCompletion[]>([]);
   const [reminderHistoryPetFilter, setReminderHistoryPetFilter] = useState("");
   const [healthRecords, setHealthRecords] = useState<HealthRecord[]>([]);
@@ -758,15 +968,16 @@ export function CareToolsScreen({
   const [selectedPetId, setSelectedPetId] = useState(initialTab === "reminders" ? GENERAL_REMINDER_PET_ID : "");
   const [activePetId, setActivePetId] = useState<string | null>(null);
   const [selectedHealthRecord, setSelectedHealthRecord] = useState<HealthRecord | null>(null);
+  const [selectedJournalEntry, setSelectedJournalEntry] = useState<JournalEntry | null>(null);
   const [healthSearchQuery, setHealthSearchQuery] = useState("");
   const [weightFormOpen, setWeightFormOpen] = useState(false);
   const [weightValue, setWeightValue] = useState("");
   const [weightUnit, setWeightUnit] = useState<"kg" | "lb">("kg");
   const [weightMeasuredAt, setWeightMeasuredAt] = useState(() => localDateInput(new Date()));
-  const [calendarMonth, setCalendarMonth] = useState(() => new Date(new Date().getFullYear(), new Date().getMonth(), 1));
-  const [calendarSelectedDate, setCalendarSelectedDate] = useState(() => localDateInput(new Date()));
   const [editingHealthRecordId, setEditingHealthRecordId] = useState<string | null>(null);
   const [healthRecordFormOpen, setHealthRecordFormOpen] = useState(false);
+  const [healthRecordPhotos, setHealthRecordPhotos] = useState<string[]>([]);
+  const [healthRecordDocuments, setHealthRecordDocuments] = useState<JournalDocument[]>([]);
   const [notice, setNotice] = useState("");
   const [refreshing, setRefreshing] = useState(false);
   const careScrollRef = React.useRef<ScrollView>(null);
@@ -776,18 +987,22 @@ export function CareToolsScreen({
   const [editingPetId, setEditingPetId] = useState<string | null>(null);
   const [petName, setPetName] = useState("");
   const [petSpecies, setPetSpecies] = useState("");
+  const [petGender, setPetGender] = useState<PetProfile["gender"]>("Unknown");
+  const [petMicrochipNumber, setPetMicrochipNumber] = useState("");
   const [petBreed, setPetBreed] = useState("");
   const [petBirthDate, setPetBirthDate] = useState("");
   const [petWeight, setPetWeight] = useState("");
   const [petAllergies, setPetAllergies] = useState("");
   const [petBirthdayReminderEnabled, setPetBirthdayReminderEnabled] = useState(false);
   const [profilePhotoUri, setProfilePhotoUri] = useState<string | undefined>();
-  const [otherPhotoUris, setOtherPhotoUris] = useState<string[]>([]);
   const [healthType, setHealthType] = useState(DEFAULT_HEALTH_RECORD_TYPES[0]);
   const [healthTypePickerOpen, setHealthTypePickerOpen] = useState(false);
   const [customHealthType, setCustomHealthType] = useState("");
   const [createReminderForDueDate, setCreateReminderForDueDate] = useState(true);
   const [photoViewerUri, setPhotoViewerUri] = useState<string | null>(null);
+  const [petAlbumModalPetId, setPetAlbumModalPetId] = useState<string | null>(null);
+  const [selectedAlbumPhotoIds, setSelectedAlbumPhotoIds] = useState<string[]>([]);
+  const [petAlbumUploadProgress, setPetAlbumUploadProgress] = useState<{ petId: string; completed: number; total: number } | null>(null);
   const [healthTitle, setHealthTitle] = useState("");
   const [healthDateGiven, setHealthDateGiven] = useState(localDateInput(new Date()));
   const [healthNextDueDate, setHealthNextDueDate] = useState("");
@@ -796,9 +1011,15 @@ export function CareToolsScreen({
 
   const [entryTitle, setEntryTitle] = useState("");
   const [entryNotes, setEntryNotes] = useState("");
+  const [journalFormOpen, setJournalFormOpen] = useState(false);
+  const [editingJournalEntryId, setEditingJournalEntryId] = useState<string | null>(null);
+  const [journalPhotos, setJournalPhotos] = useState<string[]>([]);
+  const [journalDocuments, setJournalDocuments] = useState<JournalDocument[]>([]);
 
   const [reminderTitle, setReminderTitle] = useState("");
+  const [reminderNotes, setReminderNotes] = useState("");
   const [editingReminderId, setEditingReminderId] = useState<string | null>(null);
+  const [reminderFormOpen, setReminderFormOpen] = useState(false);
   const [reminderDate, setReminderDate] = useState(() => localDateInput(new Date()));
   const [reminderTime, setReminderTime] = useState(() => formatReminderTime(new Date()));
   const [reminderTitleError, setReminderTitleError] = useState(false);
@@ -806,7 +1027,22 @@ export function CareToolsScreen({
   const [reminderTimeError, setReminderTimeError] = useState(false);
   const [reminderScheduleError, setReminderScheduleError] = useState(false);
   const [reminderRepeat, setReminderRepeat] = useState<ReminderRepeat>("once");
+  const [reminderSnoozeMinutes, setReminderSnoozeMinutes] = useState<ReminderSnoozeMinutes>(60);
   const [reminderIcon, setReminderIcon] = useState<string>(REMINDER_ICON_OPTIONS[0].value);
+
+  const overdueReminderCount = reminders.filter((reminder) => {
+    const dueAt = new Date(reminder.dueAt).getTime();
+    return Number.isFinite(dueAt) && dueAt < reminderBadgeClock;
+  }).length;
+
+  useEffect(() => {
+    const interval = setInterval(() => setReminderBadgeClock(Date.now()), 60_000);
+    return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    if (loaded) void updateOverdueReminderBadge(reminders);
+  }, [loaded, reminders]);
 
   useEffect(() => {
     const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
@@ -814,8 +1050,20 @@ export function CareToolsScreen({
         setPhotoViewerUri(null);
         return true;
       }
+      if (petAlbumModalPetId) {
+        closePetAlbumManager();
+        return true;
+      }
+      if (selectedJournalEntry) {
+        setSelectedJournalEntry(null);
+        return true;
+      }
       if (selectedHealthRecord) {
         setSelectedHealthRecord(null);
+        return true;
+      }
+      if (journalFormOpen) {
+        cancelJournalForm();
         return true;
       }
       if (healthTypePickerOpen) {
@@ -823,15 +1071,19 @@ export function CareToolsScreen({
         return true;
       }
       if (healthRecordFormOpen) {
-        resetHealthRecordForm();
+        cancelHealthRecordForm();
         return true;
       }
       if (weightFormOpen) {
         setWeightFormOpen(false);
         return true;
       }
-      if (editingReminderId) {
+      if (reminderFormOpen) {
         resetReminderForm();
+        return true;
+      }
+      if (journalFormOpen) {
+        cancelJournalForm();
         return true;
       }
       if (petFormOpen) {
@@ -852,14 +1104,22 @@ export function CareToolsScreen({
     return () => subscription.remove();
   }, [
     activePetId,
+    editingHealthRecordId,
     editingReminderId,
+    journalFormOpen,
     healthRecordFormOpen,
+    healthRecordDocuments,
+    healthRecordPhotos,
+    healthRecords,
     healthTypePickerOpen,
     onBack,
     petFormOpen,
     photoViewerUri,
+    petAlbumModalPetId,
     selectedHealthRecord,
+    selectedJournalEntry,
     tab,
+    reminderFormOpen,
     weightFormOpen,
   ]);
 
@@ -874,7 +1134,11 @@ export function CareToolsScreen({
       AsyncStorage.getItem(STORAGE_KEYS.weightMeasurements),
     ]).then(([savedPets, savedJournal, savedReminders, savedReminderHistory, savedHealthRecords, savedWeightMeasurements]) => {
       if (!active) return;
-      try { if (savedPets) setPets(JSON.parse(savedPets) as PetProfile[]); } catch { /* Ignore invalid local records. */ }
+      try {
+        if (savedPets) {
+          setPets(JSON.parse(savedPets) as PetProfile[]);
+        }
+      } catch { /* Ignore invalid local records. */ }
       try { if (savedJournal) setJournal(JSON.parse(savedJournal) as JournalEntry[]); } catch { /* Ignore invalid local records. */ }
       try { if (savedReminders) setReminders(JSON.parse(savedReminders) as CareReminder[]); } catch { /* Ignore invalid local records. */ }
       try { if (savedReminderHistory) setReminderHistory(JSON.parse(savedReminderHistory) as ReminderCompletion[]); } catch { /* Ignore invalid local history. */ }
@@ -953,19 +1217,7 @@ export function CareToolsScreen({
         setWeightMeasurements(nextWeightMeasurements);
       }
 
-      const Notifications = getNotificationsModule();
-      let notificationsCleared = false;
-      if (Notifications) {
-        try {
-          const presentedNotifications = await Notifications.getPresentedNotificationsAsync();
-          if (presentedNotifications.length > 0) {
-            await Notifications.dismissAllNotificationsAsync();
-            notificationsCleared = true;
-          }
-        } catch {
-          // Refresh the care data even if the OS doesn't allow clearing notifications.
-        }
-      }
+      const notificationsCleared = await dismissPresentedCareNotifications();
       if (dataChanged && notificationsCleared) {
         setNotice("Care data updated and delivered notifications cleared. Upcoming reminders are still scheduled.");
       } else if (dataChanged) {
@@ -983,6 +1235,13 @@ export function CareToolsScreen({
     }
   }
 
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (nextState) => {
+      if (nextState === "active" && loaded) void refreshCareCenter();
+    });
+    return () => subscription.remove();
+  }, [loaded]);
+
   function hasHealthRecordReminder(record: HealthRecord) {
     if (!record.nextDueDate) return false;
     const dueAt = new Date(`${record.nextDueDate}T09:00:00`).toISOString();
@@ -993,13 +1252,14 @@ export function CareToolsScreen({
     setEditingPetId(null);
     setPetName("");
     setPetSpecies("");
+    setPetGender("Unknown");
+    setPetMicrochipNumber("");
     setPetBreed("");
     setPetBirthDate("");
     setPetWeight("");
     setPetAllergies("");
     setPetBirthdayReminderEnabled(false);
     setProfilePhotoUri(undefined);
-    setOtherPhotoUris([]);
     setPetFormOpen(false);
   }
 
@@ -1007,13 +1267,14 @@ export function CareToolsScreen({
     setEditingPetId(pet.id);
     setPetName(pet.name);
     setPetSpecies(pet.species);
+    setPetGender(pet.gender ?? "Unknown");
+    setPetMicrochipNumber(pet.microchipNumber ?? "");
     setPetBreed(pet.breed);
     setPetBirthDate(pet.birthDate);
     setPetWeight(pet.weight);
     setPetAllergies(pet.allergies);
     setPetBirthdayReminderEnabled(Boolean(pet.birthdayReminderEnabled));
     setProfilePhotoUri(pet.profilePhotoUri);
-    setOtherPhotoUris(pet.otherPhotoUris ?? []);
     setPetFormOpen(true);
     setActivePetId(null);
     setTab("pets");
@@ -1049,51 +1310,287 @@ export function CareToolsScreen({
     if (!result.canceled && result.assets[0]) setProfilePhotoUri(result.assets[0].uri);
   }
 
-  async function chooseOtherPhotos(source: "library" | "camera") {
-    const remaining = MAX_OTHER_PHOTOS - otherPhotoUris.length;
-    if (remaining <= 0) return;
-
-    if (source === "camera") {
-      const permission = await ImagePicker.requestCameraPermissionsAsync();
-      if (!permission.granted) {
-        setNotice("Allow camera access to add pet photos.");
-        return;
-      }
-      const result = await ImagePicker.launchCameraAsync({
-        quality: 0.8,
-      });
-      if (!result.canceled && result.assets[0]) {
-        setOtherPhotoUris((current) => [...current, result.assets[0].uri].slice(0, MAX_OTHER_PHOTOS));
-      }
+  async function addPetAlbumPhotos(pet: PetProfile) {
+    if (petAlbumUploadProgress) return;
+    const remaining = Math.max(0, MAX_PET_ALBUM_PHOTOS - (pet.albumPhotos?.length ?? 0));
+    if (!remaining) {
+      setNotice(`A pet album can include up to ${MAX_PET_ALBUM_PHOTOS} photos.`);
       return;
     }
+    const photos: PetAlbumPhoto[] = [];
+    setPetAlbumUploadProgress({ petId: pet.id, completed: 0, total: 0 });
+    try {
+      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permission.granted) {
+        setNotice("Allow photo library access to add pet album photos.");
+        return;
+      }
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ["images"],
+        allowsMultipleSelection: true,
+        selectionLimit: Math.min(remaining, 20),
+        quality: 0.85,
+        base64: Platform.OS === "web",
+      });
+      if (result.canceled) return;
+      const selected = result.assets.slice(0, remaining);
+      if (!selected.length) return;
+      setPetAlbumUploadProgress({ petId: pet.id, completed: 0, total: selected.length });
+      for (const [index, asset] of selected.entries()) {
+        photos.push({
+          id: makeId(),
+          uri: await persistJournalFile(asset.uri, asset.fileName ?? `pet-album-${Date.now()}-${index}.jpg`, "image/jpeg", asset.base64 ?? undefined, "pet-album-attachments"),
+          description: "",
+          pinned: false,
+        });
+        setPetAlbumUploadProgress({ petId: pet.id, completed: index + 1, total: selected.length });
+      }
+      setPets((current) => current.map((item) => item.id === pet.id
+        ? { ...item, albumPhotos: [...(item.albumPhotos ?? []), ...photos].slice(0, MAX_PET_ALBUM_PHOTOS) }
+        : item));
+      setNotice(`${photos.length} photo${photos.length === 1 ? "" : "s"} added to ${pet.name}'s album.`);
+    } catch {
+      discardPetAlbumPhotos(photos);
+      setNotice("Could not save one or more pet album photos.");
+    } finally {
+      setPetAlbumUploadProgress(null);
+    }
+  }
 
+  function discardPetAlbumPhotos(photos: PetAlbumPhoto[]) {
+    if (Platform.OS === "web" || !FileSystem.documentDirectory) return;
+    const folder = `${FileSystem.documentDirectory}pet-album-attachments/`;
+    photos.forEach((photo) => {
+      if (photo.uri.startsWith(folder)) void FileSystem.deleteAsync(photo.uri, { idempotent: true }).catch(() => undefined);
+    });
+  }
+
+  function updatePetAlbumPhoto(pet: PetProfile, photoId: string, changes: Partial<PetAlbumPhoto>) {
+    setPets((current) => current.map((item) => item.id === pet.id
+      ? { ...item, albumPhotos: (item.albumPhotos ?? []).map((photo) => photo.id === photoId ? { ...photo, ...changes } : photo) }
+      : item));
+  }
+
+  function togglePetAlbumPhotoPin(pet: PetProfile, photo: PetAlbumPhoto) {
+    const pinnedCount = (pet.albumPhotos ?? []).filter((item) => item.pinned).length;
+    if (!photo.pinned && pinnedCount >= MAX_PINNED_PET_ALBUM_PHOTOS) {
+      setNotice(`You can pin up to ${MAX_PINNED_PET_ALBUM_PHOTOS} photos in the pet view.`);
+      return;
+    }
+    updatePetAlbumPhoto(pet, photo.id, { pinned: !photo.pinned });
+  }
+
+  function closePetAlbumManager() {
+    setPetAlbumModalPetId(null);
+    setSelectedAlbumPhotoIds([]);
+  }
+
+  function toggleAlbumPhotoSelection(photoId: string) {
+    setSelectedAlbumPhotoIds((current) => current.includes(photoId)
+      ? current.filter((id) => id !== photoId)
+      : [...current, photoId]);
+  }
+
+  function toggleSelectAllAlbumPhotos(pet: PetProfile) {
+    const photos = pet.albumPhotos ?? [];
+    const allSelected = photos.length > 0 && photos.every((photo) => selectedAlbumPhotoIds.includes(photo.id));
+    setSelectedAlbumPhotoIds(allSelected ? [] : photos.map((photo) => photo.id));
+  }
+
+  function deleteSelectedAlbumPhotos(pet: PetProfile) {
+    const selectedIds = new Set(selectedAlbumPhotoIds);
+    const photosToDelete = (pet.albumPhotos ?? []).filter((photo) => selectedIds.has(photo.id));
+    if (!photosToDelete.length) return;
+    Alert.alert(`Delete ${photosToDelete.length} photo${photosToDelete.length === 1 ? "" : "s"}?`, "Selected photos and their descriptions will be permanently removed from this pet's album.", [
+      { text: "Cancel", style: "cancel" },
+      { text: "Delete", style: "destructive", onPress: () => {
+        discardPetAlbumPhotos(photosToDelete);
+        setPets((current) => current.map((item) => item.id === pet.id
+          ? { ...item, albumPhotos: (item.albumPhotos ?? []).filter((photo) => !selectedIds.has(photo.id)) }
+          : item));
+        setSelectedAlbumPhotoIds([]);
+      } },
+    ]);
+  }
+
+  function removePetAlbumPhoto(pet: PetProfile, photo: PetAlbumPhoto) {
+    Alert.alert("Remove album photo?", "This photo and its description will be removed from this pet's album.", [
+      { text: "Cancel", style: "cancel" },
+      { text: "Remove", style: "destructive", onPress: () => {
+        discardPetAlbumPhotos([photo]);
+        setPets((current) => current.map((item) => item.id === pet.id
+          ? { ...item, albumPhotos: (item.albumPhotos ?? []).filter((itemPhoto) => itemPhoto.id !== photo.id) }
+          : item));
+        setSelectedAlbumPhotoIds((current) => current.filter((id) => id !== photo.id));
+      } },
+    ]);
+  }
+
+  async function downloadImage(uri: string, fileName = "journal-photo.jpg") {
+    if (!uri) return;
+    try {
+      if (Platform.OS === "web") {
+        const anchor = window.document.createElement("a");
+        anchor.href = uri;
+        anchor.download = fileName;
+        anchor.click();
+      } else if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(uri, { mimeType: "image/*", dialogTitle: "Save or share photo" });
+      } else {
+        await Share.share({ title: "Pet photo", message: "Save this pet photo from the profile.", url: uri });
+      }
+    } catch {
+      setNotice("Unable to share this photo right now.");
+    }
+  }
+
+  async function persistJournalFile(sourceUri: string, originalName: string, mimeType?: string, base64?: string, folder = "journal-attachments") {
+    if (Platform.OS === "web") return base64 && mimeType ? `data:${mimeType};base64,${base64}` : sourceUri;
+    if (!FileSystem.documentDirectory) return sourceUri;
+    const directory = `${FileSystem.documentDirectory}${folder}/`;
+    await FileSystem.makeDirectoryAsync(directory, { intermediates: true }).catch(() => undefined);
+    const safeName = originalName.replace(/[^a-zA-Z0-9._-]/g, "_");
+    const destination = `${directory}${makeId()}-${safeName || "attachment"}`;
+    await FileSystem.copyAsync({ from: sourceUri, to: destination });
+    return destination;
+  }
+
+  async function chooseJournalPhotos() {
+    const remaining = Math.max(0, 5 - journalPhotos.length);
+    if (!remaining) {
+      setNotice("A journal entry can include up to five photos.");
+      return;
+    }
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!permission.granted) {
-      setNotice("Allow photo library access to choose pet photos.");
+      setNotice("Allow photo library access to attach journal photos.");
       return;
     }
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ["images"],
       allowsMultipleSelection: true,
       selectionLimit: remaining,
-      quality: 0.8,
+      quality: 0.85,
+      base64: Platform.OS === "web",
     });
-    if (!result.canceled) {
-      setOtherPhotoUris((current) => [...current, ...result.assets.map((asset) => asset.uri)].slice(0, MAX_OTHER_PHOTOS));
+    if (result.canceled) return;
+    try {
+      const storedPhotos = await Promise.all(result.assets.slice(0, remaining).map((asset, index) =>
+        persistJournalFile(asset.uri, asset.fileName ?? `journal-photo-${Date.now()}-${index}.jpg`, "image/jpeg", asset.base64 ?? undefined),
+      ));
+      setJournalPhotos((current) => [...current, ...storedPhotos].slice(0, 5));
+    } catch {
+      setNotice("Could not save one or more journal photos.");
     }
   }
 
-  async function downloadImage(uri: string) {
-    if (!uri) return;
+  async function chooseJournalDocuments() {
+    const remaining = Math.max(0, 10 - journalDocuments.length);
+    if (!remaining) {
+      setNotice("A journal entry can include up to ten documents.");
+      return;
+    }
     try {
-      await Share.share({
-        title: "Pet photo",
-        message: "Save this pet photo from the profile.",
-        url: uri,
-      });
+      const result = await DocumentPicker.getDocumentAsync({ type: "*/*", multiple: true, copyToCacheDirectory: true, base64: Platform.OS === "web" });
+      if (result.canceled) return;
+      const selected = result.assets.slice(0, remaining);
+      const storedDocuments = await Promise.all(selected.map(async (asset) => ({
+        id: makeId(),
+        name: asset.name,
+        uri: await persistJournalFile(asset.uri, asset.name, asset.mimeType, asset.base64),
+        mimeType: asset.mimeType,
+      })));
+      setJournalDocuments((current) => [...current, ...storedDocuments].slice(0, 10));
     } catch {
-      setNotice("Unable to share this photo right now.");
+      setNotice("Could not attach the selected document. Please try again.");
+    }
+  }
+
+  async function chooseHealthRecordPhotos() {
+    const remaining = Math.max(0, 5 - healthRecordPhotos.length);
+    if (!remaining) {
+      setNotice("A healthcare record can include up to five photos.");
+      return;
+    }
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) {
+      setNotice("Allow photo library access to attach healthcare record photos.");
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ["images"],
+      allowsMultipleSelection: true,
+      selectionLimit: remaining,
+      quality: 0.85,
+      base64: Platform.OS === "web",
+    });
+    if (result.canceled) return;
+    try {
+      const storedPhotos = await Promise.all(result.assets.slice(0, remaining).map((asset, index) =>
+        persistJournalFile(asset.uri, asset.fileName ?? `health-record-photo-${Date.now()}-${index}.jpg`, "image/jpeg", asset.base64 ?? undefined, "health-record-attachments"),
+      ));
+      setHealthRecordPhotos((current) => [...current, ...storedPhotos].slice(0, 5));
+    } catch {
+      setNotice("Could not save one or more healthcare record photos.");
+    }
+  }
+
+  async function chooseHealthRecordDocuments() {
+    const remaining = Math.max(0, 10 - healthRecordDocuments.length);
+    if (!remaining) {
+      setNotice("A healthcare record can include up to ten documents.");
+      return;
+    }
+    try {
+      const result = await DocumentPicker.getDocumentAsync({ type: "*/*", multiple: true, copyToCacheDirectory: true, base64: Platform.OS === "web" });
+      if (result.canceled) return;
+      const selected = result.assets.slice(0, remaining);
+      const storedDocuments = await Promise.all(selected.map(async (asset) => ({
+        id: makeId(),
+        name: asset.name,
+        uri: await persistJournalFile(asset.uri, asset.name, asset.mimeType, asset.base64, "health-record-attachments"),
+        mimeType: asset.mimeType,
+      })));
+      setHealthRecordDocuments((current) => [...current, ...storedDocuments].slice(0, 10));
+    } catch {
+      setNotice("Could not attach the selected healthcare record document.");
+    }
+  }
+
+  async function downloadJournalDocument(document: JournalDocument) {
+    try {
+      if (Platform.OS === "web") {
+        const anchor = window.document.createElement("a");
+        anchor.href = document.uri;
+        anchor.download = document.name;
+        anchor.click();
+        return;
+      }
+      if (Platform.OS === "android") {
+        const permission = await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
+        if (!permission.granted) {
+          setNotice("Choose a folder to save the attached document.");
+          return;
+        }
+        const extension = document.name.match(/(\.[^./\\]+)$/)?.[1] ?? "";
+        const fileName = extension ? document.name.slice(0, -extension.length) : document.name;
+        const fileUri = await FileSystem.StorageAccessFramework.createFileAsync(
+          permission.directoryUri,
+          fileName,
+          document.mimeType ?? "application/octet-stream",
+        );
+        const contents = await FileSystem.readAsStringAsync(document.uri, { encoding: FileSystem.EncodingType.Base64 });
+        await FileSystem.StorageAccessFramework.writeAsStringAsync(fileUri, contents, { encoding: FileSystem.EncodingType.Base64 });
+        setNotice(`${document.name} saved to the selected folder.`);
+        return;
+      }
+      if (!(await Sharing.isAvailableAsync())) {
+        setNotice("Sharing is not available on this device.");
+        return;
+      }
+      await Sharing.shareAsync(document.uri, { mimeType: document.mimeType, dialogTitle: `Save ${document.name}` });
+    } catch {
+      setNotice(`Could not download ${document.name}.`);
     }
   }
 
@@ -1111,13 +1608,15 @@ export function CareToolsScreen({
       id: editingPetId ?? makeId(),
       name: petName.trim(),
       species: petSpecies.trim(),
+      gender: petGender ?? "Unknown",
+      microchipNumber: petMicrochipNumber.trim(),
       breed: petBreed.trim(),
       birthDate: petBirthDate.trim(),
       weight: petWeight.trim(),
       allergies: petAllergies.trim(),
       birthdayReminderEnabled: petBirthdayReminderEnabled,
       profilePhotoUri,
-      otherPhotoUris,
+      albumPhotos: existing?.albumPhotos ?? [],
       createdAt: existing?.createdAt ?? new Date().toISOString(),
     };
 
@@ -1131,7 +1630,7 @@ export function CareToolsScreen({
           dueAt: new Date(`${nextBirthday}T09:00:00`).toISOString(),
           repeat: "yearly",
           notificationId: null,
-          icon: "birthday",
+          icon: "gift",
         };
         setReminders((current) => {
           const replaced = current.filter((reminder) => reminder.petId !== saved.id || reminder.title !== birthdayReminder.title);
@@ -1159,6 +1658,12 @@ export function CareToolsScreen({
           if (reminder.notificationId && Notifications) void Notifications.cancelScheduledNotificationAsync(reminder.notificationId).catch(() => undefined);
         });
         setPets((current) => current.filter((item) => item.id !== pet.id));
+        if (petAlbumModalPetId === pet.id) closePetAlbumManager();
+        const petJournalEntries = journal.filter((entry) => entry.petId === pet.id);
+        petJournalEntries.forEach((entry) => { void deleteJournalFiles(entry); });
+        const petHealthRecords = healthRecords.filter((record) => record.petId === pet.id);
+        petHealthRecords.forEach((record) => discardHealthRecordAttachments(record.photos ?? [], record.documents ?? []));
+        discardPetAlbumPhotos(pet.albumPhotos ?? []);
         setJournal((current) => current.filter((entry) => entry.petId !== pet.id));
         setReminders((current) => current.filter((reminder) => reminder.petId !== pet.id));
         setHealthRecords((current) => current.filter((record) => record.petId !== pet.id));
@@ -1178,31 +1683,121 @@ export function CareToolsScreen({
       setNotice("Add a short title for this journal entry.");
       return;
     }
+    const existingEntry = journal.find((entry) => entry.id === editingJournalEntryId);
     const entry: JournalEntry = {
-      id: makeId(),
+      id: existingEntry?.id ?? makeId(),
       petId: selectedPetId,
       type: "Other",
       title: entryTitle.trim(),
       notes: entryNotes.trim(),
-      icon: "📝",
-      createdAt: new Date().toISOString(),
+      icon: "note",
+      photos: journalPhotos,
+      documents: journalDocuments,
+      createdAt: existingEntry?.createdAt ?? new Date().toISOString(),
     };
-    setJournal((current) => [entry, ...current]);
+    setJournal((current) => existingEntry
+      ? current.map((item) => item.id === entry.id ? entry : item)
+      : [entry, ...current]);
+    setEditingJournalEntryId(null);
     setEntryTitle("");
     setEntryNotes("");
-    setNotice("Journal entry saved.");
+    setJournalPhotos([]);
+    setJournalDocuments([]);
+    setJournalFormOpen(false);
+    setNotice(existingEntry ? "Journal entry updated." : "Journal entry saved.");
+  }
+
+  function beginAddJournalEntry() {
+    setEditingJournalEntryId(null);
+    setEntryTitle("");
+    setEntryNotes("");
+    setJournalPhotos([]);
+    setJournalDocuments([]);
+    setJournalFormOpen(true);
+  }
+
+  function beginEditJournalEntry(entry: JournalEntry) {
+    setEditingJournalEntryId(entry.id);
+    setSelectedPetId(entry.petId);
+    setEntryTitle(entry.title);
+    setEntryNotes(entry.notes);
+    setJournalPhotos(entry.photos ?? []);
+    setJournalDocuments(entry.documents ?? []);
+    setSelectedJournalEntry(null);
+    setJournalFormOpen(true);
+  }
+
+  function discardJournalAttachments(photos: string[], documents: JournalDocument[]) {
+    if (Platform.OS === "web" || !FileSystem.documentDirectory) return;
+    const files = [...photos, ...documents.map((document) => document.uri)]
+      .filter((uri) => uri.startsWith(`${FileSystem.documentDirectory}journal-attachments/`));
+    files.forEach((uri) => { void FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => undefined); });
+  }
+
+  function discardHealthRecordAttachments(photos: string[], documents: JournalDocument[]) {
+    if (Platform.OS === "web" || !FileSystem.documentDirectory) return;
+    const folder = `${FileSystem.documentDirectory}health-record-attachments/`;
+    const files = [...photos, ...documents.map((document) => document.uri)]
+      .filter((uri) => uri.startsWith(folder));
+    files.forEach((uri) => { void FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => undefined); });
+  }
+
+  function cancelJournalForm() {
+    const existingEntry = journal.find((entry) => entry.id === editingJournalEntryId);
+    if (!existingEntry) discardJournalAttachments(journalPhotos, journalDocuments);
+    else {
+      const originalPhotos = new Set(existingEntry.photos ?? []);
+      const originalDocuments = new Set((existingEntry.documents ?? []).map((document) => document.uri));
+      discardJournalAttachments(
+        journalPhotos.filter((uri) => !originalPhotos.has(uri)),
+        journalDocuments.filter((document) => !originalDocuments.has(document.uri)),
+      );
+    }
+    setEditingJournalEntryId(null);
+    setJournalFormOpen(false);
+    setEntryTitle("");
+    setEntryNotes("");
+    setJournalPhotos([]);
+    setJournalDocuments([]);
+  }
+
+  function removeDraftJournalPhoto(uri: string) {
+    Alert.alert("Remove attached photo?", "This photo will not be included in the journal entry.", [
+      { text: "Cancel", style: "cancel" },
+      { text: "Remove", style: "destructive", onPress: () => {
+        discardJournalAttachments([uri], []);
+        setJournalPhotos((current) => current.filter((item) => item !== uri));
+      } },
+    ]);
+  }
+
+  function removeDraftJournalDocument(document: JournalDocument) {
+    Alert.alert("Remove attached document?", `“${document.name}” will not be included in the journal entry.`, [
+      { text: "Cancel", style: "cancel" },
+      { text: "Remove", style: "destructive", onPress: () => {
+        discardJournalAttachments([], [document]);
+        setJournalDocuments((current) => current.filter((item) => item.id !== document.id));
+      } },
+    ]);
+  }
+
+  async function deleteJournalFiles(entry: JournalEntry) {
+    if (Platform.OS === "web" || !FileSystem.documentDirectory) return;
+    discardJournalAttachments(entry.photos ?? [], entry.documents ?? []);
   }
 
   function editHealthRecord(record: HealthRecord) {
     setEditingHealthRecordId(record.id);
     const category = getHealthRecordCategory(record);
     setHealthType(DEFAULT_HEALTH_RECORD_TYPES.includes(record.type) ? record.type : category);
-    setCustomHealthType(category === "Other" && record.type !== "Other" ? getHealthRecordTypeName(record) : record.customType ?? "");
+    setCustomHealthType(record.customType ?? "");
     setHealthTitle(record.title);
     setHealthDateGiven(record.dateGiven);
     setHealthNextDueDate(record.nextDueDate);
     setHealthClinic(record.clinic);
     setHealthNotes(record.notes);
+    setHealthRecordPhotos(record.photos ?? []);
+    setHealthRecordDocuments(record.documents ?? []);
     setCreateReminderForDueDate(Boolean(record.nextDueDate && hasHealthRecordReminder(record)));
     setHealthRecordFormOpen(true);
     setSelectedHealthRecord(null);
@@ -1225,7 +1820,46 @@ export function CareToolsScreen({
     setHealthNextDueDate("");
     setHealthClinic("");
     setHealthNotes("");
+    setHealthRecordPhotos([]);
+    setHealthRecordDocuments([]);
     setCreateReminderForDueDate(true);
+  }
+
+  function cancelHealthRecordForm() {
+    const existingRecord = healthRecords.find((record) => record.id === editingHealthRecordId);
+    if (!existingRecord) {
+      discardHealthRecordAttachments(healthRecordPhotos, healthRecordDocuments);
+    } else {
+      const originalPhotos = new Set(existingRecord.photos ?? []);
+      const originalDocuments = new Set((existingRecord.documents ?? []).map((document) => document.uri));
+      discardHealthRecordAttachments(
+        healthRecordPhotos.filter((uri) => !originalPhotos.has(uri)),
+        healthRecordDocuments.filter((document) => !originalDocuments.has(document.uri)),
+      );
+    }
+    resetHealthRecordForm();
+  }
+
+  function removeHealthRecordPhoto(uri: string) {
+    Alert.alert("Remove attached photo?", "This photo will not be included in the healthcare record.", [
+      { text: "Cancel", style: "cancel" },
+      { text: "Remove", style: "destructive", onPress: () => {
+        const existingRecord = healthRecords.find((record) => record.id === editingHealthRecordId);
+        if (!existingRecord?.photos?.includes(uri)) discardHealthRecordAttachments([uri], []);
+        setHealthRecordPhotos((current) => current.filter((item) => item !== uri));
+      } },
+    ]);
+  }
+
+  function removeHealthRecordDocument(document: JournalDocument) {
+    Alert.alert("Remove attached document?", `“${document.name}” will not be included in the healthcare record.`, [
+      { text: "Cancel", style: "cancel" },
+      { text: "Remove", style: "destructive", onPress: () => {
+        const existingRecord = healthRecords.find((record) => record.id === editingHealthRecordId);
+        if (!existingRecord?.documents?.some((item) => item.uri === document.uri)) discardHealthRecordAttachments([], [document]);
+        setHealthRecordDocuments((current) => current.filter((item) => item.id !== document.id));
+      } },
+    ]);
   }
 
   async function saveHealthRecord(petId: string) {
@@ -1258,8 +1892,18 @@ export function CareToolsScreen({
       clinic: healthClinic.trim(),
       notes: healthNotes.trim(),
       icon: getHealthRecordIcon({ type: healthType, customType: customTypeName }),
+      photos: healthRecordPhotos,
+      documents: healthRecordDocuments,
       createdAt: existingRecord?.createdAt ?? new Date().toISOString(),
     };
+    if (existingRecord) {
+      const retainedPhotos = new Set(healthRecordPhotos);
+      const retainedDocuments = new Set(healthRecordDocuments.map((document) => document.uri));
+      discardHealthRecordAttachments(
+        (existingRecord.photos ?? []).filter((uri) => !retainedPhotos.has(uri)),
+        (existingRecord.documents ?? []).filter((document) => !retainedDocuments.has(document.uri)),
+      );
+    }
     setHealthRecords((current) => existingRecord
       ? current.map((item) => item.id === record.id ? record : item)
       : [record, ...current]);
@@ -1287,6 +1931,7 @@ export function CareToolsScreen({
               && reminder.dueAt === new Date(`${record.nextDueDate}T09:00:00`).toISOString())
             : undefined);
         if (linkedReminder?.notificationId) void getNotificationsModule()?.cancelScheduledNotificationAsync(linkedReminder.notificationId).catch(() => undefined);
+        discardHealthRecordAttachments(record.photos ?? [], record.documents ?? []);
         if (linkedReminder) setReminders((current) => current.filter((reminder) => reminder.id !== linkedReminder.id));
         setHealthRecords((current) => current.filter((item) => item.id !== record.id));
         setSelectedHealthRecord(null);
@@ -1320,14 +1965,15 @@ export function CareToolsScreen({
       return "A reminder for this due date is already saved.";
     }
 
+    const reminderId = linkedReminder?.id ?? makeId();
     let notificationId: string | null = null;
     try {
-      notificationId = await scheduleReminder(reminderTitle, petById.get(record.petId)?.name ?? "your pet", dueAt);
+      notificationId = await scheduleReminder(reminderTitle, petById.get(record.petId)?.name ?? "your pet", dueAt, reminderId);
     } catch {
       // Keep the in-app reminder even if a native notification cannot be scheduled.
     }
     const replacement: CareReminder = {
-      id: linkedReminder?.id ?? makeId(),
+      id: reminderId,
       petId: record.petId,
       title: reminderTitle,
       dueAt,
@@ -1354,14 +2000,23 @@ export function CareToolsScreen({
     const now = new Date();
     setEditingReminderId(null);
     setReminderTitle("");
+    setReminderNotes("");
     setReminderDate(localDateInput(now));
     setReminderTime(formatReminderTime(now));
     setReminderRepeat("once");
+    setReminderSnoozeMinutes(60);
     setReminderIcon(REMINDER_ICON_OPTIONS[0].value);
     setReminderTitleError(false);
     setReminderDateError(false);
     setReminderTimeError(false);
     setReminderScheduleError(false);
+    setReminderFormOpen(false);
+  }
+
+  function beginAddReminder() {
+    resetReminderForm();
+    setSelectedPetId(GENERAL_REMINDER_PET_ID);
+    setReminderFormOpen(true);
   }
 
   function beginEditReminder(reminder: CareReminder) {
@@ -1369,14 +2024,17 @@ export function CareToolsScreen({
     setEditingReminderId(reminder.id);
     setSelectedPetId(reminder.petId || GENERAL_REMINDER_PET_ID);
     setReminderTitle(reminder.title);
+    setReminderNotes(reminder.notes ?? "");
     setReminderDate(localDateInput(dueAt));
     setReminderTime(formatReminderTime(dueAt));
     setReminderRepeat(reminder.repeat);
-    setReminderIcon(normalizeIconName(reminder.icon));
+    setReminderSnoozeMinutes(reminder.snoozeMinutes ?? 60);
+    setReminderIcon(iconNameOrDefault(reminder.icon));
     setReminderTitleError(false);
     setReminderDateError(false);
     setReminderTimeError(false);
     setReminderScheduleError(false);
+    setReminderFormOpen(true);
   }
 
   async function saveReminder() {
@@ -1414,21 +2072,24 @@ export function CareToolsScreen({
     const reminderPetId = isGeneralReminder ? "" : selectedPet!.id;
     const reminderPetName = selectedPet?.name ?? "General";
     const existingReminder = reminders.find((reminder) => reminder.id === editingReminderId);
+    const reminderId = existingReminder?.id ?? makeId();
     let notificationId: string | null = null;
     if (existingReminder?.notificationId) {
       await getNotificationsModule()?.cancelScheduledNotificationAsync(existingReminder.notificationId).catch(() => undefined);
     }
     try {
-      notificationId = await scheduleReminder(reminderTitle.trim(), reminderPetName, due.toISOString());
+      notificationId = await scheduleReminder(reminderTitle.trim(), reminderPetName, due.toISOString(), reminderId, reminderNotes.trim());
     } catch {
       setNotice("Reminder saved in the app, but the notification could not be scheduled.");
     }
     const reminder: CareReminder = {
-      id: existingReminder?.id ?? makeId(),
+      id: reminderId,
       petId: reminderPetId,
       title: reminderTitle.trim(),
+      notes: reminderNotes.trim(),
       dueAt: due.toISOString(),
       repeat: reminderRepeat,
+      snoozeMinutes: reminderSnoozeMinutes,
       notificationId,
       icon: reminderIcon,
       healthRecordId: existingReminder?.healthRecordId,
@@ -1460,6 +2121,8 @@ export function CareToolsScreen({
       scheduledFor: reminder.snoozedFrom ?? reminder.dueAt,
       completedAt: new Date().toISOString(),
       repeat: reminder.repeat,
+      notes: reminder.notes,
+      snoozeMinutes: reminder.snoozeMinutes ?? 60,
       icon: reminder.icon,
       healthRecordId: reminder.healthRecordId,
     }, ...current].slice(0, 200));
@@ -1471,7 +2134,7 @@ export function CareToolsScreen({
     const nextDue = nextRecurringDueDate(reminder.snoozedFrom ?? reminder.dueAt, reminder.repeat, new Date());
     let notificationId: string | null = null;
     try {
-      notificationId = await scheduleReminder(reminder.title, petById.get(reminder.petId)?.name ?? "General", nextDue.toISOString());
+      notificationId = await scheduleReminder(reminder.title, petById.get(reminder.petId)?.name ?? "General", nextDue.toISOString(), reminder.id, reminder.notes);
     } catch {
       setNotice("Marked complete; the next reminder was saved but its notification could not be scheduled.");
     }
@@ -1485,10 +2148,11 @@ export function CareToolsScreen({
     if (reminder.notificationId) {
       await getNotificationsModule()?.cancelScheduledNotificationAsync(reminder.notificationId).catch(() => undefined);
     }
-    const snoozedUntil = new Date(Date.now() + 60 * 60 * 1000);
+    const snoozeMinutes = reminder.snoozeMinutes ?? 60;
+    const snoozedUntil = new Date(Date.now() + snoozeMinutes * 60 * 1000);
     let notificationId: string | null = null;
     try {
-      notificationId = await scheduleReminder(reminder.title, petById.get(reminder.petId)?.name ?? "General", snoozedUntil.toISOString());
+      notificationId = await scheduleReminder(reminder.title, petById.get(reminder.petId)?.name ?? "General", snoozedUntil.toISOString(), reminder.id, reminder.notes);
     } catch {
       // Keep the snoozed reminder visible in-app if the OS cannot schedule it.
     }
@@ -1496,8 +2160,8 @@ export function CareToolsScreen({
       ? { ...item, dueAt: snoozedUntil.toISOString(), notificationId, snoozedFrom: reminder.snoozedFrom ?? reminder.dueAt }
       : item));
     setNotice(notificationId
-      ? `Reminder snoozed for one hour, until ${displayDate(snoozedUntil.toISOString())}.`
-      : "Reminder snoozed for one hour in-app; a device alert was not scheduled.");
+      ? `Reminder snoozed for ${snoozeMinutes} minutes, until ${displayDate(snoozedUntil.toISOString())}.`
+      : `Reminder snoozed for ${snoozeMinutes} minutes in-app; a device alert was not scheduled.`);
   }
 
   async function retryReminderNotification(reminder: CareReminder) {
@@ -1510,7 +2174,7 @@ export function CareToolsScreen({
       return;
     }
     try {
-      const notificationId = await scheduleReminder(reminder.title, petById.get(reminder.petId)?.name ?? "General", reminder.dueAt);
+      const notificationId = await scheduleReminder(reminder.title, petById.get(reminder.petId)?.name ?? "General", reminder.dueAt, reminder.id, reminder.notes);
       if (!notificationId) {
         setNotice("Alert still unavailable. Check notification permission and try again.");
         return;
@@ -1535,22 +2199,27 @@ export function CareToolsScreen({
         ? completion.scheduledFor
         : new Date(now.getTime() + 60 * 60 * 1000).toISOString()
       : nextRecurringDueDate(completion.scheduledFor, repeat, now).toISOString();
+    const restoredReminderId = makeId();
     let notificationId: string | null = null;
     try {
       notificationId = await scheduleReminder(
         completion.title,
         petById.get(completion.petId)?.name ?? completion.petName,
         dueAt,
+        restoredReminderId,
+        completion.notes,
       );
     } catch {
       // Keep the restored reminder in-app if notification scheduling fails.
     }
     const restoredReminder: CareReminder = {
-      id: makeId(),
+      id: restoredReminderId,
       petId: completion.petId,
       title: completion.title,
+      notes: completion.notes,
       dueAt,
       repeat,
+      snoozeMinutes: completion.snoozeMinutes ?? 60,
       notificationId,
       healthRecordId: completion.healthRecordId,
       icon: completion.icon,
@@ -1575,9 +2244,34 @@ export function CareToolsScreen({
     ]);
   }
   async function deleteReminder(reminder: CareReminder) {
-    if (reminder.notificationId) await getNotificationsModule()?.cancelScheduledNotificationAsync(reminder.notificationId).catch(() => undefined);
-    setReminders((current) => current.filter((item) => item.id !== reminder.id));
-    setNotice("Reminder removed.");
+    Alert.alert("Remove reminder?", `Remove “${reminder.title}” from your reminders?`, [
+      { text: "Cancel", style: "cancel" },
+      { text: "Remove", style: "destructive", onPress: () => {
+        if (reminder.notificationId) void getNotificationsModule()?.cancelScheduledNotificationAsync(reminder.notificationId).catch(() => undefined);
+        setReminders((current) => current.filter((item) => item.id !== reminder.id));
+        setNotice("Reminder removed.");
+      } },
+    ]);
+  }
+
+  function removeJournalEntry(entry: JournalEntry) {
+    Alert.alert("Remove journal entry?", `Remove “${entry.title}” from this pet's journal?`, [
+      { text: "Cancel", style: "cancel" },
+      { text: "Remove", style: "destructive", onPress: () => {
+        const persistedEntry = journal.find((item) => item.id === entry.id);
+        if (persistedEntry) void deleteJournalFiles(persistedEntry);
+        setJournal((current) => current.filter((item) => item.id !== entry.id));
+        if (selectedJournalEntry?.id === entry.id) setSelectedJournalEntry(null);
+        setNotice("Journal entry removed.");
+      } },
+    ]);
+  }
+
+  function removeProfilePicture() {
+    Alert.alert("Remove profile picture?", "This only removes the picture from this pet's profile.", [
+      { text: "Cancel", style: "cancel" },
+      { text: "Remove", style: "destructive", onPress: () => setProfilePhotoUri(undefined) },
+    ]);
   }
 
   function renderPetForm() {
@@ -1587,6 +2281,18 @@ export function CareToolsScreen({
         <CareInput value={petName} onChangeText={setPetName} placeholder="Pet's name *" palette={palette} />
         <CareInput value={petSpecies} onChangeText={setPetSpecies} placeholder="Species (e.g. dog, cat, fish) *" palette={palette} />
         <CareInput value={petBreed} onChangeText={setPetBreed} placeholder="Breed or type (optional)" palette={palette} />
+        <CareInput value={petMicrochipNumber} onChangeText={setPetMicrochipNumber} placeholder="Microchip number (optional)" palette={palette} />
+        <Text style={[styles.fieldLabel, { color: palette.muted }]}>GENDER</Text>
+        <View style={styles.actionRow}>
+          {(["Female", "Male", "Unknown"] as const).map((gender) => {
+            const selected = (petGender ?? "Unknown") === gender;
+            return (
+              <Pressable key={gender} accessibilityRole="radio" accessibilityState={{ selected }} onPress={() => setPetGender(gender)} style={[styles.chip, { backgroundColor: selected ? palette.action : palette.bg, borderColor: selected ? palette.action : palette.line }]}>
+                <Text style={[styles.chipText, { color: selected ? "#FFFFFF" : palette.text }]}>{gender}</Text>
+              </Pressable>
+            );
+          })}
+        </View>
         <CalendarDateField value={petBirthDate} onChange={setPetBirthDate} placeholder="Birth date (optional)" palette={palette} optional />
         <CareInput value={petWeight} onChangeText={setPetWeight} placeholder="Weight with units, e.g. 12 kg (optional)" palette={palette} />
         <CareInput value={petAllergies} onChangeText={setPetAllergies} placeholder="Allergies or important notes (optional)" palette={palette} multiline />
@@ -1607,30 +2313,13 @@ export function CareToolsScreen({
           )}
           <View style={styles.grow}>
             <View style={styles.actionRow}>
-              <CareButton title={profilePhotoUri ? "Change library" : "Choose from library"} onPress={() => void chooseProfilePhoto("library")} palette={palette} secondary />
+              {profilePhotoUri ? <IconActionButton icon="remove" label="Remove profile picture" onPress={removeProfilePicture} palette={palette} destructive /> : null}
+              <CareButton title="Choose photo" onPress={() => void chooseProfilePhoto("library")} palette={palette} secondary />
               <CameraActionButton title="Take photo" onPress={() => void chooseProfilePhoto("camera")} palette={palette} />
             </View>
-            {profilePhotoUri ? <Pressable onPress={() => setProfilePhotoUri(undefined)} style={styles.textAction}><Text style={{ color: palette.muted }}>Remove picture</Text></Pressable> : null}
           </View>
         </View>
-        <Text style={[styles.fieldLabel, { color: palette.muted }]}>OTHER PHOTOS · {otherPhotoUris.length}/{MAX_OTHER_PHOTOS}</Text>
-        <View style={styles.photoGrid}>
-          {otherPhotoUris.map((uri, index) => (
-            <View key={`${uri}-${index}`} style={styles.otherPhotoWrap}>
-              <Image source={{ uri }} contentFit="cover" style={styles.otherPhotoPreview} />
-              <Pressable accessibilityRole="button" accessibilityLabel={`Remove other photo ${index + 1}`} onPress={() => setOtherPhotoUris((current) => current.filter((_, photoIndex) => photoIndex !== index))} style={styles.removePhotoButton}>
-                <Text style={styles.removePhotoText}>×</Text>
-              </Pressable>
-            </View>
-          ))}
-        </View>
-        {otherPhotoUris.length < MAX_OTHER_PHOTOS ? (
-          <View style={styles.photoActionsRow}>
-            <CareButton title="＋ Add from library" onPress={() => void chooseOtherPhotos("library")} palette={palette} secondary />
-            <CameraActionButton title="Take photo" onPress={() => void chooseOtherPhotos("camera")} palette={palette} />
-          </View>
-        ) : null}
-        <Text style={[styles.helpText, { color: palette.muted }]}>Choose one profile picture and up to five additional photos.</Text>
+        <Text style={[styles.helpText, { color: palette.muted }]}>Choose a profile picture here; manage additional photos in Pet Albums.</Text>
         <View style={styles.actionRow}>
           <CareButton title={editingPetId ? "Save changes" : "Save pet"} onPress={savePet} palette={palette} />
           <CareButton title="Cancel" onPress={resetPetForm} palette={palette} secondary />
@@ -1654,6 +2343,32 @@ export function CareToolsScreen({
         <CalendarDateField value={healthNextDueDate} onChange={setHealthNextDueDate} placeholder="Choose next due date (optional)" palette={palette} optional />
         <CareInput value={healthClinic} onChangeText={setHealthClinic} placeholder="Clinic or veterinarian (optional)" palette={palette} />
         <CareInput value={healthNotes} onChangeText={setHealthNotes} placeholder="Notes, results, or instructions (optional)" palette={palette} multiline />
+        <Text style={[styles.fieldLabel, { color: palette.muted }]}>PHOTOS · {healthRecordPhotos.length}/5</Text>
+        <Text style={[styles.helpText, { color: palette.muted }]}>Attach up to five photos to this healthcare record.</Text>
+        <View style={styles.actionRow}>
+          <CareButton title="＋ Add photos" onPress={() => void chooseHealthRecordPhotos()} palette={palette} secondary disabled={healthRecordPhotos.length >= 5} />
+        </View>
+        {healthRecordPhotos.length ? (
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.journalPhotoStrip}>
+            {healthRecordPhotos.map((uri, index) => (
+              <View key={`${uri}-${index}`} style={styles.journalPhotoItem}>
+                <Image source={{ uri }} contentFit="cover" style={styles.journalPhotoPreview} />
+                  <Pressable accessibilityRole="button" accessibilityLabel={`Remove healthcare record photo ${index + 1}`} onPress={() => removeHealthRecordPhoto(uri)} style={[styles.journalAttachmentRemove, { backgroundColor: palette.soft }]}>
+                    <ActionIcon name="remove" color={palette.primary} cutout={palette.soft} size={12} />
+                </Pressable>
+              </View>
+            ))}
+          </ScrollView>
+        ) : null}
+        <Text style={[styles.fieldLabel, { color: palette.muted }]}>DOCUMENTS · {healthRecordDocuments.length}/10</Text>
+        <Text style={[styles.helpText, { color: palette.muted }]}>Attach up to ten files, including PDF, Word, and Excel documents.</Text>
+        <CareButton title="＋ Attach documents" onPress={() => void chooseHealthRecordDocuments()} palette={palette} secondary disabled={healthRecordDocuments.length >= 10} />
+        {healthRecordDocuments.map((document) => (
+          <View key={document.id} style={styles.journalPendingDocument}>
+            <Text style={[styles.bodyText, styles.grow, { color: palette.text }]} numberOfLines={1}>📎 {document.name}</Text>
+            <IconActionButton icon="remove" label={`Remove ${document.name}`} onPress={() => removeHealthRecordDocument(document)} palette={palette} destructive />
+          </View>
+        ))}
         {healthNextDueDate ? (
           <Pressable accessibilityRole="switch" accessibilityState={{ checked: createReminderForDueDate }} onPress={() => setCreateReminderForDueDate((value) => !value)} style={[styles.reminderOption, { backgroundColor: palette.soft }]}>
             <View style={[styles.checkBox, { borderColor: palette.action, backgroundColor: createReminderForDueDate ? palette.action : "transparent" }]}>
@@ -1664,7 +2379,7 @@ export function CareToolsScreen({
         ) : null}
         <View style={styles.actionRow}>
           <CareButton title={editingHealthRecordId ? "Update record" : "Save record"} onPress={() => void saveHealthRecord(pet.id)} palette={palette} />
-          {editingHealthRecordId ? <CareButton title="Cancel edit" onPress={resetHealthRecordForm} palette={palette} secondary /> : null}
+          {editingHealthRecordId ? <CareButton title="Cancel edit" onPress={cancelHealthRecordForm} palette={palette} secondary /> : null}
         </View>
         <Text style={[styles.helpText, { color: palette.muted }]}>Choose dates from the calendar. Due dates are follow-up reminders, not medical advice.</Text>
 
@@ -1690,10 +2405,25 @@ export function CareToolsScreen({
     );
   }
 
+  function saveWeightMeasurement(pet: PetProfile) {
+    const parsedWeight = Number(weightValue.trim().replace(/,/g, ""));
+    if (!Number.isFinite(parsedWeight) || parsedWeight <= 0 || parsedWeight > 10000 || !isValidDateInput(weightMeasuredAt) || weightMeasuredAt > localDateInput(new Date())) {
+      setNotice("Enter a positive weight and a valid measurement date no later than today.");
+      return;
+    }
+    setWeightMeasurements((current) => [...current, { id: makeId(), petId: pet.id, value: parsedWeight, unit: weightUnit, measuredAt: weightMeasuredAt, createdAt: new Date().toISOString() }]);
+    setWeightValue("");
+    setWeightMeasuredAt(localDateInput(new Date()));
+    setWeightFormOpen(false);
+    setNotice(`Weight measurement saved for ${pet.name}.`);
+  }
+
   function renderPetDetail(pet: PetProfile) {
     const records = healthRecords
       .filter((record) => record.petId === pet.id)
       .sort((a, b) => b.dateGiven.localeCompare(a.dateGiven));
+    const albumPhotos = pet.albumPhotos ?? [];
+    const pinnedAlbumPhotos = albumPhotos.filter((photo) => photo.pinned).slice(0, MAX_PINNED_PET_ALBUM_PHOTOS);
     const normalizedHealthQuery = healthSearchQuery.trim().toLocaleLowerCase();
     const filteredRecords = records.filter((record) => !normalizedHealthQuery
       || [record.type, record.customType, record.title, record.dateGiven, record.nextDueDate, record.clinic, record.notes]
@@ -1721,12 +2451,53 @@ export function CareToolsScreen({
       ...petWeights.map((measurement) => ({ title: `Weight: ${measurement.value} ${measurement.unit}`, date: `${measurement.measuredAt}T12:00:00`, kind: "Weight" })),
     ].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 3);
     const ageLabel = petAge(pet.birthDate);
+
+    if (healthRecordFormOpen) {
+      return (
+        <>
+          <Pressable onPress={cancelHealthRecordForm} style={styles.detailBackButton}>
+            <Text style={{ color: palette.primary, fontWeight: "800" }}>‹  Back to {pet.name}'s profile</Text>
+          </Pressable>
+          {renderHealthRecordForm(pet)}
+        </>
+      );
+    }
+
+    if (weightFormOpen) {
+      return (
+        <>
+          <Pressable onPress={() => setWeightFormOpen(false)} style={styles.detailBackButton}>
+            <Text style={{ color: palette.primary, fontWeight: "800" }}>‹  Back to {pet.name}'s profile</Text>
+          </Pressable>
+          <View style={[styles.formCard, { backgroundColor: palette.card, borderColor: palette.line }]}>
+            <Text style={[styles.cardTitle, { color: palette.text }]}>Add weight measurement for {pet.name}</Text>
+            <CareInput value={weightValue} onChangeText={setWeightValue} placeholder="Weight (e.g. 4.2) *" palette={palette} keyboardType="decimal-pad" />
+            <View style={styles.actionRow}>
+              {(["kg", "lb"] as const).map((unit) => {
+                const selected = weightUnit === unit;
+                return <Pressable key={unit} accessibilityRole="radio" accessibilityState={{ selected }} onPress={() => setWeightUnit(unit)} style={[styles.chip, { backgroundColor: selected ? palette.action : palette.bg, borderColor: selected ? palette.action : palette.line }]}><Text style={[styles.chipText, { color: selected ? "#FFFFFF" : palette.text }]}>{unit}</Text></Pressable>;
+              })}
+            </View>
+            <CalendarDateField value={weightMeasuredAt} onChange={setWeightMeasuredAt} placeholder="Measurement date" palette={palette} />
+            <View style={styles.actionRow}>
+              <CareButton title="Save measurement" onPress={() => saveWeightMeasurement(pet)} palette={palette} />
+              <CareButton title="Cancel" onPress={() => setWeightFormOpen(false)} palette={palette} secondary />
+            </View>
+          </View>
+        </>
+      );
+    }
+
     return (
       <>
         <Pressable onPress={() => { setWeightFormOpen(false); setActivePetId(null); }} style={styles.detailBackButton}>
           <Text style={{ color: palette.primary, fontWeight: "800" }}>‹  Back to My Pets</Text>
         </Pressable>
-        <View style={[styles.recordCard, { backgroundColor: palette.card, borderColor: palette.line }]}>
+        <View style={[styles.recordCard, styles.petProfileCard, { backgroundColor: palette.card, borderColor: palette.line }]}>
+          <View style={styles.petProfileActions}>
+            <IconActionButton icon="edit" label={`Edit ${pet.name}'s profile`} onPress={() => editPet(pet)} palette={palette} />
+            <IconActionButton icon="remove" label={`Remove ${pet.name}'s profile`} onPress={() => deletePet(pet)} palette={palette} destructive />
+          </View>
           <View style={styles.petDetailHeader}>
             {pet.profilePhotoUri ? (
               <Pressable accessibilityRole="button" accessibilityLabel={`View ${pet.name}'s profile photo full screen`} onPress={() => setPhotoViewerUri(pet.profilePhotoUri ?? null)}>
@@ -1735,28 +2506,42 @@ export function CareToolsScreen({
             ) : (
               <View style={[styles.petDetailAvatar, styles.petDetailAvatarPlaceholder, { backgroundColor: palette.soft }]}><Text style={{ fontSize: 34 }}>🐾</Text></View>
             )}
-            <View style={styles.grow}>
+            <View style={[styles.grow, styles.petDetailCopy]}>
               <Text style={[styles.petDetailName, { color: palette.text }]}>{pet.name}</Text>
               <Text style={[styles.bodyText, { color: palette.primary }]}>{[pet.species, pet.breed].filter(Boolean).join(" · ")}</Text>
+              {pet.gender && pet.gender !== "Unknown" ? <Text style={[styles.bodyText, { color: palette.muted }]}>{pet.gender}</Text> : null}
               {ageLabel ? <Text style={[styles.bodyText, { color: palette.muted }]}>{ageLabel}</Text> : null}
             </View>
           </View>
           {pet.weight ? <Text style={[styles.bodyText, { color: palette.text }]}>Profile weight: {pet.weight}</Text> : null}
+          {pet.microchipNumber ? <Text style={[styles.bodyText, { color: palette.text }]}>Microchip number: {pet.microchipNumber}</Text> : null}
           {pet.allergies ? <Text style={[styles.bodyText, { color: palette.text }]}>Notes: {pet.allergies}</Text> : null}
-          {(pet.otherPhotoUris?.length ?? 0) > 0 ? (
-            <>
-              <Text style={[styles.fieldLabel, { color: palette.muted }]}>OTHER PHOTOS</Text>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.otherPhotosRow}>
-                {pet.otherPhotoUris?.map((uri, index) => (
-                  <Pressable key={`${uri}-${index}`} accessibilityRole="button" accessibilityLabel={`View ${pet.name}'s other photo ${index + 1} full screen`} onPress={() => setPhotoViewerUri(uri)}>
-                    <Image source={{ uri }} contentFit="cover" style={styles.petGalleryImageLarge} />
-                  </Pressable>
-                ))}
-              </ScrollView>
-            </>
-          ) : null}
-          <View style={styles.actionRow}>
-            <CareButton title="Edit profile" onPress={() => editPet(pet)} palette={palette} secondary />
+        </View>
+
+        <View style={[styles.petAlbumCard, { backgroundColor: palette.card, borderColor: palette.line }]}>
+          <View style={styles.petAlbumHeader}>
+            <View style={styles.grow}>
+              <Text style={[styles.fieldLabel, { color: palette.primary }]}>MEMORIES & MOMENTS</Text>
+              <Text style={[styles.cardTitle, { color: palette.text }]}>Pet albums</Text>
+            </View>
+            <Text style={[styles.helpText, { color: palette.muted }]}>{pinnedAlbumPhotos.length}/{MAX_PINNED_PET_ALBUM_PHOTOS} pinned</Text>
+          </View>
+          <Text style={[styles.helpText, { color: palette.muted }]}>Pin up to five photos to keep them featured in {pet.name}'s view.</Text>
+          {pinnedAlbumPhotos.length ? (
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.petAlbumPinnedStrip}>
+              {pinnedAlbumPhotos.map((photo) => (
+                <Pressable key={photo.id} accessibilityRole="button" accessibilityLabel={`View pinned photo${photo.description ? `: ${photo.description}` : ""}`} onPress={() => setPhotoViewerUri(photo.uri)} style={styles.petAlbumPinnedItem}>
+                  <Image source={{ uri: photo.uri }} contentFit="cover" style={styles.petAlbumPinnedImage} />
+                  {photo.description ? <Text style={[styles.petAlbumPinnedDescription, { color: palette.text }]} numberOfLines={2}>{photo.description}</Text> : null}
+                </Pressable>
+              ))}
+            </ScrollView>
+          ) : (
+            <Text style={[styles.helpText, { color: palette.muted }]}>Photos you pin from the album will appear here.</Text>
+          )}
+          <View style={styles.petAlbumListHeader}>
+            <Text style={[styles.fieldLabel, { color: palette.muted }]}>ALBUM · {albumPhotos.length}/{MAX_PET_ALBUM_PHOTOS} PHOTOS</Text>
+            <CareButton title={albumPhotos.length ? "Manage album" : "＋ Add photos"} onPress={() => { setSelectedAlbumPhotoIds([]); setPetAlbumModalPetId(pet.id); }} palette={palette} secondary />
           </View>
         </View>
 
@@ -1818,33 +2603,7 @@ export function CareToolsScreen({
               ) : null}
             </>
           ) : <Text style={[styles.helpText, { color: palette.muted }]}>Record measurements over time to see this pet's weight trend.</Text>}
-          {weightFormOpen ? (
-            <View style={styles.weightForm}>
-              <CareInput value={weightValue} onChangeText={setWeightValue} placeholder="Weight (e.g. 4.2) *" palette={palette} keyboardType="decimal-pad" />
-              <View style={styles.actionRow}>
-                {(["kg", "lb"] as const).map((unit) => {
-                  const selected = weightUnit === unit;
-                  return <Pressable key={unit} accessibilityRole="radio" accessibilityState={{ selected }} onPress={() => setWeightUnit(unit)} style={[styles.chip, { backgroundColor: selected ? palette.action : palette.bg, borderColor: selected ? palette.action : palette.line }]}><Text style={[styles.chipText, { color: selected ? "#FFFFFF" : palette.text }]}>{unit}</Text></Pressable>;
-                })}
-              </View>
-              <CalendarDateField value={weightMeasuredAt} onChange={setWeightMeasuredAt} placeholder="Measurement date" palette={palette} />
-              <View style={styles.actionRow}>
-                <CareButton title="Save measurement" onPress={() => {
-                  const parsedWeight = Number(weightValue.trim().replace(/,/g, ""));
-                  if (!Number.isFinite(parsedWeight) || parsedWeight <= 0 || parsedWeight > 10000 || !isValidDateInput(weightMeasuredAt) || weightMeasuredAt > localDateInput(new Date())) {
-                    setNotice("Enter a positive weight and a valid measurement date no later than today.");
-                    return;
-                  }
-                  setWeightMeasurements((current) => [...current, { id: makeId(), petId: pet.id, value: parsedWeight, unit: weightUnit, measuredAt: weightMeasuredAt, createdAt: new Date().toISOString() }]);
-                  setWeightValue("");
-                  setWeightMeasuredAt(localDateInput(new Date()));
-                  setWeightFormOpen(false);
-                  setNotice(`Weight measurement saved for ${pet.name}.`);
-                }} palette={palette} />
-                <CareButton title="Cancel" onPress={() => setWeightFormOpen(false)} palette={palette} secondary />
-              </View>
-            </View>
-          ) : <CareButton title="＋  Add weight measurement" onPress={() => setWeightFormOpen(true)} palette={palette} secondary />}
+          <CareButton title="＋  Add weight measurement" onPress={() => setWeightFormOpen(true)} palette={palette} secondary />
         </View>
 
         <View style={styles.healthHistoryHeading}>
@@ -1855,15 +2614,7 @@ export function CareToolsScreen({
           <Text style={[styles.helpText, { color: palette.muted }]}>{records.length} records</Text>
         </View>
 
-        {healthRecordFormOpen ? (
-          <>
-            <Pressable onPress={resetHealthRecordForm} style={styles.detailBackButton}>
-              <Text style={{ color: palette.primary, fontWeight: "800" }}>‹  Back to health history</Text>
-            </Pressable>
-            {renderHealthRecordForm(pet)}
-          </>
-        ) : (
-          <>
+        <>
             <CareButton title="＋  Add healthcare record" onPress={beginAddHealthRecord} palette={palette} />
             <TextInput
               accessibilityLabel={`Search ${pet.name}'s health history`}
@@ -1905,12 +2656,11 @@ export function CareToolsScreen({
               );
             })}
             {records.length === 0 ? (
-              <EmptyCard title="No health records yet" description="Add vet visits, vaccinations, deworming, and their next due dates using Add healthcare record." palette={palette} />
+              <EmptyCard title="No health records yet" description="Add vet visits, vaccinations, and other healthcare records with optional next due dates." palette={palette} />
             ) : filteredRecords.length === 0 ? (
               <EmptyCard title="No matching records" description="Try a different title, record type, clinic, date, or note." palette={palette} />
             ) : null}
-          </>
-        )}
+        </>
       </>
     );
   }
@@ -1945,18 +2695,13 @@ export function CareToolsScreen({
               ) : (
                 <View style={[styles.petProfilePlaceholder, { backgroundColor: palette.soft }]}><Text style={{ fontSize: 25 }}>🐾</Text></View>
               )}
-              <View style={styles.grow}>
+              <View style={[styles.grow, styles.petListCopy]}>
                 <Text style={[styles.cardTitle, { color: palette.text }]}>{pet.name}</Text>
                 <Text style={[styles.bodyText, { color: palette.primary }]}>{pet.species}</Text>
                 {pet.breed ? <Text style={[styles.bodyText, { color: palette.muted }]}>{pet.breed}</Text> : null}
               </View>
               <Text style={[styles.petOpenArrow, { color: palette.primary }]}>›</Text>
             </Pressable>
-            <View style={styles.actionRow}>
-              <CareButton title="View details & health" onPress={() => setActivePetId(pet.id)} palette={palette} />
-              <CareButton title="Edit" onPress={() => editPet(pet)} palette={palette} secondary />
-              <CareButton title="Remove" onPress={() => deletePet(pet)} palette={palette} secondary />
-            </View>
           </View>
         ))}
       </>
@@ -1964,36 +2709,90 @@ export function CareToolsScreen({
   }
 
   function renderJournal() {
+    if (journalFormOpen) {
+      return (
+        <>
+          <Pressable onPress={cancelJournalForm} style={styles.detailBackButton}>
+            <Text style={{ color: palette.primary, fontWeight: "800" }}>‹  Back to Journal</Text>
+          </Pressable>
+          <View style={[styles.formCard, { backgroundColor: palette.card, borderColor: palette.line }]}>
+            <Text style={[styles.cardTitle, { color: palette.text }]}>{editingJournalEntryId ? "Edit journal entry" : "Add a care note"}</Text>
+            <Text style={[styles.fieldLabel, { color: palette.muted }]}>FOR WHICH PET?</Text>
+            <PetChips pets={pets} selectedPetId={selectedPetId} onSelect={setSelectedPetId} palette={palette} />
+            <CareInput value={entryTitle} onChangeText={setEntryTitle} placeholder="Short title *" palette={palette} />
+            <CareInput value={entryNotes} onChangeText={setEntryNotes} placeholder="Notes, measurements, or observations" palette={palette} multiline />
+            <Text style={[styles.fieldLabel, { color: palette.muted }]}>PHOTOS · {journalPhotos.length}/5</Text>
+            <Text style={[styles.helpText, { color: palette.muted }]}>Attach up to five photos to this entry.</Text>
+            <View style={styles.actionRow}>
+              <CareButton title="＋ Add photos" onPress={() => void chooseJournalPhotos()} palette={palette} secondary disabled={journalPhotos.length >= 5} />
+            </View>
+            {journalPhotos.length ? (
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.journalPhotoStrip}>
+                {journalPhotos.map((uri) => (
+                  <View key={uri} style={styles.journalPhotoItem}>
+                    <Image source={{ uri }} contentFit="cover" style={styles.journalPhotoPreview} />
+                    <Pressable accessibilityRole="button" accessibilityLabel="Remove attached journal photo" onPress={() => removeDraftJournalPhoto(uri)} style={[styles.journalAttachmentRemove, { backgroundColor: palette.soft }]}>
+                      <ActionIcon name="remove" color={palette.primary} cutout={palette.soft} size={12} />
+                    </Pressable>
+                  </View>
+                ))}
+              </ScrollView>
+            ) : null}
+            <Text style={[styles.fieldLabel, { color: palette.muted }]}>DOCUMENTS · {journalDocuments.length}/10</Text>
+            <Text style={[styles.helpText, { color: palette.muted }]}>Attach up to ten files, including PDF, Word, and Excel documents.</Text>
+            <CareButton title="＋ Attach documents" onPress={() => void chooseJournalDocuments()} palette={palette} secondary disabled={journalDocuments.length >= 10} />
+            {journalDocuments.map((document) => (
+              <View key={document.id} style={styles.journalPendingDocument}>
+                <Text style={[styles.bodyText, styles.grow, { color: palette.text }]} numberOfLines={1}>📎 {document.name}</Text>
+                <IconActionButton icon="remove" label={`Remove ${document.name}`} onPress={() => removeDraftJournalDocument(document)} palette={palette} destructive />
+              </View>
+            ))}
+            <CareButton title={editingJournalEntryId ? "Update journal entry" : "Save journal entry"} onPress={saveJournalEntry} palette={palette} disabled={pets.length === 0} />
+            <Text style={[styles.helpText, { color: palette.muted }]}>Entries are time-stamped and stored locally on this device.</Text>
+          </View>
+        </>
+      );
+    }
     return (
       <>
-        <View style={[styles.formCard, { backgroundColor: palette.card, borderColor: palette.line }]}>
-          <Text style={[styles.cardTitle, { color: palette.text }]}>Add a care note</Text>
-          <Text style={[styles.fieldLabel, { color: palette.muted }]}>FOR WHICH PET?</Text>
-          <PetChips pets={pets} selectedPetId={selectedPetId} onSelect={setSelectedPetId} palette={palette} />
-          <CareInput value={entryTitle} onChangeText={setEntryTitle} placeholder="Short title *" palette={palette} />
-          <CareInput value={entryNotes} onChangeText={setEntryNotes} placeholder="Notes, measurements, or observations" palette={palette} multiline />
-          <CareButton title="Save journal entry" onPress={saveJournalEntry} palette={palette} disabled={pets.length === 0} />
-          <Text style={[styles.helpText, { color: palette.muted }]}>Entries are time-stamped and stored locally on this device.</Text>
-        </View>
+        <CareButton title="＋  Add a care note" onPress={beginAddJournalEntry} palette={palette} />
         <Text style={[styles.sectionTitle, { color: palette.text }]}>Recent entries</Text>
         {sortedJournal.length === 0 ? (
           <EmptyCard title="Your journal is ready" description="Log a meal, health observation, weight, or vet visit to start a history." palette={palette} />
-        ) : sortedJournal.map((entry) => (
+        ) : sortedJournal.map((entry) => {
+          const entryPet = petById.get(entry.petId);
+          return (
           <View key={entry.id} style={[styles.recordCard, { backgroundColor: palette.card, borderColor: palette.line }]}>
-            <View style={styles.cardHeaderRow}>
-              <View style={[styles.iconBadge, { backgroundColor: palette.soft }]}><SolidPetIcon name={normalizeIconName(entry.icon ?? getJournalIcon(entry.type))} color={palette.primary} cutout={palette.soft} /></View>
-              <View style={styles.grow}>
-                <Text style={[styles.cardTitle, { color: palette.text }]}>{entry.title}</Text>
-                <Text style={[styles.bodyText, { color: palette.primary }]}>{petById.get(entry.petId)?.name ?? "Pet"}</Text>
+            <Pressable accessibilityRole="button" accessibilityLabel={`Open journal entry ${entry.title}`} onPress={() => setSelectedJournalEntry(entry)} style={({ pressed }) => [styles.journalEntryOpen, { opacity: pressed ? 0.78 : 1 }]}>
+              <View style={styles.cardHeaderRow}>
+                {entryPet?.profilePhotoUri ? (
+                  <View style={styles.recordPetIdentity}>
+                    <Image source={{ uri: entryPet.profilePhotoUri }} contentFit="cover" style={styles.recordPetAvatar} />
+                    <View style={[styles.iconBadge, styles.recordPetIconBadge, { backgroundColor: palette.soft }]}><SolidPetIcon name={iconNameOrDefault(entry.icon ?? getJournalIcon(entry.type))} color={palette.primary} cutout={palette.soft} size={16} /></View>
+                  </View>
+                ) : <View style={[styles.iconBadge, { backgroundColor: palette.soft }]}><SolidPetIcon name={iconNameOrDefault(entry.icon ?? getJournalIcon(entry.type))} color={palette.primary} cutout={palette.soft} /></View>}
+                <View style={styles.grow}>
+                  <Text style={[styles.cardTitle, { color: palette.text }]}>{entry.title}</Text>
+                  <Text style={[styles.bodyText, { color: palette.primary }]}>{entryPet?.name ?? "Pet"}</Text>
+                  <View style={styles.journalAttachmentIndicators}>
+                    {(entry.photos?.length ?? 0) > 0 ? <Text style={[styles.journalIndicator, { color: palette.primary }]}>＋▧ {entry.photos?.length} photos</Text> : null}
+                    {(entry.documents?.length ?? 0) > 0 ? <Text style={[styles.journalIndicator, { color: palette.primary }]}>＋📎 {entry.documents?.length} files</Text> : null}
+                  </View>
+                </View>
+                <Text style={[styles.dateText, { color: palette.muted }]}>{new Date(entry.createdAt).toLocaleString(undefined, { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" })}</Text>
               </View>
-              <Text style={[styles.dateText, { color: palette.muted }]}>{new Date(entry.createdAt).toLocaleString(undefined, { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" })}</Text>
-            </View>
-            {entry.notes ? <Text style={[styles.bodyText, { color: palette.muted }]}>{entry.notes}</Text> : null}
-            <Pressable onPress={() => setJournal((current) => current.filter((item) => item.id !== entry.id))} style={styles.textAction}>
-              <Text style={{ color: palette.muted }}>Remove entry</Text>
+              {entry.notes ? <Text style={[styles.bodyText, { color: palette.muted }]}>{entry.notes}</Text> : null}
             </Pressable>
+            <View style={styles.journalListActions}>
+              <Text style={[styles.helpText, { color: palette.primary }]}>Tap to view details and attachments</Text>
+              <View style={styles.journalEntryActions}>
+                <IconActionButton icon="edit" label={`Edit ${entry.title}`} onPress={() => beginEditJournalEntry(entry)} palette={palette} />
+                <IconActionButton icon="remove" label={`Remove ${entry.title}`} onPress={() => removeJournalEntry(entry)} palette={palette} destructive />
+              </View>
+            </View>
           </View>
-        ))}
+          );
+        })}
       </>
     );
   }
@@ -2004,11 +2803,17 @@ export function CareToolsScreen({
       .slice(0, 20);
     return (
       <>
+        {reminderFormOpen ? (
+          <>
+            <Pressable onPress={resetReminderForm} style={styles.detailBackButton}>
+              <Text style={{ color: palette.primary, fontWeight: "800" }}>‹  Back to Reminders</Text>
+            </Pressable>
         <View style={[styles.formCard, { backgroundColor: palette.card, borderColor: palette.line }]}>
           <Text style={[styles.cardTitle, { color: palette.text }]}>{editingReminderId ? "Edit care reminder" : "Schedule a care reminder"}</Text>
           <Text style={[styles.fieldLabel, { color: palette.muted }]}>FOR WHICH PET?</Text>
           <PetChips pets={pets} selectedPetId={selectedPetId} onSelect={setSelectedPetId} palette={palette} allowGeneral />
           <CareInput value={reminderTitle} onChangeText={(value) => { setReminderTitle(value); if (value.trim()) setReminderTitleError(false); }} placeholder="Medication, grooming, checkup… *" palette={palette} error={reminderTitleError} />
+          <CareInput value={reminderNotes} onChangeText={setReminderNotes} placeholder="Notes or instructions (optional)" palette={palette} multiline />
           <View style={styles.inlineInputs}>
             <View style={styles.grow}>
               <CalendarDateField value={reminderDate} onChange={(value) => { setReminderDate(value); setReminderDateError(false); setReminderScheduleError(false); }} placeholder="Choose reminder date" palette={palette} error={reminderDateError || reminderScheduleError} />
@@ -2026,6 +2831,17 @@ export function CareToolsScreen({
               </Pressable>
             ))}
           </ScrollView>
+          <Text style={[styles.fieldLabel, { color: palette.muted }]}>SNOOZE DURATION</Text>
+          <View style={styles.actionRow}>
+            {SNOOZE_OPTIONS.map((option) => {
+              const selected = reminderSnoozeMinutes === option.id;
+              return (
+                <Pressable key={option.id} accessibilityRole="radio" accessibilityState={{ selected }} accessibilityLabel={`Snooze for ${option.label}`} onPress={() => setReminderSnoozeMinutes(option.id)} style={[styles.chip, { backgroundColor: selected ? palette.action : palette.bg, borderColor: selected ? palette.action : palette.line }]}>
+                  <Text style={[styles.chipText, { color: selected ? "#FFFFFF" : palette.text }]}>{option.label}</Text>
+                </Pressable>
+              );
+            })}
+          </View>
           <Text style={[styles.fieldLabel, { color: palette.muted }]}>ICON</Text>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
             {REMINDER_ICON_OPTIONS.map((option) => (
@@ -2041,28 +2857,39 @@ export function CareToolsScreen({
           </View>
           <Text style={[styles.helpText, { color: palette.muted }]}>Notifications are scheduled one occurrence at a time. Mark a repeating reminder done to schedule its next occurrence.</Text>
         </View>
+          </>
+        ) : (
+          <>
+        <CareButton title="＋  Add a reminder" onPress={beginAddReminder} palette={palette} />
         <Text style={[styles.sectionTitle, { color: palette.text }]}>Upcoming reminders</Text>
         {sortedReminders.length === 0 ? (
           <EmptyCard title="No reminders yet" description="Add a medication, grooming, or checkup reminder for one of your pets." palette={palette} />
         ) : sortedReminders.map((reminder) => {
           const overdue = new Date(reminder.dueAt) < new Date();
+          const reminderPet = petById.get(reminder.petId);
           return (
-            <View key={reminder.id} style={[styles.recordCard, { backgroundColor: palette.card, borderColor: overdue ? "#D87967" : palette.line }]}>
+            <View key={reminder.id} style={[styles.recordCard, { backgroundColor: palette.card, borderColor: overdue ? "#A61B1B" : palette.line }]}>
               <View style={styles.cardHeaderRow}>
-                <View style={[styles.iconBadge, { backgroundColor: palette.soft }]}><SolidPetIcon name={normalizeIconName(getReminderIcon(reminder, healthRecords))} color={palette.primary} cutout={palette.soft} /></View>
+                {reminderPet?.profilePhotoUri ? (
+                  <View style={styles.recordPetIdentity}>
+                    <Image source={{ uri: reminderPet.profilePhotoUri }} contentFit="cover" style={styles.recordPetAvatar} />
+                    <View style={[styles.iconBadge, styles.recordPetIconBadge, { backgroundColor: palette.soft }]}><SolidPetIcon name={iconNameOrDefault(getReminderIcon(reminder, healthRecords))} color={palette.primary} cutout={palette.soft} size={16} /></View>
+                  </View>
+                ) : <View style={[styles.iconBadge, { backgroundColor: palette.soft }]}><SolidPetIcon name={iconNameOrDefault(getReminderIcon(reminder, healthRecords))} color={palette.primary} cutout={palette.soft} /></View>}
                 <View style={styles.grow}>
                   <Text style={[styles.cardTitle, { color: palette.text }]}>{reminder.title}</Text>
-                  <Text style={[styles.bodyText, { color: palette.primary }]}>{petById.get(reminder.petId)?.name ?? "General"} · {reminder.repeat === "once" ? "One-time" : `Repeats ${reminder.repeat}`}</Text>
+                  <Text style={[styles.bodyText, { color: palette.primary }]}>{reminderPet?.name ?? "General"} · {reminder.repeat === "once" ? "One-time" : `Repeats ${reminder.repeat}`}</Text>
+                  {reminder.notes ? <Text style={[styles.bodyText, { color: palette.muted }]}>{reminder.notes}</Text> : null}
                 </View>
-                <Text style={[styles.dateText, { color: overdue ? "#C46C5C" : palette.muted }]}>{overdue ? "Overdue · " : reminder.snoozedFrom ? "Snoozed · " : ""}{displayDate(reminder.dueAt)}</Text>
+                <Text style={[styles.dateText, overdue ? styles.overdueReminderDateText : { color: palette.muted }]}>{overdue ? "Overdue · " : reminder.snoozedFrom ? "Snoozed · " : ""}{displayDate(reminder.dueAt)}</Text>
               </View>
               <Text style={[styles.helpText, { color: palette.muted }]}>{reminder.notificationId ? "Device notification scheduled" : "In-app reminder only"}</Text>
               <View style={styles.actionRow}>
                 <CareButton title={reminder.repeat === "once" ? "Mark done" : "Done · schedule next"} onPress={() => void completeReminder(reminder)} palette={palette} />
-                <CareButton title="Snooze 1 hour" onPress={() => void snoozeReminder(reminder)} palette={palette} secondary />
-                <CareButton title="Edit" onPress={() => beginEditReminder(reminder)} palette={palette} secondary />
+                <CareButton title={`Snooze ${SNOOZE_OPTIONS.find((option) => option.id === (reminder.snoozeMinutes ?? 60))?.label ?? "1 hour"}`} onPress={() => void snoozeReminder(reminder)} palette={palette} secondary />
+                <IconActionButton icon="edit" label={`Edit ${reminder.title}`} onPress={() => beginEditReminder(reminder)} palette={palette} />
                 {!reminder.notificationId && notificationsAvailable() ? <CareButton title="Retry alert" onPress={() => void retryReminderNotification(reminder)} palette={palette} secondary /> : null}
-                <CareButton title="Remove" onPress={() => void deleteReminder(reminder)} palette={palette} secondary />
+                <IconActionButton icon="remove" label={`Remove ${reminder.title}`} onPress={() => void deleteReminder(reminder)} palette={palette} destructive />
               </View>
             </View>
           );
@@ -2118,118 +2945,17 @@ export function CareToolsScreen({
             </View>
           </View>
         ))}
+          </>
+        )}
       </>
     );
   }
 
-  function renderCalendar() {
-    const monthStart = new Date(calendarMonth.getFullYear(), calendarMonth.getMonth(), 1);
-    const monthEnd = new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() + 1, 1);
-    const monthEvents: { id: string; date: string; petId: string; title: string; kind: string }[] = [];
-
-    for (const reminder of reminders) {
-      const originalDue = new Date(reminder.dueAt);
-      if (Number.isNaN(originalDue.getTime())) continue;
-      if (reminder.snoozedFrom) {
-        if (originalDue >= monthStart && originalDue < monthEnd) {
-          monthEvents.push({ id: reminder.id, date: localDateInput(originalDue), petId: reminder.petId, title: reminder.title, kind: "Reminder · snoozed" });
-        }
-        continue;
-      }
-      const birthdayPet = pets.find((pet) => pet.id === reminder.petId && pet.birthdayReminderEnabled);
-      if (birthdayPet && reminder.title === `${birthdayPet.name}'s birthday`) continue;
-      if (reminder.repeat === "once") {
-        if (originalDue >= monthStart && originalDue < monthEnd) {
-          monthEvents.push({ id: reminder.id, date: localDateInput(originalDue), petId: reminder.petId, title: reminder.title, kind: "Reminder" });
-        }
-        continue;
-      }
-      let occurrence = nextRecurringDueDate(reminder.snoozedFrom ?? reminder.dueAt, reminder.repeat, new Date(monthStart.getTime() - 1));
-      let count = 0;
-      while (occurrence < monthEnd && count < 40) {
-        if (occurrence >= monthStart) {
-          monthEvents.push({ id: `${reminder.id}-${occurrence.toISOString()}`, date: localDateInput(occurrence), petId: reminder.petId, title: reminder.title, kind: "Reminder" });
-        }
-        occurrence = nextRecurringDueDate(occurrence.toISOString(), reminder.repeat, occurrence);
-        count += 1;
-      }
-    }
-
-    for (const record of healthRecords) {
-      if (!record.nextDueDate) continue;
-      const dueDate = new Date(`${record.nextDueDate}T00:00:00`);
-      if (dueDate >= monthStart && dueDate < monthEnd) {
-        monthEvents.push({ id: `health-${record.id}`, date: record.nextDueDate, petId: record.petId, title: `${getHealthRecordTypeName(record)} due`, kind: "Health follow-up" });
-      }
-    }
-
-    for (const pet of pets) {
-      if (!pet.birthdayReminderEnabled || !pet.birthDate) continue;
-      const birthday = birthdayDateInMonth(pet.birthDate, calendarMonth.getFullYear(), calendarMonth.getMonth());
-      if (!birthday) continue;
-      monthEvents.push({ id: `birthday-${pet.id}-${calendarMonth.getFullYear()}`, date: birthday, petId: pet.id, title: `${pet.name}'s birthday`, kind: "Birthday" });
-    }
-
-    monthEvents.sort((a, b) => a.date.localeCompare(b.date) || a.title.localeCompare(b.title));
-    const calendarDates = calendarMonthDates(calendarMonth.getFullYear(), calendarMonth.getMonth());
-    const selectedEvents = monthEvents.filter((event) => event.date === calendarSelectedDate);
-    const weekdays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-
-    return (
-      <>
-        <View style={styles.calendarHeading}>
-          <Text style={[styles.sectionTitle, { color: palette.text }]}>Care calendar</Text>
-          <View style={styles.calendarMonthControls}>
-            <Pressable accessibilityRole="button" accessibilityLabel="Previous month" onPress={() => { const previous = new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() - 1, 1); setCalendarMonth(previous); setCalendarSelectedDate(localDateInput(previous)); }} style={[styles.calendarMonthArrow, { backgroundColor: palette.soft }]}><Text style={{ color: palette.primary }}>‹</Text></Pressable>
-            <Text style={[styles.calendarMonthLabel, { color: palette.text }]}>{calendarMonth.toLocaleDateString(undefined, { month: "long", year: "numeric" })}</Text>
-            <Pressable accessibilityRole="button" accessibilityLabel="Next month" onPress={() => { const next = new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() + 1, 1); setCalendarMonth(next); setCalendarSelectedDate(localDateInput(next)); }} style={[styles.calendarMonthArrow, { backgroundColor: palette.soft }]}><Text style={{ color: palette.primary }}>›</Text></Pressable>
-          </View>
-        </View>
-        <View style={[styles.calendarCard, { backgroundColor: palette.card, borderColor: palette.line }]}>
-          <View style={styles.calendarGrid}>
-            {weekdays.map((weekday) => <Text key={weekday} style={[styles.calendarWeekday, { color: palette.muted }]}>{weekday}</Text>)}
-            {calendarDates.map((date, index) => {
-              if (!date) return <View key={`blank-${index}`} style={styles.calendarDayCell} />;
-              const day = Number(date.slice(-2));
-              const isToday = date === localDateInput(new Date());
-              const selected = date === calendarSelectedDate;
-              const eventCount = monthEvents.filter((event) => event.date === date).length;
-              return (
-                <Pressable key={date} accessibilityRole="button" accessibilityState={{ selected }} accessibilityLabel={`${calendarMonth.toLocaleDateString(undefined, { month: "long" })} ${day}${eventCount ? `, ${eventCount} care events` : ""}`} onPress={() => setCalendarSelectedDate(date)} style={[styles.calendarDayCell, styles.calendarDayButton, selected && { backgroundColor: palette.action }, isToday && !selected && { borderColor: palette.primary, borderWidth: 1 }]}>
-                  <Text style={[styles.calendarDayNumber, { color: selected ? "#FFFFFF" : palette.text }]}>{day}</Text>
-                  {eventCount ? <View style={[styles.calendarEventDot, { backgroundColor: selected ? "#FFFFFF" : palette.primary }]} /> : null}
-                </Pressable>
-              );
-            })}
-          </View>
-          <View style={styles.calendarLegend}>
-            <View style={[styles.calendarEventDot, { backgroundColor: palette.primary }]} />
-            <Text style={[styles.helpText, { color: palette.muted }]}>Reminder · birthday · health follow-up</Text>
-          </View>
-        </View>
-        <Text style={[styles.sectionTitle, { color: palette.text, marginTop: 18 }]}>{new Date(`${calendarSelectedDate}T00:00:00`).toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })}</Text>
-        {selectedEvents.length ? selectedEvents.map((event) => (
-          <View key={event.id} style={[styles.recordCard, { backgroundColor: palette.card, borderColor: palette.line }]}>
-            <View style={styles.cardHeaderRow}>
-              <View style={[styles.iconBadge, { backgroundColor: palette.soft }]}><Text style={{ color: palette.primary, fontWeight: "900" }}>{event.kind === "Birthday" ? "★" : event.kind === "Reminder" ? "◷" : "＋"}</Text></View>
-              <View style={styles.grow}>
-                <Text style={[styles.cardTitle, { color: palette.text }]}>{event.title}</Text>
-                <Text style={[styles.bodyText, { color: palette.muted }]}>{event.kind} · {petById.get(event.petId)?.name ?? "Pet"}</Text>
-              </View>
-            </View>
-          </View>
-        )) : <EmptyCard title="No care events" description="Nothing is scheduled for this day." palette={palette} />}
-        {pets.length === 0 ? <Text style={[styles.helpText, { color: palette.muted, marginTop: 12 }]}>Add pet profiles to see birthdays and pet names on your calendar.</Text> : null}
-      </>
-    );
-  }
-
-  const tabs: { id: CareTab; label: string }[] = [
-    { id: "pets", label: "My pets" },
-    { id: "journal", label: "Journal" },
-    { id: "reminders", label: "Reminders" },
-    { id: "calendar", label: "Calendar" },
-  ];
+  const tabs = CARE_TAB_ITEMS;
+  const petAlbumModalPet = pets.find((pet) => pet.id === petAlbumModalPetId) ?? null;
+  const albumModalPhotos = petAlbumModalPet?.albumPhotos ?? [];
+  const allAlbumModalPhotosSelected = albumModalPhotos.length > 0
+    && albumModalPhotos.every((photo) => selectedAlbumPhotoIds.includes(photo.id));
 
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: palette.bg }]}>
@@ -2258,8 +2984,15 @@ export function CareToolsScreen({
         </View>
         <View style={[styles.tabs, { backgroundColor: palette.soft }]}>
           {tabs.map((item) => (
-            <Pressable key={item.id} accessibilityRole="tab" accessibilityState={{ selected: tab === item.id }} onPress={() => { setTab(item.id); if (item.id === "reminders") setSelectedPetId(GENERAL_REMINDER_PET_ID); }} style={[styles.tab, tab === item.id && { backgroundColor: palette.card }]}>
-              <Text style={[styles.tabText, { color: tab === item.id ? palette.primary : palette.muted }]}>{item.label}</Text>
+            <Pressable key={item.id} accessibilityRole="tab" accessibilityState={{ selected: tab === item.id }} accessibilityLabel={item.id === "reminders" && overdueReminderCount > 0 ? `Reminders, ${overdueReminderCount} overdue` : item.label} onPress={() => { setTab(item.id); if (item.id === "reminders") setSelectedPetId(GENERAL_REMINDER_PET_ID); }} style={[styles.tab, tab === item.id && { backgroundColor: palette.card }]}>
+              <View style={styles.tabLabelWrap}>
+                <Text style={[styles.tabText, { color: tab === item.id ? palette.primary : palette.muted }]}>{item.label}</Text>
+                {item.id === "reminders" && overdueReminderCount > 0 ? (
+                  <View style={styles.overdueReminderBadge}>
+                    <Text style={styles.overdueReminderBadgeText}>{overdueReminderCount > 99 ? "99+" : overdueReminderCount}</Text>
+                  </View>
+                ) : null}
+              </View>
             </Pressable>
           ))}
         </View>
@@ -2273,9 +3006,124 @@ export function CareToolsScreen({
         {loaded && tab === "pets" ? renderPets() : null}
         {loaded && tab === "journal" ? renderJournal() : null}
         {loaded && tab === "reminders" ? renderReminders() : null}
-        {loaded && tab === "calendar" ? renderCalendar() : null}
         <Text style={[styles.disclaimer, { color: palette.muted }]}>Personal records stay on this device. Reminders and journal notes are organizational tools, not a substitute for veterinary advice.</Text>
       </ScrollView>
+      <Modal visible={petAlbumModalPet !== null} transparent animationType="fade" onRequestClose={closePetAlbumManager}>
+        <GestureHandlerRootView style={styles.modalScrim}>
+          {petAlbumModalPet ? (
+            <View style={[styles.petAlbumModal, { backgroundColor: palette.card }]}>
+              <View style={styles.modalHeader}>
+                <View style={styles.grow}>
+                  <Text style={[styles.cardTitle, { color: palette.text }]}>{petAlbumModalPet.name}'s album</Text>
+                  <Text style={[styles.helpText, { color: palette.muted }]}>{petAlbumModalPet.albumPhotos?.length ?? 0}/{MAX_PET_ALBUM_PHOTOS} photos · pin up to {MAX_PINNED_PET_ALBUM_PHOTOS}</Text>
+                </View>
+                <Pressable accessibilityRole="button" accessibilityLabel="Close pet album" onPress={closePetAlbumManager} style={[styles.closeDetailButton, { backgroundColor: palette.soft }]}>
+                  <Text style={{ color: palette.primary, fontSize: 20, fontWeight: "700" }}>×</Text>
+                </Pressable>
+              </View>
+              <CareButton title="＋ Add photos" onPress={() => void addPetAlbumPhotos(petAlbumModalPet)} palette={palette} secondary disabled={(petAlbumModalPet.albumPhotos?.length ?? 0) >= MAX_PET_ALBUM_PHOTOS || petAlbumUploadProgress !== null} />
+              {petAlbumUploadProgress?.petId === petAlbumModalPet.id ? (
+                <View style={styles.petAlbumUploadStatus} accessibilityLiveRegion="polite">
+                  <ActivityIndicator size="small" color={palette.primary} />
+                  <View style={styles.petAlbumUploadCopy}>
+                    <Text style={[styles.helpText, { color: palette.primary }]}>
+                      {petAlbumUploadProgress.total
+                        ? `Saving photos · ${petAlbumUploadProgress.completed} of ${petAlbumUploadProgress.total}`
+                        : "Preparing photo selection…"}
+                    </Text>
+                    <View style={[styles.petAlbumUploadTrack, { backgroundColor: palette.soft }]}>
+                      <View style={[styles.petAlbumUploadFill, { backgroundColor: palette.primary, width: petAlbumUploadProgress.total ? `${Math.max((petAlbumUploadProgress.completed / petAlbumUploadProgress.total) * 100, 8)}%` : "18%" }]} />
+                    </View>
+                  </View>
+                </View>
+              ) : null}
+              {albumModalPhotos.length ? (
+                <View style={styles.petAlbumBulkControls}>
+                  <View style={styles.petAlbumSelectionActions}>
+                    <Pressable accessibilityRole="button" accessibilityLabel={allAlbumModalPhotosSelected ? "Clear photo selection" : "Select all photos"} onPress={() => toggleSelectAllAlbumPhotos(petAlbumModalPet)} style={styles.petAlbumSelectAllButton}>
+                      <Text style={[styles.petAlbumSelectAllText, { color: palette.primary }]}>{allAlbumModalPhotosSelected ? "Clear selection" : "Select all"}</Text>
+                    </Pressable>
+                    <Text style={[styles.helpText, { color: palette.muted }]}>{selectedAlbumPhotoIds.length} selected</Text>
+                  </View>
+                  <CareButton title={`Delete selected${selectedAlbumPhotoIds.length ? ` (${selectedAlbumPhotoIds.length})` : ""}`} onPress={() => deleteSelectedAlbumPhotos(petAlbumModalPet)} palette={palette} destructive disabled={selectedAlbumPhotoIds.length === 0} />
+                </View>
+              ) : null}
+              {albumModalPhotos.length ? (
+                <DraggableFlatList
+                  data={albumModalPhotos}
+                  keyExtractor={(photo) => photo.id}
+                  containerStyle={styles.petAlbumModalScroll}
+                  style={styles.petAlbumModalScroll}
+                  contentContainerStyle={styles.petAlbumModalContent}
+                  keyboardShouldPersistTaps="handled"
+                  activationDistance={8}
+                  onDragEnd={({ data }) => setPets((current) => current.map((item) => item.id === petAlbumModalPet.id ? { ...item, albumPhotos: data } : item))}
+                  renderItem={({ item: photo, getIndex, drag, isActive }) => {
+                    const index = getIndex() ?? 0;
+                    return (
+                    <ScaleDecorator>
+                      <View style={[styles.petAlbumPhotoRow, { borderTopColor: palette.line, backgroundColor: isActive ? palette.soft : "transparent" }]}>
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityLabel={`Reorder album photo ${index + 1}`}
+                          accessibilityHint="Long press and drag to change its position"
+                          onLongPress={drag}
+                          delayLongPress={180}
+                          disabled={isActive}
+                          style={styles.petAlbumDragHandle}
+                        >
+                          <Text style={[styles.petAlbumDragGlyph, { color: palette.muted }]}>⠿</Text>
+                        </Pressable>
+                        <Pressable
+                          accessibilityRole="checkbox"
+                          accessibilityState={{ checked: selectedAlbumPhotoIds.includes(photo.id) }}
+                          accessibilityLabel={`${selectedAlbumPhotoIds.includes(photo.id) ? "Deselect" : "Select"} album photo ${index + 1}`}
+                          onPress={() => toggleAlbumPhotoSelection(photo.id)}
+                          style={[styles.petAlbumSelectionBox, { borderColor: selectedAlbumPhotoIds.includes(photo.id) ? palette.primary : palette.line, backgroundColor: selectedAlbumPhotoIds.includes(photo.id) ? palette.primary : palette.bg }]}
+                        >
+                          {selectedAlbumPhotoIds.includes(photo.id) ? <Text style={styles.petAlbumSelectionMark}>✓</Text> : null}
+                        </Pressable>
+                        <Pressable accessibilityRole="button" accessibilityLabel={`View album photo ${index + 1}`} onPress={() => setPhotoViewerUri(photo.uri)}>
+                          <Image source={{ uri: photo.uri }} contentFit="cover" style={styles.petAlbumPhotoThumbnail} />
+                        </Pressable>
+                        <View style={styles.petAlbumPhotoCopy}>
+                          <TextInput
+                            accessibilityLabel={`Description for album photo ${index + 1}`}
+                            value={photo.description}
+                            onChangeText={(description) => updatePetAlbumPhoto(petAlbumModalPet, photo.id, { description })}
+                            placeholder="Add a description"
+                            placeholderTextColor={palette.muted}
+                            maxLength={160}
+                            style={[styles.petAlbumDescriptionInput, { backgroundColor: palette.bg, borderColor: palette.line, color: palette.text }]}
+                          />
+                          <Pressable
+                            accessibilityRole="checkbox"
+                            accessibilityState={{ checked: photo.pinned }}
+                            accessibilityLabel={`${photo.pinned ? "Unpin" : "Pin"} album photo ${index + 1} in pet view`}
+                            onPress={() => togglePetAlbumPhotoPin(petAlbumModalPet, photo)}
+                            style={[styles.petAlbumPinButton, { backgroundColor: photo.pinned ? palette.soft : palette.bg, borderColor: photo.pinned ? palette.primary : palette.line }]}
+                          >
+                            <Text style={[styles.petAlbumPinButtonText, { color: photo.pinned ? palette.primary : palette.muted }]}>{photo.pinned ? "✓ Pinned to view" : "＋ Pin to view"}</Text>
+                          </Pressable>
+                        </View>
+                        <IconActionButton icon="remove" label={`Remove album photo ${index + 1}`} onPress={() => removePetAlbumPhoto(petAlbumModalPet, photo)} palette={palette} destructive />
+                      </View>
+                    </ScaleDecorator>
+                    );
+                  }}
+                />
+              ) : (
+                <ScrollView style={styles.petAlbumModalScroll} contentContainerStyle={styles.petAlbumModalContent}>
+                  <Text style={[styles.helpText, { color: palette.muted }]}>Your album is empty. Add photos and descriptions to create a keepsake collection.</Text>
+                </ScrollView>
+              )}
+              <View style={styles.healthDetailActions}>
+                <CareButton title="Done" onPress={closePetAlbumManager} palette={palette} secondary />
+              </View>
+            </View>
+          ) : null}
+        </GestureHandlerRootView>
+      </Modal>
       <Modal visible={photoViewerUri !== null} transparent animationType="fade" onRequestClose={() => setPhotoViewerUri(null)}>
         <View style={styles.photoViewer}>
           {photoViewerUri ? (
@@ -2287,6 +3135,61 @@ export function CareToolsScreen({
             <Text style={styles.photoViewerCloseText}>×</Text>
           </Pressable>
           {photoViewerUri ? <Image source={{ uri: photoViewerUri }} contentFit="contain" style={styles.photoViewerImage} /> : null}
+        </View>
+      </Modal>
+      <Modal visible={selectedJournalEntry !== null} transparent animationType="fade" onRequestClose={() => setSelectedJournalEntry(null)}>
+        <View style={styles.modalScrim}>
+          {selectedJournalEntry ? (
+            <View style={[styles.journalDetailModal, { backgroundColor: palette.card }]}>
+              <View style={styles.modalHeader}>
+                <Text style={[styles.cardTitle, styles.grow, { color: palette.text }]}>Journal entry</Text>
+                <Pressable accessibilityRole="button" accessibilityLabel="Close journal entry details" onPress={() => setSelectedJournalEntry(null)} style={[styles.closeDetailButton, { backgroundColor: palette.soft }]}>
+                  <Text style={{ color: palette.primary, fontSize: 20, fontWeight: "700" }}>×</Text>
+                </Pressable>
+              </View>
+              <ScrollView style={styles.journalDetailScroll} contentContainerStyle={styles.journalDetailContent}>
+                <Text style={[styles.healthDetailTitle, { color: palette.text }]}>{selectedJournalEntry.title}</Text>
+                <Text style={[styles.healthDetailPet, { color: palette.primary }]}>{petById.get(selectedJournalEntry.petId)?.name ?? "Pet"}</Text>
+                <Text style={[styles.healthDetailMeta, { color: palette.muted }]}>{new Date(selectedJournalEntry.createdAt).toLocaleString()}</Text>
+                {selectedJournalEntry.notes ? <Text style={[styles.journalDetailNotes, { color: palette.text }]}>{selectedJournalEntry.notes}</Text> : null}
+                {(selectedJournalEntry.photos?.length ?? 0) > 0 ? (
+                  <>
+                    <Text style={[styles.healthDetailLabel, { color: palette.muted, marginTop: 16 }]}>PHOTOS · {selectedJournalEntry.photos?.length}</Text>
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.journalDetailPhotos}>
+                      {selectedJournalEntry.photos?.map((uri, index) => (
+                        <View key={`${uri}-${index}`} style={styles.journalDetailPhotoItem}>
+                          <Pressable accessibilityRole="button" accessibilityLabel={`View journal photo ${index + 1}`} onPress={() => setPhotoViewerUri(uri)}>
+                            <Image source={{ uri }} contentFit="cover" style={styles.journalDetailPhoto} />
+                          </Pressable>
+                        </View>
+                      ))}
+                    </ScrollView>
+                  </>
+                ) : null}
+                {(selectedJournalEntry.documents?.length ?? 0) > 0 ? (
+                  <>
+                    <Text style={[styles.healthDetailLabel, { color: palette.muted, marginTop: 16 }]}>ATTACHED DOCUMENTS · {selectedJournalEntry.documents?.length}</Text>
+                    {selectedJournalEntry.documents?.map((document) => (
+                      <View key={document.id} style={[styles.journalDocumentRow, { borderColor: palette.line }]}>
+                        <View style={styles.grow}>
+                          <Text style={[styles.journalDocumentName, { color: palette.text }]} numberOfLines={2}>📎 {document.name}</Text>
+                          {document.mimeType ? <Text style={[styles.helpText, { color: palette.muted }]}>{document.mimeType}</Text> : null}
+                        </View>
+                        <Pressable accessibilityRole="button" accessibilityLabel={`Download ${document.name}`} onPress={() => void downloadJournalDocument(document)} style={[styles.journalDownloadButton, { backgroundColor: palette.soft }]}>
+                          <Text style={{ color: palette.primary, fontWeight: "800" }}>↓ Save</Text>
+                        </Pressable>
+                      </View>
+                    ))}
+                  </>
+                ) : null}
+              </ScrollView>
+              <View style={styles.healthDetailActions}>
+                <CareButton title="Close" onPress={() => setSelectedJournalEntry(null)} palette={palette} secondary />
+                <IconActionButton icon="edit" label={`Edit ${selectedJournalEntry.title}`} onPress={() => beginEditJournalEntry(selectedJournalEntry)} palette={palette} />
+                <IconActionButton icon="remove" label={`Remove ${selectedJournalEntry.title}`} onPress={() => removeJournalEntry(selectedJournalEntry)} palette={palette} destructive />
+              </View>
+            </View>
+          ) : null}
         </View>
       </Modal>
       <Modal visible={selectedHealthRecord !== null} transparent animationType="fade" onRequestClose={() => setSelectedHealthRecord(null)}>
@@ -2322,10 +3225,40 @@ export function CareToolsScreen({
                   <Text style={[styles.healthDetailLabel, { color: palette.muted }]}>NOTES</Text>
                   <Text style={[styles.healthDetailValue, { color: palette.text }]}>{selectedHealthRecord.notes || "No notes added."}</Text>
                 </View>
+                {(selectedHealthRecord.photos?.length ?? 0) > 0 ? (
+                  <>
+                    <Text style={[styles.healthDetailLabel, { color: palette.muted, marginTop: 16 }]}>PHOTOS · {selectedHealthRecord.photos?.length}</Text>
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.journalDetailPhotos}>
+                      {selectedHealthRecord.photos?.map((uri, index) => (
+                        <View key={`${uri}-${index}`} style={styles.journalDetailPhotoItem}>
+                          <Pressable accessibilityRole="button" accessibilityLabel={`View healthcare record photo ${index + 1}`} onPress={() => setPhotoViewerUri(uri)}>
+                            <Image source={{ uri }} contentFit="cover" style={styles.journalDetailPhoto} />
+                          </Pressable>
+                        </View>
+                      ))}
+                    </ScrollView>
+                  </>
+                ) : null}
+                {(selectedHealthRecord.documents?.length ?? 0) > 0 ? (
+                  <>
+                    <Text style={[styles.healthDetailLabel, { color: palette.muted, marginTop: 16 }]}>ATTACHED DOCUMENTS · {selectedHealthRecord.documents?.length}</Text>
+                    {selectedHealthRecord.documents?.map((document) => (
+                      <View key={document.id} style={[styles.journalDocumentRow, { borderColor: palette.line }]}>
+                        <View style={styles.grow}>
+                          <Text style={[styles.journalDocumentName, { color: palette.text }]} numberOfLines={2}>📎 {document.name}</Text>
+                          {document.mimeType ? <Text style={[styles.helpText, { color: palette.muted }]}>{document.mimeType}</Text> : null}
+                        </View>
+                        <Pressable accessibilityRole="button" accessibilityLabel={`Download ${document.name}`} onPress={() => void downloadJournalDocument(document)} style={[styles.journalDownloadButton, { backgroundColor: palette.soft }]}>
+                          <Text style={{ color: palette.primary, fontWeight: "800" }}>↓ Save</Text>
+                        </Pressable>
+                      </View>
+                    ))}
+                  </>
+                ) : null}
                 <Text style={[styles.healthDetailMeta, { color: palette.muted }]}>Saved {new Date(selectedHealthRecord.createdAt).toLocaleString()}</Text>
               </ScrollView>
               <View style={styles.healthDetailActions}>
-                <CareButton title="Edit record" onPress={() => editHealthRecord(selectedHealthRecord)} palette={palette} secondary />
+                <IconActionButton icon="edit" label={`Edit ${selectedHealthRecord.title}`} onPress={() => editHealthRecord(selectedHealthRecord)} palette={palette} />
                 {selectedHealthRecord.nextDueDate ? (
                   <CareButton
                     title={hasHealthRecordReminder(selectedHealthRecord) ? "Reminder added" : "Add reminder"}
@@ -2335,7 +3268,7 @@ export function CareToolsScreen({
                     disabled={hasHealthRecordReminder(selectedHealthRecord)}
                   />
                 ) : null}
-                <CareButton title="Remove record" onPress={() => removeHealthRecord(selectedHealthRecord)} palette={palette} destructive />
+                <IconActionButton icon="remove" label={`Remove ${selectedHealthRecord.title}`} onPress={() => removeHealthRecord(selectedHealthRecord)} palette={palette} destructive />
               </View>
             </View>
           ) : null}
@@ -2363,11 +3296,15 @@ const styles = StyleSheet.create({
   headerTitle: { fontSize: 23, fontWeight: "700" },
   tabs: { flexDirection: "row", borderRadius: 13, padding: 4, gap: 3, marginTop: 17, marginBottom: 15 },
   tab: { flex: 1, alignItems: "center", justifyContent: "center", minHeight: 39, borderRadius: 10 },
+  tabLabelWrap: { position: "relative", alignItems: "center", justifyContent: "center" },
   tabText: { fontSize: 10, fontWeight: "800" },
+  overdueReminderBadge: { position: "absolute", top: -10, right: -17, minWidth: 17, height: 17, alignItems: "center", justifyContent: "center", borderRadius: 9, paddingHorizontal: 4, backgroundColor: "#D94B4B" },
+  overdueReminderBadgeText: { color: "#FFFFFF", fontSize: 7, fontWeight: "900", lineHeight: 9 },
   notice: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 8, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 10, borderWidth: 1, marginBottom: 12 },
   noticeText: { flex: 1, fontSize: 9, fontWeight: "700" },
   introCard: { padding: 16, borderRadius: 15, marginBottom: 13, gap: 5 },
   formCard: { borderWidth: 1, borderRadius: 15, padding: 14, gap: 10, marginBottom: 14 },
+  groupCard: { borderWidth: 1, borderRadius: 15, padding: 14, gap: 10, marginBottom: 14 },
   recordCard: { borderWidth: 1, borderRadius: 15, padding: 14, gap: 9, marginTop: 10 },
   emptyCard: { borderWidth: 1, borderRadius: 15, padding: 18, gap: 6, marginTop: 10 },
   cardTitle: { fontSize: 13, fontWeight: "800" },
@@ -2385,6 +3322,8 @@ const styles = StyleSheet.create({
   solidIconPart: { position: "absolute" },
   button: { minHeight: 39, justifyContent: "center", alignItems: "center", borderRadius: 10, paddingHorizontal: 14, paddingVertical: 9 },
   buttonText: { fontSize: 9, fontWeight: "800" },
+  iconActionButton: { width: 36, height: 36, alignItems: "center", justifyContent: "center", borderRadius: 11 },
+  iconActionGlyph: { fontSize: 16 },
   actionRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 2 },
   historyHeading: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10 },
   cameraActionButton: { minHeight: 39, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 8 },
@@ -2401,17 +3340,48 @@ const styles = StyleSheet.create({
   cardHeaderRow: { flexDirection: "row", alignItems: "flex-start", gap: 10 },
   detailBackButton: { alignSelf: "flex-start", paddingVertical: 10, paddingHorizontal: 2 },
   petDetailHeader: { flexDirection: "row", alignItems: "center", gap: 13, marginBottom: 5 },
+  petProfileCard: { position: "relative", paddingTop: 52 },
+  petProfileActions: { position: "absolute", top: 10, right: 12, zIndex: 2, flexDirection: "row", gap: 7 },
+  petDetailCopy: { paddingRight: 72 },
+  petListCopy: { paddingRight: 76 },
   petDetailAvatar: { width: 82, height: 82, borderRadius: 24 },
   petDetailAvatarPlaceholder: { alignItems: "center", justifyContent: "center" },
+  recordPetIdentity: { position: "relative", alignSelf: "flex-start" },
+  recordPetAvatar: { width: 38, height: 38, borderRadius: 12 },
+  recordPetIconBadge: { position: "absolute", top: -5, right: -5, width: 20, height: 20, borderRadius: 7, borderWidth: 2, borderColor: "#FFFFFF" },
   petDetailName: { fontSize: 22, fontWeight: "800" },
   petOpenArrow: { fontSize: 28, fontWeight: "700", paddingHorizontal: 4 },
-  petGalleryImageLarge: { width: 58, height: 58, borderRadius: 12 },
   healthHistoryHeading: { flexDirection: "row", alignItems: "flex-end", gap: 8, marginTop: 18, marginBottom: 9 },
   healthSearchInput: { marginTop: 10, marginBottom: 4 },
   dashboardCard: { borderRadius: 15, padding: 15, gap: 10, marginTop: 12 },
   dashboardColumns: { gap: 11 },
   dashboardSection: { gap: 4 },
   dashboardValue: { fontSize: 9, lineHeight: 14 },
+  petAlbumCard: { borderWidth: 1, borderRadius: 15, padding: 14, gap: 10, marginTop: 12 },
+  petAlbumHeader: { flexDirection: "row", alignItems: "center", gap: 10 },
+  petAlbumPinnedStrip: { flexDirection: "row", gap: 10, paddingVertical: 3 },
+  petAlbumPinnedItem: { width: 108, gap: 5 },
+  petAlbumPinnedImage: { width: 108, height: 90, borderRadius: 12 },
+  petAlbumPinnedDescription: { fontSize: 9, lineHeight: 13, fontWeight: "600" },
+  petAlbumListHeader: { flexDirection: "row", flexWrap: "wrap", justifyContent: "space-between", alignItems: "center", gap: 8, marginTop: 3 },
+  petAlbumPhotoRow: { flexDirection: "row", alignItems: "center", gap: 10, borderTopWidth: StyleSheet.hairlineWidth, paddingTop: 10, marginTop: 2 },
+  petAlbumDragHandle: { width: 30, height: 48, alignItems: "center", justifyContent: "center", borderRadius: 9 },
+  petAlbumDragGlyph: { fontSize: 22, fontWeight: "800", lineHeight: 26 },
+  petAlbumPhotoThumbnail: { width: 66, height: 66, borderRadius: 12 },
+  petAlbumPhotoCopy: { flex: 1, gap: 7 },
+  petAlbumBulkControls: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 8 },
+  petAlbumSelectionActions: { flexDirection: "row", alignItems: "center", gap: 11 },
+  petAlbumSelectAllButton: { minHeight: 34, justifyContent: "center", paddingHorizontal: 4 },
+  petAlbumSelectAllText: { fontSize: 9, fontWeight: "800" },
+  petAlbumSelectionBox: { width: 23, height: 23, alignItems: "center", justifyContent: "center", borderWidth: 1.5, borderRadius: 7 },
+  petAlbumSelectionMark: { color: "#FFFFFF", fontSize: 13, fontWeight: "900", lineHeight: 15 },
+  petAlbumDescriptionInput: { minHeight: 38, borderWidth: 1, borderRadius: 9, paddingHorizontal: 9, paddingVertical: 7, fontSize: 10 },
+  petAlbumPinButton: { alignSelf: "flex-start", minHeight: 30, justifyContent: "center", borderWidth: 1, borderRadius: 9, paddingHorizontal: 9, paddingVertical: 5 },
+  petAlbumPinButtonText: { fontSize: 8, fontWeight: "800" },
+  petAlbumUploadStatus: { flexDirection: "row", alignItems: "center", gap: 10, padding: 10, borderRadius: 11 },
+  petAlbumUploadCopy: { flex: 1, gap: 6 },
+  petAlbumUploadTrack: { height: 5, borderRadius: 3, overflow: "hidden" },
+  petAlbumUploadFill: { height: "100%", borderRadius: 3 },
   weightCard: { borderWidth: 1, borderRadius: 15, padding: 14, gap: 10, marginTop: 12 },
   weightForm: { gap: 9, marginTop: 5 },
   weightChart: { gap: 8, marginVertical: 5 },
@@ -2420,18 +3390,6 @@ const styles = StyleSheet.create({
   weightBarTrack: { flex: 1, height: 10, borderRadius: 6, overflow: "hidden" },
   weightBar: { height: "100%", borderRadius: 6 },
   weightChartDate: { width: 48, fontSize: 7, textAlign: "right" },
-  calendarHeading: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 12 },
-  calendarMonthControls: { flexDirection: "row", alignItems: "center", gap: 7 },
-  calendarMonthArrow: { width: 33, height: 33, borderRadius: 11, alignItems: "center", justifyContent: "center" },
-  calendarMonthLabel: { minWidth: 118, textAlign: "center", fontSize: 11, fontWeight: "800" },
-  calendarCard: { borderWidth: 1, borderRadius: 15, padding: 10 },
-  calendarGrid: { flexDirection: "row", flexWrap: "wrap" },
-  calendarWeekday: { width: "14.2857%", minHeight: 30, textAlign: "center", textAlignVertical: "center", fontSize: 8, fontWeight: "800" },
-  calendarDayCell: { width: "14.2857%", height: 43, alignItems: "center", justifyContent: "center", borderRadius: 10 },
-  calendarDayButton: { gap: 3 },
-  calendarDayNumber: { fontSize: 9, fontWeight: "700" },
-  calendarEventDot: { width: 5, height: 5, borderRadius: 3 },
-  calendarLegend: { flexDirection: "row", alignItems: "center", gap: 7, marginTop: 8, paddingHorizontal: 4 },
   healthTypeGrid: { flexDirection: "row", flexWrap: "wrap", gap: 7 },
   healthTypeChip: { borderWidth: 1, borderRadius: 999, paddingHorizontal: 11, paddingVertical: 8 },
   healthGroup: { gap: 7, marginBottom: 13 },
@@ -2441,6 +3399,9 @@ const styles = StyleSheet.create({
   nextDueText: { fontSize: 9, fontWeight: "800", textAlign: "right", maxWidth: 130 },
   openDetailsHint: { fontSize: 8, fontWeight: "800", alignSelf: "flex-end", marginTop: 1 },
   healthDetailModal: { width: "100%", maxWidth: 460, maxHeight: "85%", borderRadius: 18, padding: 17 },
+  petAlbumModal: { width: "100%", height: "88%", maxWidth: 520, maxHeight: "88%", borderRadius: 18, padding: 16, gap: 10, overflow: "hidden" },
+  petAlbumModalScroll: { flex: 1, minHeight: 0, width: "100%" },
+  petAlbumModalContent: { paddingBottom: 4 },
   healthDetailScroll: { flexShrink: 1 },
   healthDetailContent: { paddingBottom: 12 },
   closeDetailButton: { width: 34, height: 34, borderRadius: 12, alignItems: "center", justifyContent: "center" },
@@ -2452,22 +3413,37 @@ const styles = StyleSheet.create({
   healthDetailValue: { fontSize: 12, lineHeight: 19 },
   healthDetailMeta: { fontSize: 9, marginTop: 12 },
   healthDetailActions: { flexDirection: "row", flexWrap: "wrap", gap: 8, paddingTop: 12 },
+  journalPhotoStrip: { flexDirection: "row", gap: 9, paddingVertical: 4 },
+  journalPhotoItem: { position: "relative", width: 72, height: 72 },
+  journalPhotoPreview: { width: 72, height: 72, borderRadius: 12 },
+  journalAttachmentRemove: { position: "absolute", top: -5, right: -5, width: 24, height: 24, alignItems: "center", justifyContent: "center", borderRadius: 12, backgroundColor: "#C96D5E" },
+  journalPendingDocument: { minHeight: 42, flexDirection: "row", alignItems: "center", gap: 8 },
+  journalAttachmentIndicators: { flexDirection: "row", flexWrap: "wrap", gap: 10, marginTop: 4 },
+  journalIndicator: { fontSize: 9, fontWeight: "800" },
+  journalEntryOpen: { gap: 5 },
+  journalListActions: { flexDirection: "row", alignItems: "flex-end", justifyContent: "space-between", marginTop: 2 },
+  journalEntryActions: { flexDirection: "row", alignItems: "center", gap: 4 },
+  journalDetailModal: { width: "100%", maxWidth: 520, maxHeight: "88%", borderRadius: 18, padding: 16 },
+  journalDetailScroll: { flexShrink: 1 },
+  journalDetailContent: { paddingBottom: 12 },
+  journalDetailNotes: { fontSize: 12, lineHeight: 19, marginTop: 8 },
+  journalDetailPhotos: { flexDirection: "row", gap: 10, marginTop: 10 },
+  journalDetailPhotoItem: { width: 135, gap: 5 },
+  journalDetailPhoto: { width: 135, height: 135, borderRadius: 12 },
+  journalDownloadButton: { minHeight: 34, alignItems: "center", justifyContent: "center", alignSelf: "flex-start", paddingHorizontal: 10, borderRadius: 9 },
+  journalDocumentRow: { flexDirection: "row", alignItems: "center", gap: 10, minHeight: 58, paddingVertical: 8, borderBottomWidth: StyleSheet.hairlineWidth },
+  journalDocumentName: { fontSize: 10, fontWeight: "700" },
   petProfileImage: { width: 56, height: 56, borderRadius: 16 },
   petProfilePlaceholder: { width: 56, height: 56, borderRadius: 16, alignItems: "center", justifyContent: "center" },
   profilePhotoPreview: { width: 58, height: 58, borderRadius: 16 },
   profilePhotoPlaceholder: { width: 58, height: 58, borderRadius: 16, alignItems: "center", justifyContent: "center" },
   iconBadge: { width: 28, height: 28, borderRadius: 10, backgroundColor: "#F2F3EF", alignItems: "center", justifyContent: "center" },
   photoPickerRow: { flexDirection: "row", alignItems: "center", gap: 11 },
-  photoGrid: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 },
-  otherPhotosRow: { flexDirection: "row", alignItems: "center", gap: 8 },
-  otherPhotoWrap: { position: "relative", width: 46, height: 46 },
-  otherPhotoPreview: { width: 46, height: 46, borderRadius: 12 },
-  photoActionsRow: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   petGalleryImage: { width: 56, height: 56, borderRadius: 11 },
-  removePhotoButton: { position: "absolute", top: -6, right: -6, width: 21, height: 21, borderRadius: 11, alignItems: "center", justifyContent: "center", backgroundColor: "#C96D5E" },
   removePhotoText: { color: "#FFFFFF", fontSize: 15, lineHeight: 17, fontWeight: "800" },
   petAge: { fontSize: 8, fontWeight: "700", textAlign: "right" },
   dateText: { fontSize: 8, fontWeight: "700", textAlign: "right", maxWidth: 120 },
+  overdueReminderDateText: { color: "#FFFFFF", backgroundColor: "#A61B1B", borderRadius: 7, paddingHorizontal: 7, paddingVertical: 4, overflow: "hidden" },
   dateFieldRow: { flexDirection: "row", alignItems: "center", gap: 7 },
   dateFieldButton: { minHeight: 45, flex: 1, borderWidth: 1, borderRadius: 10, paddingHorizontal: 11, flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   dateFieldText: { fontSize: 11, fontWeight: "600" },
