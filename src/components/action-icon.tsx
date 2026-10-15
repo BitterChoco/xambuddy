@@ -1,5 +1,16 @@
 import { View } from "react-native";
 
+export function HomeIcon({ color, cutout = "#FFFFFF", size = 20 }: { color: string; cutout?: string; size?: number }) {
+  const scale = size / 20;
+  return (
+    <View accessible={false} style={{ width: size, height: size }}>
+      <View style={{ position: "absolute", left: 1 * scale, top: 1 * scale, width: 0, height: 0, borderLeftWidth: 9 * scale, borderRightWidth: 9 * scale, borderBottomWidth: 8 * scale, borderLeftColor: "transparent", borderRightColor: "transparent", borderBottomColor: color }} />
+      <View style={{ position: "absolute", left: 3 * scale, top: 8 * scale, width: 14 * scale, height: 11 * scale, backgroundColor: color, borderBottomLeftRadius: 1 * scale, borderBottomRightRadius: 1 * scale }} />
+      <View style={{ position: "absolute", left: 8 * scale, top: 12 * scale, width: 4 * scale, height: 7 * scale, backgroundColor: cutout, borderTopLeftRadius: 1 * scale, borderTopRightRadius: 1 * scale }} />
+    </View>
+  );
+}
+
 export function ActionIcon({ name, color, cutout = "#FFFFFF", size = 20 }: {
   name: "edit" | "remove";
   color: string;

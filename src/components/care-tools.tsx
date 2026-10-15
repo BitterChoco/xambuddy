@@ -4,6 +4,7 @@ import * as DocumentPicker from "expo-document-picker";
 import * as FileSystem from "expo-file-system/legacy";
 import * as Sharing from "expo-sharing";
 import Constants, { AppOwnership } from "expo-constants";
+import * as Clipboard from "expo-clipboard";
 import { Image } from "expo-image";
 import DateTimePicker, { type DateTimePickerEvent } from "@react-native-community/datetimepicker";
 import React, { useEffect, useMemo, useState } from "react";
@@ -27,7 +28,8 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import DraggableFlatList, { ScaleDecorator } from "react-native-draggable-flatlist";
 import { nextRecurringDueDate } from "@/utils/care-reminders";
-import { ActionIcon } from "@/components/action-icon";
+import { REMINDER_REPEAT_COLORS } from "@/utils/care-calendar";
+import { ActionIcon, HomeIcon } from "@/components/action-icon";
 import { CARE_TAB_ITEMS, type CareTab } from "./care-tabs";
 
 function Text({ style, ...props }: React.ComponentProps<typeof NativeText>) {
@@ -57,6 +59,12 @@ type PetProfile = {
   species: string;
   gender?: "Female" | "Male" | "Unknown";
   microchipNumber?: string;
+  adoptionDate?: string;
+  insuranceProvider?: string;
+  insurancePolicyNumber?: string;
+  emergencyContactName?: string;
+  emergencyContactRelationship?: string;
+  emergencyContactPhone?: string;
   breed: string;
   birthDate: string;
   weight: string;
@@ -76,6 +84,13 @@ type PetAlbumPhoto = {
 
 const MAX_PET_ALBUM_PHOTOS = 50;
 const MAX_PINNED_PET_ALBUM_PHOTOS = 5;
+type HealthDateRange = "all" | "30-days" | "90-days" | "this-year";
+const HEALTH_DATE_RANGE_OPTIONS: { id: HealthDateRange; label: string }[] = [
+  { id: "all", label: "All time" },
+  { id: "30-days", label: "30 days" },
+  { id: "90-days", label: "90 days" },
+  { id: "this-year", label: "This year" },
+];
 
 type WeightMeasurement = {
   id: string;
@@ -129,6 +144,7 @@ type CareReminder = {
   title: string;
   notes?: string;
   dueAt: string;
+  allDay?: boolean;
   repeat: ReminderRepeat;
   notificationId: string | null;
   healthRecordId?: string;
@@ -145,6 +161,7 @@ type ReminderCompletion = {
   notes?: string;
   scheduledFor: string;
   completedAt: string;
+  allDay?: boolean;
   repeat?: ReminderRepeat;
   snoozeMinutes?: ReminderSnoozeMinutes;
   icon?: string;
@@ -168,7 +185,7 @@ const STORAGE_KEYS = {
 } as const;
 
 const GENERAL_REMINDER_PET_ID = "__general__";
-const DEFAULT_HEALTH_RECORD_TYPES = ["Vet visit", "Vaccine", "4-in-1 vaccine", "Anti-rabies vaccine", "Other vaccine", "Medication", "Procedure", "Test / screening", "Other"];
+const DEFAULT_HEALTH_RECORD_TYPES = ["Vet visit", "Vaccine", "Medication", "Procedure", "Test / screening", "Other"];
 const JOURNAL_TYPE_ICONS: Record<string, string> = {
   Health: "health",
   Meals: "food",
@@ -277,6 +294,12 @@ function displayDate(date: string) {
   });
 }
 
+function displayReminderDueDate(date: string, allDay?: boolean) {
+  if (!allDay) return displayDate(date);
+  const parsed = new Date(date);
+  return Number.isNaN(parsed.getTime()) ? date : `${parsed.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })} · All day`;
+}
+
 function parseReminderTime(value: string) {
   const match = value.trim().match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
   if (!match) return null;
@@ -299,6 +322,27 @@ function reminderTimeDate(value: string) {
   const date = new Date();
   date.setHours(parsed?.hour ?? 9, parsed?.minute ?? 0, 0, 0);
   return date;
+}
+
+function notificationEmojiForReminder(icon: string | undefined) {
+  const icons: Record<string, string> = {
+    general: "🐾",
+    training: "🎓",
+    dog: "🐶",
+    vaccine: "💉",
+    medication: "💊",
+    hospital: "🏥",
+    test: "🔬",
+    health: "❤️",
+    food: "🍽️",
+    gift: "🎁",
+    activity: "🐾",
+    bath: "🛁",
+    treat: "🦴",
+    waterDrop: "💧",
+    note: "📝",
+  };
+  return icons[icon ?? "dog"] ?? "🐾";
 }
 
 function getNextBirthdayDate(birthDate: string) {
@@ -419,8 +463,8 @@ export function initializeCareNotifications() {
   if (!Notifications || notificationResponseSubscription) return;
 
   void Notifications.setNotificationCategoryAsync(REMINDER_NOTIFICATION_CATEGORY, [
-    { identifier: REMINDER_DONE_ACTION, buttonTitle: "Mark Done", options: { opensAppToForeground: true } },
-    { identifier: REMINDER_SNOOZE_ACTION, buttonTitle: "Snooze", options: { opensAppToForeground: true } },
+    { identifier: REMINDER_DONE_ACTION, buttonTitle: "Mark Done", options: { opensAppToForeground: false } },
+    { identifier: REMINDER_SNOOZE_ACTION, buttonTitle: "Snooze", options: { opensAppToForeground: false } },
   ]).catch(() => undefined);
 
   notificationResponseSubscription = Notifications.addNotificationResponseReceivedListener((response) => {
@@ -470,6 +514,8 @@ async function handleReminderNotificationResponse(
         snoozedUntil.toISOString(),
         reminder.id,
         reminder.notes,
+        reminder.icon,
+        pets.find((pet) => pet.id === reminder.petId)?.profilePhotoUri,
       );
     } catch {
       // The snoozed reminder remains available in-app if the OS cannot reschedule it.
@@ -492,6 +538,7 @@ async function handleReminderNotificationResponse(
     notes: reminder.notes,
     scheduledFor: reminder.snoozedFrom ?? reminder.dueAt,
     completedAt: new Date().toISOString(),
+    allDay: reminder.allDay,
     repeat: reminder.repeat,
     snoozeMinutes: reminder.snoozeMinutes ?? 60,
     icon: reminder.icon,
@@ -502,7 +549,7 @@ async function handleReminderNotificationResponse(
     const nextDue = nextRecurringDueDate(reminder.snoozedFrom ?? reminder.dueAt, reminder.repeat, new Date());
     let notificationId: string | null = null;
     try {
-      notificationId = await scheduleReminder(reminder.title, petName, nextDue.toISOString(), reminder.id, reminder.notes);
+      notificationId = await scheduleReminder(reminder.title, petName, nextDue.toISOString(), reminder.id, reminder.notes, reminder.icon, pets.find((pet) => pet.id === reminder.petId)?.profilePhotoUri);
     } catch {
       // Keep the next recurring reminder available in-app if scheduling fails.
     }
@@ -538,20 +585,21 @@ async function requestReminderPermission() {
   return permission.granted;
 }
 
-async function scheduleReminder(title: string, petName: string, dueAt: string, reminderId?: string, notes?: string) {
+async function scheduleReminder(title: string, petName: string, dueAt: string, reminderId?: string, notes?: string, icon?: string, profilePhotoUri?: string) {
   const Notifications = getNotificationsModule();
   if (!Notifications) return null;
   const permitted = await requestReminderPermission();
   if (!permitted) return null;
   return Notifications.scheduleNotificationAsync({
     content: {
-      title: `${title} · ${petName}`,
+      title: `${notificationEmojiForReminder(icon)} ${title} · ${petName}`,
       body: notes?.trim() || "It's time for a pet-care task.",
       sound: "default",
       badge: 1,
       color: REMINDER_NOTIFICATION_COLOR,
       categoryIdentifier: REMINDER_NOTIFICATION_CATEGORY,
       data: { screen: "care-reminders", reminderId },
+      ...(Platform.OS === "ios" && profilePhotoUri ? { attachments: [{ identifier: "pet-profile-photo", url: profilePhotoUri, type: "public.image", typeHint: "public.image" }] } : {}),
     },
     trigger: {
       type: Notifications.SchedulableTriggerInputTypes.DATE,
@@ -559,6 +607,83 @@ async function scheduleReminder(title: string, petName: string, dueAt: string, r
       channelId: Platform.OS === "android" ? "care-reminders" : undefined,
     },
   });
+}
+
+export async function completeReminderFromCalendar(reminderId: string) {
+  const [savedReminders, savedHistory, savedPets] = await Promise.all([
+    AsyncStorage.getItem(STORAGE_KEYS.reminders),
+    AsyncStorage.getItem(STORAGE_KEYS.reminderHistory),
+    AsyncStorage.getItem(STORAGE_KEYS.pets),
+  ]);
+  const reminders: CareReminder[] = savedReminders ? JSON.parse(savedReminders) as CareReminder[] : [];
+  const history: ReminderCompletion[] = savedHistory ? JSON.parse(savedHistory) as ReminderCompletion[] : [];
+  const pets: PetProfile[] = savedPets ? JSON.parse(savedPets) as PetProfile[] : [];
+  const reminder = reminders.find((item) => item.id === reminderId);
+  if (!reminder) return null;
+
+  if (reminder.notificationId) await getNotificationsModule()?.cancelScheduledNotificationAsync(reminder.notificationId).catch(() => undefined);
+  const pet = pets.find((item) => item.id === reminder.petId);
+  const completed: ReminderCompletion = {
+    id: makeId(),
+    reminderId: reminder.id,
+    petId: reminder.petId,
+    petName: pet?.name ?? "General",
+    title: reminder.title,
+    notes: reminder.notes,
+    scheduledFor: reminder.snoozedFrom ?? reminder.dueAt,
+    completedAt: new Date().toISOString(),
+    allDay: reminder.allDay,
+    repeat: reminder.repeat,
+    snoozeMinutes: reminder.snoozeMinutes ?? 60,
+    icon: reminder.icon,
+    healthRecordId: reminder.healthRecordId,
+  };
+  let nextReminders = reminders.filter((item) => item.id !== reminder.id);
+  if (reminder.repeat !== "once") {
+    const nextDue = nextRecurringDueDate(reminder.snoozedFrom ?? reminder.dueAt, reminder.repeat, new Date());
+    let notificationId: string | null = null;
+    try {
+      notificationId = await scheduleReminder(reminder.title, pet?.name ?? "General", nextDue.toISOString(), reminder.id, reminder.notes, reminder.icon, pet?.profilePhotoUri);
+    } catch {
+      // The next reminder remains in-app if the platform cannot schedule its alert.
+    }
+    nextReminders = reminders.map((item) => item.id === reminder.id
+      ? { ...item, dueAt: nextDue.toISOString(), notificationId, snoozedFrom: undefined }
+      : item);
+  }
+  const nextHistory = [completed, ...history].slice(0, 200);
+  await Promise.all([
+    AsyncStorage.setItem(STORAGE_KEYS.reminders, JSON.stringify(nextReminders)),
+    AsyncStorage.setItem(STORAGE_KEYS.reminderHistory, JSON.stringify(nextHistory)),
+  ]);
+  return { reminders: nextReminders, history: nextHistory };
+}
+
+export async function snoozeReminderFromCalendar(reminderId: string) {
+  const [savedReminders, savedPets] = await Promise.all([
+    AsyncStorage.getItem(STORAGE_KEYS.reminders),
+    AsyncStorage.getItem(STORAGE_KEYS.pets),
+  ]);
+  const reminders: CareReminder[] = savedReminders ? JSON.parse(savedReminders) as CareReminder[] : [];
+  const pets: PetProfile[] = savedPets ? JSON.parse(savedPets) as PetProfile[] : [];
+  const reminder = reminders.find((item) => item.id === reminderId);
+  if (!reminder) return null;
+
+  if (reminder.notificationId) await getNotificationsModule()?.cancelScheduledNotificationAsync(reminder.notificationId).catch(() => undefined);
+  const snoozeMinutes = reminder.snoozeMinutes ?? 60;
+  const snoozedUntil = new Date(Date.now() + snoozeMinutes * 60 * 1000);
+  const pet = pets.find((item) => item.id === reminder.petId);
+  let notificationId: string | null = null;
+  try {
+    notificationId = await scheduleReminder(reminder.title, pet?.name ?? "General", snoozedUntil.toISOString(), reminder.id, reminder.notes, reminder.icon, pet?.profilePhotoUri);
+  } catch {
+    // The snoozed reminder remains available in-app if the OS cannot schedule it.
+  }
+  const nextReminders = reminders.map((item) => item.id === reminder.id
+    ? { ...item, dueAt: snoozedUntil.toISOString(), notificationId, snoozedFrom: item.snoozedFrom ?? item.dueAt }
+    : item);
+  await AsyncStorage.setItem(STORAGE_KEYS.reminders, JSON.stringify(nextReminders));
+  return nextReminders;
 }
 
 function CareButton({
@@ -587,6 +712,19 @@ function CareButton({
       ]}
     >
       <Text style={[styles.buttonText, { color: secondary && !destructive ? palette.primary : "#FFFFFF" }]}>{title}</Text>
+    </Pressable>
+  );
+}
+
+function CopyNotesButton({ text, palette, onCopied }: { text: string; palette: CarePalette; onCopied: () => void }) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel="Copy notes"
+      onPress={() => { void Clipboard.setStringAsync(text).then(onCopied).catch(() => undefined); }}
+      style={({ pressed }) => [styles.copyNotesButton, { backgroundColor: palette.soft, opacity: pressed ? 0.75 : 1 }]}
+    >
+      <Text style={[styles.copyNotesButtonText, { color: palette.primary }]}>Copy</Text>
     </Pressable>
   );
 }
@@ -748,14 +886,16 @@ function CareInput({
   multiline = false,
   keyboardType,
   error = false,
+  maxLength,
 }: {
   value: string;
   onChangeText: (value: string) => void;
   placeholder: string;
   palette: CarePalette;
   multiline?: boolean;
-  keyboardType?: "default" | "numeric" | "decimal-pad";
+  keyboardType?: "default" | "numeric" | "decimal-pad" | "phone-pad";
   error?: boolean;
+  maxLength?: number;
 }) {
   return (
     <TextInput
@@ -765,6 +905,7 @@ function CareInput({
       placeholderTextColor={palette.muted}
       keyboardType={keyboardType}
       multiline={multiline}
+      maxLength={maxLength}
       textAlignVertical={multiline ? "top" : "center"}
       style={[
         styles.input,
@@ -961,6 +1102,7 @@ export function CareToolsScreen({
   const [reminders, setReminders] = useState<CareReminder[]>([]);
   const [reminderBadgeClock, setReminderBadgeClock] = useState(() => Date.now());
   const [reminderHistory, setReminderHistory] = useState<ReminderCompletion[]>([]);
+  const [completedHistoryOpen, setCompletedHistoryOpen] = useState(false);
   const [reminderHistoryPetFilter, setReminderHistoryPetFilter] = useState("");
   const [healthRecords, setHealthRecords] = useState<HealthRecord[]>([]);
   const [weightMeasurements, setWeightMeasurements] = useState<WeightMeasurement[]>([]);
@@ -969,7 +1111,13 @@ export function CareToolsScreen({
   const [activePetId, setActivePetId] = useState<string | null>(null);
   const [selectedHealthRecord, setSelectedHealthRecord] = useState<HealthRecord | null>(null);
   const [selectedJournalEntry, setSelectedJournalEntry] = useState<JournalEntry | null>(null);
+  const [selectedReminder, setSelectedReminder] = useState<CareReminder | null>(null);
+  const [selectedReminderCompletion, setSelectedReminderCompletion] = useState<ReminderCompletion | null>(null);
   const [healthSearchQuery, setHealthSearchQuery] = useState("");
+  const [healthFiltersExpanded, setHealthFiltersExpanded] = useState(false);
+  const [healthTypeFilter, setHealthTypeFilter] = useState("All types");
+  const [healthDateRange, setHealthDateRange] = useState<HealthDateRange>("all");
+  const [healthClinicFilter, setHealthClinicFilter] = useState("");
   const [weightFormOpen, setWeightFormOpen] = useState(false);
   const [weightValue, setWeightValue] = useState("");
   const [weightUnit, setWeightUnit] = useState<"kg" | "lb">("kg");
@@ -989,6 +1137,12 @@ export function CareToolsScreen({
   const [petSpecies, setPetSpecies] = useState("");
   const [petGender, setPetGender] = useState<PetProfile["gender"]>("Unknown");
   const [petMicrochipNumber, setPetMicrochipNumber] = useState("");
+  const [petAdoptionDate, setPetAdoptionDate] = useState("");
+  const [petInsuranceProvider, setPetInsuranceProvider] = useState("");
+  const [petInsurancePolicyNumber, setPetInsurancePolicyNumber] = useState("");
+  const [petEmergencyContactName, setPetEmergencyContactName] = useState("");
+  const [petEmergencyContactRelationship, setPetEmergencyContactRelationship] = useState("");
+  const [petEmergencyContactPhone, setPetEmergencyContactPhone] = useState("");
   const [petBreed, setPetBreed] = useState("");
   const [petBirthDate, setPetBirthDate] = useState("");
   const [petWeight, setPetWeight] = useState("");
@@ -1022,6 +1176,7 @@ export function CareToolsScreen({
   const [reminderFormOpen, setReminderFormOpen] = useState(false);
   const [reminderDate, setReminderDate] = useState(() => localDateInput(new Date()));
   const [reminderTime, setReminderTime] = useState(() => formatReminderTime(new Date()));
+  const [reminderAllDay, setReminderAllDay] = useState(false);
   const [reminderTitleError, setReminderTitleError] = useState(false);
   const [reminderDateError, setReminderDateError] = useState(false);
   const [reminderTimeError, setReminderTimeError] = useState(false);
@@ -1056,6 +1211,14 @@ export function CareToolsScreen({
       }
       if (selectedJournalEntry) {
         setSelectedJournalEntry(null);
+        return true;
+      }
+      if (selectedReminder) {
+        setSelectedReminder(null);
+        return true;
+      }
+      if (selectedReminderCompletion) {
+        setSelectedReminderCompletion(null);
         return true;
       }
       if (selectedHealthRecord) {
@@ -1118,6 +1281,8 @@ export function CareToolsScreen({
     petAlbumModalPetId,
     selectedHealthRecord,
     selectedJournalEntry,
+    selectedReminder,
+    selectedReminderCompletion,
     tab,
     reminderFormOpen,
     weightFormOpen,
@@ -1165,7 +1330,7 @@ export function CareToolsScreen({
   }, [healthRecords, journal, loaded, pets, reminderHistory, reminders, weightMeasurements]);
 
   useEffect(() => {
-    if (tab === "reminders" && selectedPetId === GENERAL_REMINDER_PET_ID) return;
+    if ((tab === "reminders" || tab === "journal") && selectedPetId === GENERAL_REMINDER_PET_ID) return;
     if (!pets.some((pet) => pet.id === selectedPetId)) setSelectedPetId(pets[0]?.id ?? "");
   }, [pets, selectedPetId, tab]);
 
@@ -1254,6 +1419,12 @@ export function CareToolsScreen({
     setPetSpecies("");
     setPetGender("Unknown");
     setPetMicrochipNumber("");
+    setPetAdoptionDate("");
+    setPetInsuranceProvider("");
+    setPetInsurancePolicyNumber("");
+    setPetEmergencyContactName("");
+    setPetEmergencyContactRelationship("");
+    setPetEmergencyContactPhone("");
     setPetBreed("");
     setPetBirthDate("");
     setPetWeight("");
@@ -1269,6 +1440,12 @@ export function CareToolsScreen({
     setPetSpecies(pet.species);
     setPetGender(pet.gender ?? "Unknown");
     setPetMicrochipNumber(pet.microchipNumber ?? "");
+    setPetAdoptionDate(pet.adoptionDate ?? "");
+    setPetInsuranceProvider(pet.insuranceProvider ?? "");
+    setPetInsurancePolicyNumber(pet.insurancePolicyNumber ?? "");
+    setPetEmergencyContactName(pet.emergencyContactName ?? "");
+    setPetEmergencyContactRelationship(pet.emergencyContactRelationship ?? "");
+    setPetEmergencyContactPhone(pet.emergencyContactPhone ?? "");
     setPetBreed(pet.breed);
     setPetBirthDate(pet.birthDate);
     setPetWeight(pet.weight);
@@ -1603,6 +1780,10 @@ export function CareToolsScreen({
       setNotice("Enter the birth date as YYYY-MM-DD, or leave it blank.");
       return;
     }
+    if (petAdoptionDate && !isValidDateInput(petAdoptionDate)) {
+      setNotice("Enter the adoption date as a real date, or leave it blank.");
+      return;
+    }
     const existing = pets.find((pet) => pet.id === editingPetId);
     const saved: PetProfile = {
       id: editingPetId ?? makeId(),
@@ -1610,6 +1791,12 @@ export function CareToolsScreen({
       species: petSpecies.trim(),
       gender: petGender ?? "Unknown",
       microchipNumber: petMicrochipNumber.trim(),
+      adoptionDate: petAdoptionDate.trim(),
+      insuranceProvider: petInsuranceProvider.trim(),
+      insurancePolicyNumber: petInsurancePolicyNumber.trim(),
+      emergencyContactName: petEmergencyContactName.trim(),
+      emergencyContactRelationship: petEmergencyContactRelationship.trim(),
+      emergencyContactPhone: petEmergencyContactPhone.trim(),
       breed: petBreed.trim(),
       birthDate: petBirthDate.trim(),
       weight: petWeight.trim(),
@@ -1675,8 +1862,9 @@ export function CareToolsScreen({
   }
 
   function saveJournalEntry() {
-    if (!selectedPetId || selectedPetId === GENERAL_REMINDER_PET_ID || !petById.has(selectedPetId)) {
-      setNotice("Add and select a pet before saving a journal entry.");
+    const isGeneralJournalEntry = selectedPetId === GENERAL_REMINDER_PET_ID;
+    if (!selectedPetId || (!isGeneralJournalEntry && !petById.has(selectedPetId))) {
+      setNotice("Select a pet or General before saving a journal entry.");
       return;
     }
     if (!entryTitle.trim()) {
@@ -1686,7 +1874,7 @@ export function CareToolsScreen({
     const existingEntry = journal.find((entry) => entry.id === editingJournalEntryId);
     const entry: JournalEntry = {
       id: existingEntry?.id ?? makeId(),
-      petId: selectedPetId,
+      petId: isGeneralJournalEntry ? GENERAL_REMINDER_PET_ID : selectedPetId,
       type: "Other",
       title: entryTitle.trim(),
       notes: entryNotes.trim(),
@@ -1968,7 +2156,7 @@ export function CareToolsScreen({
     const reminderId = linkedReminder?.id ?? makeId();
     let notificationId: string | null = null;
     try {
-      notificationId = await scheduleReminder(reminderTitle, petById.get(record.petId)?.name ?? "your pet", dueAt, reminderId);
+      notificationId = await scheduleReminder(reminderTitle, petById.get(record.petId)?.name ?? "your pet", dueAt, reminderId, undefined, getHealthRecordIcon(record), petById.get(record.petId)?.profilePhotoUri);
     } catch {
       // Keep the in-app reminder even if a native notification cannot be scheduled.
     }
@@ -2003,6 +2191,7 @@ export function CareToolsScreen({
     setReminderNotes("");
     setReminderDate(localDateInput(now));
     setReminderTime(formatReminderTime(now));
+    setReminderAllDay(false);
     setReminderRepeat("once");
     setReminderSnoozeMinutes(60);
     setReminderIcon(REMINDER_ICON_OPTIONS[0].value);
@@ -2027,6 +2216,7 @@ export function CareToolsScreen({
     setReminderNotes(reminder.notes ?? "");
     setReminderDate(localDateInput(dueAt));
     setReminderTime(formatReminderTime(dueAt));
+    setReminderAllDay(Boolean(reminder.allDay));
     setReminderRepeat(reminder.repeat);
     setReminderSnoozeMinutes(reminder.snoozeMinutes ?? 60);
     setReminderIcon(iconNameOrDefault(reminder.icon));
@@ -2043,16 +2233,21 @@ export function CareToolsScreen({
     const parsedTime = parseReminderTime(reminderTime);
     const dateValid = isValidDateInput(reminderDate);
     setReminderDateError(!dateValid);
-    setReminderTimeError(!parsedTime);
+    setReminderTimeError(!reminderAllDay && !parsedTime);
     setReminderScheduleError(false);
-    if (!dateValid || !parsedTime) {
+    if (!dateValid || (!reminderAllDay && !parsedTime)) {
       setNotice(titleMissing
         ? "Add a reminder name and choose a valid date and time."
         : "Choose a valid date and enter the time as 9:00 AM or 3:30 PM.");
       return;
     }
     const due = new Date(`${reminderDate}T00:00:00`);
-    due.setHours(parsedTime.hour, parsedTime.minute, 0, 0);
+    if (reminderAllDay) {
+      due.setHours(9, 0, 0, 0);
+      if (reminderDate === localDateInput(new Date()) && due <= new Date()) due.setTime(Date.now() + 60_000);
+    } else {
+      due.setHours(parsedTime!.hour, parsedTime!.minute, 0, 0);
+    }
     const scheduleIsPast = Number.isNaN(due.getTime()) || due <= new Date();
     setReminderScheduleError(scheduleIsPast);
     if (titleMissing || scheduleIsPast) {
@@ -2078,7 +2273,7 @@ export function CareToolsScreen({
       await getNotificationsModule()?.cancelScheduledNotificationAsync(existingReminder.notificationId).catch(() => undefined);
     }
     try {
-      notificationId = await scheduleReminder(reminderTitle.trim(), reminderPetName, due.toISOString(), reminderId, reminderNotes.trim());
+      notificationId = await scheduleReminder(reminderTitle.trim(), reminderPetName, due.toISOString(), reminderId, reminderNotes.trim(), reminderIcon, selectedPet?.profilePhotoUri);
     } catch {
       setNotice("Reminder saved in the app, but the notification could not be scheduled.");
     }
@@ -2088,6 +2283,7 @@ export function CareToolsScreen({
       title: reminderTitle.trim(),
       notes: reminderNotes.trim(),
       dueAt: due.toISOString(),
+      allDay: reminderAllDay,
       repeat: reminderRepeat,
       snoozeMinutes: reminderSnoozeMinutes,
       notificationId,
@@ -2120,6 +2316,7 @@ export function CareToolsScreen({
       title: reminder.title,
       scheduledFor: reminder.snoozedFrom ?? reminder.dueAt,
       completedAt: new Date().toISOString(),
+      allDay: reminder.allDay,
       repeat: reminder.repeat,
       notes: reminder.notes,
       snoozeMinutes: reminder.snoozeMinutes ?? 60,
@@ -2134,7 +2331,7 @@ export function CareToolsScreen({
     const nextDue = nextRecurringDueDate(reminder.snoozedFrom ?? reminder.dueAt, reminder.repeat, new Date());
     let notificationId: string | null = null;
     try {
-      notificationId = await scheduleReminder(reminder.title, petById.get(reminder.petId)?.name ?? "General", nextDue.toISOString(), reminder.id, reminder.notes);
+      notificationId = await scheduleReminder(reminder.title, petById.get(reminder.petId)?.name ?? "General", nextDue.toISOString(), reminder.id, reminder.notes, reminder.icon, petById.get(reminder.petId)?.profilePhotoUri);
     } catch {
       setNotice("Marked complete; the next reminder was saved but its notification could not be scheduled.");
     }
@@ -2142,6 +2339,13 @@ export function CareToolsScreen({
       ? { ...item, dueAt: nextDue.toISOString(), notificationId, snoozedFrom: undefined }
       : item));
     if (notificationId) setNotice(`Done. Next ${reminder.repeat} reminder scheduled for ${displayDate(nextDue.toISOString())}.`);
+  }
+
+  function confirmCompleteReminder(reminder: CareReminder) {
+    Alert.alert("Mark reminder done?", `Mark “${reminder.title}” as completed?`, [
+      { text: "Cancel", style: "cancel" },
+      { text: "Mark done", onPress: () => { void completeReminder(reminder); } },
+    ]);
   }
 
   async function snoozeReminder(reminder: CareReminder) {
@@ -2152,7 +2356,7 @@ export function CareToolsScreen({
     const snoozedUntil = new Date(Date.now() + snoozeMinutes * 60 * 1000);
     let notificationId: string | null = null;
     try {
-      notificationId = await scheduleReminder(reminder.title, petById.get(reminder.petId)?.name ?? "General", snoozedUntil.toISOString(), reminder.id, reminder.notes);
+      notificationId = await scheduleReminder(reminder.title, petById.get(reminder.petId)?.name ?? "General", snoozedUntil.toISOString(), reminder.id, reminder.notes, reminder.icon, petById.get(reminder.petId)?.profilePhotoUri);
     } catch {
       // Keep the snoozed reminder visible in-app if the OS cannot schedule it.
     }
@@ -2174,7 +2378,7 @@ export function CareToolsScreen({
       return;
     }
     try {
-      const notificationId = await scheduleReminder(reminder.title, petById.get(reminder.petId)?.name ?? "General", reminder.dueAt, reminder.id, reminder.notes);
+      const notificationId = await scheduleReminder(reminder.title, petById.get(reminder.petId)?.name ?? "General", reminder.dueAt, reminder.id, reminder.notes, reminder.icon, petById.get(reminder.petId)?.profilePhotoUri);
       if (!notificationId) {
         setNotice("Alert still unavailable. Check notification permission and try again.");
         return;
@@ -2208,6 +2412,8 @@ export function CareToolsScreen({
         dueAt,
         restoredReminderId,
         completion.notes,
+        completion.icon,
+        petById.get(completion.petId)?.profilePhotoUri,
       );
     } catch {
       // Keep the restored reminder in-app if notification scheduling fails.
@@ -2218,6 +2424,7 @@ export function CareToolsScreen({
       title: completion.title,
       notes: completion.notes,
       dueAt,
+      allDay: completion.allDay,
       repeat,
       snoozeMinutes: completion.snoozeMinutes ?? 60,
       notificationId,
@@ -2240,6 +2447,16 @@ export function CareToolsScreen({
       { text: "Clear history", style: "destructive", onPress: () => {
         setReminderHistory([]);
         setNotice("Completed reminder history cleared.");
+      } },
+    ]);
+  }
+  function removeReminderCompletion(completion: ReminderCompletion) {
+    Alert.alert("Remove completed reminder?", `Remove “${completion.title}” from completed history?`, [
+      { text: "Cancel", style: "cancel" },
+      { text: "Remove", style: "destructive", onPress: () => {
+        setReminderHistory((current) => current.filter((item) => item.id !== completion.id));
+        setSelectedReminderCompletion(null);
+        setNotice("Completed reminder removed from history.");
       } },
     ]);
   }
@@ -2278,7 +2495,7 @@ export function CareToolsScreen({
     return (
       <View style={[styles.formCard, { backgroundColor: palette.card, borderColor: palette.line }]}>
         <Text style={[styles.cardTitle, { color: palette.text }]}>{editingPetId ? "Edit pet profile" : "Add a pet"}</Text>
-        <CareInput value={petName} onChangeText={setPetName} placeholder="Pet's name *" palette={palette} />
+        <CareInput value={petName} onChangeText={setPetName} placeholder="Pet's name *" palette={palette} maxLength={50} />
         <CareInput value={petSpecies} onChangeText={setPetSpecies} placeholder="Species (e.g. dog, cat, fish) *" palette={palette} />
         <CareInput value={petBreed} onChangeText={setPetBreed} placeholder="Breed or type (optional)" palette={palette} />
         <CareInput value={petMicrochipNumber} onChangeText={setPetMicrochipNumber} placeholder="Microchip number (optional)" palette={palette} />
@@ -2294,8 +2511,22 @@ export function CareToolsScreen({
           })}
         </View>
         <CalendarDateField value={petBirthDate} onChange={setPetBirthDate} placeholder="Birth date (optional)" palette={palette} optional />
+        <CalendarDateField value={petAdoptionDate} onChange={setPetAdoptionDate} placeholder="Adoption date (optional)" palette={palette} optional />
         <CareInput value={petWeight} onChangeText={setPetWeight} placeholder="Weight with units, e.g. 12 kg (optional)" palette={palette} />
         <CareInput value={petAllergies} onChangeText={setPetAllergies} placeholder="Allergies or important notes (optional)" palette={palette} multiline />
+        <Text style={[styles.fieldLabel, { color: palette.muted }]}>PET INSURANCE · OPTIONAL</Text>
+        <CareInput value={petInsuranceProvider} onChangeText={setPetInsuranceProvider} placeholder="Insurance provider" palette={palette} maxLength={80} />
+        <CareInput value={petInsurancePolicyNumber} onChangeText={setPetInsurancePolicyNumber} placeholder="Policy number" palette={palette} maxLength={80} />
+        <Text style={[styles.fieldLabel, { color: palette.muted }]}>EMERGENCY CONTACT · OPTIONAL</Text>
+        <CareInput value={petEmergencyContactName} onChangeText={setPetEmergencyContactName} placeholder="Contact name" palette={palette} maxLength={80} />
+        <View style={styles.inlineInputs}>
+          <View style={styles.grow}>
+            <CareInput value={petEmergencyContactRelationship} onChangeText={setPetEmergencyContactRelationship} placeholder="Relationship" palette={palette} maxLength={50} />
+          </View>
+          <View style={styles.grow}>
+            <CareInput value={petEmergencyContactPhone} onChangeText={setPetEmergencyContactPhone} placeholder="Phone number" palette={palette} keyboardType="phone-pad" maxLength={30} />
+          </View>
+        </View>
         {petBirthDate ? (
           <Pressable accessibilityRole="switch" accessibilityState={{ checked: petBirthdayReminderEnabled }} accessibilityLabel="Toggle birthday reminder" onPress={() => setPetBirthdayReminderEnabled((value) => !value)} style={[styles.reminderOption, { backgroundColor: palette.soft }]}>
             <View style={[styles.checkBox, { borderColor: palette.action, backgroundColor: petBirthdayReminderEnabled ? palette.action : "transparent" }]}> 
@@ -2338,7 +2569,7 @@ export function CareToolsScreen({
           <View style={[styles.dropdownCaret, { borderColor: palette.primary }]} />
         </Pressable>
         {healthType === "Other" ? <CareInput value={customHealthType} onChangeText={setCustomHealthType} placeholder="Enter other record type *" palette={palette} /> : null}
-        <CareInput value={healthTitle} onChangeText={setHealthTitle} placeholder="Name, dose, or visit reason (optional)" palette={palette} />
+        <CareInput value={healthTitle} onChangeText={setHealthTitle} placeholder="Name, dose, or visit reason (optional)" palette={palette} maxLength={50} />
         <CalendarDateField value={healthDateGiven} onChange={setHealthDateGiven} placeholder="Choose date given *" palette={palette} />
         <CalendarDateField value={healthNextDueDate} onChange={setHealthNextDueDate} placeholder="Choose next due date (optional)" palette={palette} optional />
         <CareInput value={healthClinic} onChangeText={setHealthClinic} placeholder="Clinic or veterinarian (optional)" palette={palette} />
@@ -2425,9 +2656,28 @@ export function CareToolsScreen({
     const albumPhotos = pet.albumPhotos ?? [];
     const pinnedAlbumPhotos = albumPhotos.filter((photo) => photo.pinned).slice(0, MAX_PINNED_PET_ALBUM_PHOTOS);
     const normalizedHealthQuery = healthSearchQuery.trim().toLocaleLowerCase();
-    const filteredRecords = records.filter((record) => !normalizedHealthQuery
-      || [record.type, record.customType, record.title, record.dateGiven, record.nextDueDate, record.clinic, record.notes]
-        .some((value) => value?.toLocaleLowerCase().includes(normalizedHealthQuery)));
+    const normalizedClinicFilter = healthClinicFilter.trim().toLocaleLowerCase();
+    const todayDate = localDateInput(new Date());
+    const rangeStartDate = healthDateRange === "this-year"
+      ? `${new Date().getFullYear()}-01-01`
+      : (() => {
+        const start = new Date();
+        start.setDate(start.getDate() - (healthDateRange === "30-days" ? 29 : 89));
+        return localDateInput(start);
+      })();
+    const availableHealthTypes = [...new Set(records.map(getHealthRecordGroupLabel))].sort((a, b) => a.localeCompare(b));
+    const filteredRecords = records.filter((record) => {
+      const matchesQuery = !normalizedHealthQuery
+        || [record.type, record.customType, record.title, record.dateGiven, record.nextDueDate, record.clinic, record.notes]
+          .some((value) => value?.toLocaleLowerCase().includes(normalizedHealthQuery));
+      const matchesType = healthTypeFilter === "All types" || getHealthRecordGroupLabel(record) === healthTypeFilter;
+      const matchesDateRange = healthDateRange === "all" || (record.dateGiven >= rangeStartDate && record.dateGiven <= todayDate);
+      const matchesClinic = !normalizedClinicFilter || record.clinic.toLocaleLowerCase().includes(normalizedClinicFilter);
+      return matchesQuery && matchesType && matchesDateRange && matchesClinic;
+    });
+    const activeHealthFilterCount = Number(healthTypeFilter !== "All types")
+      + Number(healthDateRange !== "all")
+      + Number(Boolean(normalizedClinicFilter));
     const vetVisits = filteredRecords.filter((record) => record.type === "Vet visit");
     const recordTypes = [...new Set(filteredRecords.map(getHealthRecordGroupLabel))];
     const petWeights = weightMeasurements
@@ -2515,7 +2765,28 @@ export function CareToolsScreen({
           </View>
           {pet.weight ? <Text style={[styles.bodyText, { color: palette.text }]}>Profile weight: {pet.weight}</Text> : null}
           {pet.microchipNumber ? <Text style={[styles.bodyText, { color: palette.text }]}>Microchip number: {pet.microchipNumber}</Text> : null}
-          {pet.allergies ? <Text style={[styles.bodyText, { color: palette.text }]}>Notes: {pet.allergies}</Text> : null}
+          {pet.adoptionDate ? <Text style={[styles.bodyText, { color: palette.text }]}>Adoption date: {new Date(`${pet.adoptionDate}T00:00:00`).toLocaleDateString()}</Text> : null}
+          {pet.insuranceProvider || pet.insurancePolicyNumber ? (
+            <View style={styles.petDetailInfoGroup}>
+              <Text style={[styles.fieldLabel, { color: palette.muted }]}>PET INSURANCE</Text>
+              {pet.insuranceProvider ? <Text style={[styles.bodyText, { color: palette.text }]}>{pet.insuranceProvider}</Text> : null}
+              {pet.insurancePolicyNumber ? <Text style={[styles.bodyText, { color: palette.text }]}>Policy number: {pet.insurancePolicyNumber}</Text> : null}
+            </View>
+          ) : null}
+          {pet.emergencyContactName || pet.emergencyContactRelationship || pet.emergencyContactPhone ? (
+            <View style={styles.petDetailInfoGroup}>
+              <Text style={[styles.fieldLabel, { color: palette.muted }]}>EMERGENCY CONTACT</Text>
+              {pet.emergencyContactName ? <Text style={[styles.bodyText, { color: palette.text }]}>{pet.emergencyContactName}</Text> : null}
+              {pet.emergencyContactRelationship ? <Text style={[styles.bodyText, { color: palette.text }]}>{pet.emergencyContactRelationship}</Text> : null}
+              {pet.emergencyContactPhone ? <Text style={[styles.bodyText, { color: palette.text }]}>{pet.emergencyContactPhone}</Text> : null}
+            </View>
+          ) : null}
+          {pet.allergies ? (
+            <View style={styles.notesHeaderRow}>
+              <Text style={[styles.bodyText, styles.grow, { color: palette.text }]}>Notes: {pet.allergies}</Text>
+              <CopyNotesButton text={pet.allergies} palette={palette} onCopied={() => setNotice("Notes copied to clipboard.")} />
+            </View>
+          ) : null}
         </View>
 
         <View style={[styles.petAlbumCard, { backgroundColor: palette.card, borderColor: palette.line }]}>
@@ -2572,7 +2843,7 @@ export function CareToolsScreen({
         </View>
 
         <View style={[styles.weightCard, { backgroundColor: palette.card, borderColor: palette.line }]}>
-          <View style={styles.healthHistoryHeading}>
+          <View style={[styles.healthHistoryHeading, styles.weightTrackingHeading]}>
             <View style={styles.grow}>
               <Text style={[styles.fieldLabel, { color: palette.primary }]}>GROWTH & WELLNESS</Text>
               <Text style={[styles.cardTitle, { color: palette.text }]}>Weight tracking</Text>
@@ -2606,24 +2877,81 @@ export function CareToolsScreen({
           <CareButton title="＋  Add weight measurement" onPress={() => setWeightFormOpen(true)} palette={palette} secondary />
         </View>
 
-        <View style={styles.healthHistoryHeading}>
-          <View style={styles.grow}>
-            <Text style={[styles.fieldLabel, { color: palette.primary }]}>HEALTHCARE</Text>
-            <Text style={[styles.cardTitle, { color: palette.text }]}>Health & vet history</Text>
+        <View style={[styles.listSectionCard, { backgroundColor: palette.card, borderColor: palette.line }]}>
+          <View style={[styles.healthHistoryHeading, styles.listSectionHeader]}>
+            <View style={styles.grow}>
+              <Text style={[styles.fieldLabel, { color: palette.primary }]}>HEALTHCARE</Text>
+              <Text style={[styles.cardTitle, { color: palette.text }]}>Health & vet history</Text>
+            </View>
+            <Text style={[styles.helpText, { color: palette.muted }]}>{filteredRecords.length}{filteredRecords.length !== records.length ? ` of ${records.length}` : ""} records</Text>
           </View>
-          <Text style={[styles.helpText, { color: palette.muted }]}>{records.length} records</Text>
-        </View>
-
-        <>
-            <CareButton title="＋  Add healthcare record" onPress={beginAddHealthRecord} palette={palette} />
-            <TextInput
-              accessibilityLabel={`Search ${pet.name}'s health history`}
-              value={healthSearchQuery}
-              onChangeText={setHealthSearchQuery}
-              placeholder="Search health history"
-              placeholderTextColor={palette.muted}
-              style={[styles.input, styles.healthSearchInput, { backgroundColor: palette.bg, color: palette.text, borderColor: palette.line }]}
-            />
+          <CareButton title="＋  Add healthcare record" onPress={beginAddHealthRecord} palette={palette} />
+          <Pressable
+            accessibilityRole="button"
+            accessibilityState={{ expanded: healthFiltersExpanded }}
+            accessibilityLabel={`${healthFiltersExpanded ? "Hide" : "Show"} health history filters${activeHealthFilterCount ? `, ${activeHealthFilterCount} active` : ""}`}
+            onPress={() => setHealthFiltersExpanded((expanded) => !expanded)}
+            style={({ pressed }) => [styles.healthFilterDisclosure, { backgroundColor: palette.soft, opacity: pressed ? 0.76 : 1 }]}
+          >
+            <Text style={[styles.healthFilterDisclosureTitle, { color: palette.text }]}>Filters{activeHealthFilterCount ? ` · ${activeHealthFilterCount} active` : ""}</Text>
+            <Text style={[styles.healthFilterDisclosureAction, { color: palette.primary }]}>{healthFiltersExpanded ? "Hide" : "Show"}</Text>
+          </Pressable>
+          {healthFiltersExpanded ? (
+            <View style={styles.healthFiltersPanel}>
+              <Text style={[styles.fieldLabel, { color: palette.muted }]}>FILTER BY RECORD TYPE</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
+                {["All types", ...availableHealthTypes].map((type) => {
+                  const selected = healthTypeFilter === type;
+                  return (
+                    <Pressable
+                      key={type}
+                      accessibilityRole="radio"
+                      accessibilityState={{ selected }}
+                      onPress={() => setHealthTypeFilter(type)}
+                      style={[styles.chip, { backgroundColor: selected ? palette.action : palette.bg, borderColor: selected ? palette.action : palette.line }]}
+                    >
+                      <Text style={[styles.chipText, { color: selected ? "#FFFFFF" : palette.text }]}>{type}</Text>
+                    </Pressable>
+                  );
+                })}
+              </ScrollView>
+              <Text style={[styles.fieldLabel, { color: palette.muted }]}>DATE GIVEN</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
+                {HEALTH_DATE_RANGE_OPTIONS.map((option) => {
+                  const selected = healthDateRange === option.id;
+                  return (
+                    <Pressable
+                      key={option.id}
+                      accessibilityRole="radio"
+                      accessibilityState={{ selected }}
+                      onPress={() => setHealthDateRange(option.id)}
+                      style={[styles.chip, { backgroundColor: selected ? palette.action : palette.bg, borderColor: selected ? palette.action : palette.line }]}
+                    >
+                      <Text style={[styles.chipText, { color: selected ? "#FFFFFF" : palette.text }]}>{option.label}</Text>
+                    </Pressable>
+                  );
+                })}
+              </ScrollView>
+              <TextInput
+                accessibilityLabel={`Filter ${pet.name}'s health history by clinic or provider`}
+                value={healthClinicFilter}
+                onChangeText={setHealthClinicFilter}
+                placeholder="Filter by clinic or provider"
+                placeholderTextColor={palette.muted}
+                style={[styles.input, styles.healthClinicFilter, { backgroundColor: palette.bg, color: palette.text, borderColor: palette.line }]}
+              />
+            </View>
+          ) : null}
+          <TextInput
+            accessibilityLabel={`Search ${pet.name}'s health history`}
+            value={healthSearchQuery}
+            onChangeText={setHealthSearchQuery}
+            placeholder="Search health history"
+            placeholderTextColor={palette.muted}
+            style={[styles.input, styles.healthSearchInput, { backgroundColor: palette.bg, color: palette.text, borderColor: palette.line }]}
+          />
+          <View style={[styles.healthHistoryDivider, { backgroundColor: palette.line }]} />
+          <ScrollView style={[styles.listSectionScroll, styles.healthHistoryResults]} contentContainerStyle={styles.listSectionScrollContent} nestedScrollEnabled showsVerticalScrollIndicator>
             {recordTypes.map((type) => {
               const typeRecords = filteredRecords.filter((record) => getHealthRecordGroupLabel(record) === type);
               if (typeRecords.length === 0) return null;
@@ -2645,10 +2973,13 @@ export function CareToolsScreen({
                           <View style={styles.grow}>
                             <Text style={[styles.healthRecordTitle, { color: palette.text }]}>{record.title}</Text>
                             <Text style={[styles.bodyText, { color: palette.muted }]}>Given: {record.dateGiven}</Text>
+                            <View style={styles.journalAttachmentIndicators}>
+                              {(record.photos?.length ?? 0) > 0 ? <Text style={[styles.journalIndicator, { color: palette.primary }]}>＋▧ {record.photos?.length} photos</Text> : null}
+                              {(record.documents?.length ?? 0) > 0 ? <Text style={[styles.journalIndicator, { color: palette.primary }]}>＋📎 {record.documents?.length} files</Text> : null}
+                            </View>
                           </View>
                           {record.nextDueDate ? <Text style={[styles.nextDueText, { color: overdue ? "#C46C5C" : palette.primary }]}>{overdue ? "Overdue · " : "Next · "}{record.nextDueDate}</Text> : null}
                         </View>
-                        <Text style={[styles.openDetailsHint, { color: palette.primary }]}>Tap to view full details  →</Text>
                       </Pressable>
                     );
                   })}
@@ -2660,7 +2991,8 @@ export function CareToolsScreen({
             ) : filteredRecords.length === 0 ? (
               <EmptyCard title="No matching records" description="Try a different title, record type, clinic, date, or note." palette={palette} />
             ) : null}
-        </>
+          </ScrollView>
+        </View>
       </>
     );
   }
@@ -2689,7 +3021,7 @@ export function CareToolsScreen({
           <EmptyCard title="No pet profiles yet" description="Add a profile to start a personal care record." palette={palette} />
         ) : pets.map((pet) => (
           <View key={pet.id} style={[styles.recordCard, { backgroundColor: palette.card, borderColor: palette.line }]}>
-            <Pressable accessibilityRole="button" accessibilityLabel={`Open ${pet.name}'s profile and healthcare history`} onPress={() => setActivePetId(pet.id)} style={({ pressed }) => [styles.cardHeaderRow, pressed && { opacity: 0.75 }]}>
+              <Pressable accessibilityRole="button" accessibilityLabel={`Open ${pet.name}'s profile and healthcare history`} onPress={() => { setHealthSearchQuery(""); setHealthFiltersExpanded(false); setHealthTypeFilter("All types"); setHealthDateRange("all"); setHealthClinicFilter(""); setActivePetId(pet.id); }} style={({ pressed }) => [styles.cardHeaderRow, pressed && { opacity: 0.75 }]}>
               {pet.profilePhotoUri ? (
                 <Image source={{ uri: pet.profilePhotoUri }} contentFit="cover" style={styles.petProfileImage} />
               ) : (
@@ -2718,8 +3050,8 @@ export function CareToolsScreen({
           <View style={[styles.formCard, { backgroundColor: palette.card, borderColor: palette.line }]}>
             <Text style={[styles.cardTitle, { color: palette.text }]}>{editingJournalEntryId ? "Edit journal entry" : "Add a care note"}</Text>
             <Text style={[styles.fieldLabel, { color: palette.muted }]}>FOR WHICH PET?</Text>
-            <PetChips pets={pets} selectedPetId={selectedPetId} onSelect={setSelectedPetId} palette={palette} />
-            <CareInput value={entryTitle} onChangeText={setEntryTitle} placeholder="Short title *" palette={palette} />
+            <PetChips pets={pets} selectedPetId={selectedPetId} onSelect={setSelectedPetId} palette={palette} allowGeneral />
+            <CareInput value={entryTitle} onChangeText={setEntryTitle} placeholder="Short title *" palette={palette} maxLength={50} />
             <CareInput value={entryNotes} onChangeText={setEntryNotes} placeholder="Notes, measurements, or observations" palette={palette} multiline />
             <Text style={[styles.fieldLabel, { color: palette.muted }]}>PHOTOS · {journalPhotos.length}/5</Text>
             <Text style={[styles.helpText, { color: palette.muted }]}>Attach up to five photos to this entry.</Text>
@@ -2747,23 +3079,24 @@ export function CareToolsScreen({
                 <IconActionButton icon="remove" label={`Remove ${document.name}`} onPress={() => removeDraftJournalDocument(document)} palette={palette} destructive />
               </View>
             ))}
-            <CareButton title={editingJournalEntryId ? "Update journal entry" : "Save journal entry"} onPress={saveJournalEntry} palette={palette} disabled={pets.length === 0} />
+            <CareButton title={editingJournalEntryId ? "Update journal entry" : "Save journal entry"} onPress={saveJournalEntry} palette={palette} disabled={pets.length === 0 && selectedPetId !== GENERAL_REMINDER_PET_ID} />
             <Text style={[styles.helpText, { color: palette.muted }]}>Entries are time-stamped and stored locally on this device.</Text>
           </View>
         </>
       );
     }
     return (
-      <>
+      <View style={styles.journalListPage}>
         <CareButton title="＋  Add a care note" onPress={beginAddJournalEntry} palette={palette} />
-        <Text style={[styles.sectionTitle, { color: palette.text }]}>Recent entries</Text>
-        {sortedJournal.length === 0 ? (
-          <EmptyCard title="Your journal is ready" description="Log a meal, health observation, weight, or vet visit to start a history." palette={palette} />
-        ) : sortedJournal.map((entry) => {
+        <View style={[styles.listSectionCard, styles.journalListCard, { backgroundColor: palette.card, borderColor: palette.line }]}>
+          <ScrollView style={styles.journalEntriesScroll} contentContainerStyle={styles.listSectionScrollContent} nestedScrollEnabled showsVerticalScrollIndicator>
+            {sortedJournal.length === 0 ? (
+              <EmptyCard title="Your journal is ready" description="Log a meal, health observation, weight, or vet visit to start a history." palette={palette} />
+            ) : sortedJournal.map((entry) => {
           const entryPet = petById.get(entry.petId);
           return (
           <View key={entry.id} style={[styles.recordCard, { backgroundColor: palette.card, borderColor: palette.line }]}>
-            <Pressable accessibilityRole="button" accessibilityLabel={`Open journal entry ${entry.title}`} onPress={() => setSelectedJournalEntry(entry)} style={({ pressed }) => [styles.journalEntryOpen, { opacity: pressed ? 0.78 : 1 }]}>
+            <Pressable accessibilityRole="button" accessibilityLabel={`Open journal entry ${entry.title}`} accessibilityHint="Opens the full journal entry and attachments" onPress={() => setSelectedJournalEntry(entry)} style={({ pressed }) => [styles.journalEntryOpen, { opacity: pressed ? 0.78 : 1 }]}>
               <View style={styles.cardHeaderRow}>
                 {entryPet?.profilePhotoUri ? (
                   <View style={styles.recordPetIdentity}>
@@ -2773,7 +3106,7 @@ export function CareToolsScreen({
                 ) : <View style={[styles.iconBadge, { backgroundColor: palette.soft }]}><SolidPetIcon name={iconNameOrDefault(entry.icon ?? getJournalIcon(entry.type))} color={palette.primary} cutout={palette.soft} /></View>}
                 <View style={styles.grow}>
                   <Text style={[styles.cardTitle, { color: palette.text }]}>{entry.title}</Text>
-                  <Text style={[styles.bodyText, { color: palette.primary }]}>{entryPet?.name ?? "Pet"}</Text>
+                  <Text style={[styles.bodyText, { color: palette.primary }]}>{entryPet?.name ?? (entry.petId === GENERAL_REMINDER_PET_ID ? "General" : "Pet")}</Text>
                   <View style={styles.journalAttachmentIndicators}>
                     {(entry.photos?.length ?? 0) > 0 ? <Text style={[styles.journalIndicator, { color: palette.primary }]}>＋▧ {entry.photos?.length} photos</Text> : null}
                     {(entry.documents?.length ?? 0) > 0 ? <Text style={[styles.journalIndicator, { color: palette.primary }]}>＋📎 {entry.documents?.length} files</Text> : null}
@@ -2783,17 +3116,12 @@ export function CareToolsScreen({
               </View>
               {entry.notes ? <Text style={[styles.bodyText, { color: palette.muted }]}>{entry.notes}</Text> : null}
             </Pressable>
-            <View style={styles.journalListActions}>
-              <Text style={[styles.helpText, { color: palette.primary }]}>Tap to view details and attachments</Text>
-              <View style={styles.journalEntryActions}>
-                <IconActionButton icon="edit" label={`Edit ${entry.title}`} onPress={() => beginEditJournalEntry(entry)} palette={palette} />
-                <IconActionButton icon="remove" label={`Remove ${entry.title}`} onPress={() => removeJournalEntry(entry)} palette={palette} destructive />
-              </View>
-            </View>
           </View>
           );
-        })}
-      </>
+            })}
+          </ScrollView>
+        </View>
+      </View>
     );
   }
 
@@ -2804,30 +3132,44 @@ export function CareToolsScreen({
     return (
       <>
         {reminderFormOpen ? (
-          <>
+          <View style={styles.reminderFormPage}>
             <Pressable onPress={resetReminderForm} style={styles.detailBackButton}>
               <Text style={{ color: palette.primary, fontWeight: "800" }}>‹  Back to Reminders</Text>
             </Pressable>
+        <ScrollView style={styles.reminderFormScroll} contentContainerStyle={styles.reminderFormContent} nestedScrollEnabled keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator>
         <View style={[styles.formCard, { backgroundColor: palette.card, borderColor: palette.line }]}>
           <Text style={[styles.cardTitle, { color: palette.text }]}>{editingReminderId ? "Edit care reminder" : "Schedule a care reminder"}</Text>
           <Text style={[styles.fieldLabel, { color: palette.muted }]}>FOR WHICH PET?</Text>
           <PetChips pets={pets} selectedPetId={selectedPetId} onSelect={setSelectedPetId} palette={palette} allowGeneral />
-          <CareInput value={reminderTitle} onChangeText={(value) => { setReminderTitle(value); if (value.trim()) setReminderTitleError(false); }} placeholder="Medication, grooming, checkup… *" palette={palette} error={reminderTitleError} />
+          <CareInput value={reminderTitle} onChangeText={(value) => { setReminderTitle(value); if (value.trim()) setReminderTitleError(false); }} placeholder="Medication, grooming, checkup… *" palette={palette} error={reminderTitleError} maxLength={50} />
           <CareInput value={reminderNotes} onChangeText={setReminderNotes} placeholder="Notes or instructions (optional)" palette={palette} multiline />
-          <View style={styles.inlineInputs}>
-            <View style={styles.grow}>
-              <CalendarDateField value={reminderDate} onChange={(value) => { setReminderDate(value); setReminderDateError(false); setReminderScheduleError(false); }} placeholder="Choose reminder date" palette={palette} error={reminderDateError || reminderScheduleError} />
+          <Pressable accessibilityRole="switch" accessibilityState={{ checked: reminderAllDay }} accessibilityLabel="Whole day event" onPress={() => { setReminderAllDay((value) => !value); setReminderTimeError(false); setReminderScheduleError(false); }} style={[styles.reminderOption, { backgroundColor: palette.soft }]}>
+            <View style={[styles.checkBox, { borderColor: palette.action, backgroundColor: reminderAllDay ? palette.action : "transparent" }]}>
+              {reminderAllDay ? <Text style={{ color: "#FFFFFF", fontWeight: "900" }}>✓</Text> : null}
             </View>
-            <View style={styles.timeInput}>
-              <ReminderTimeField value={reminderTime} onChange={(value) => { setReminderTime(value); setReminderTimeError(false); setReminderScheduleError(false); }} palette={palette} error={reminderTimeError || reminderScheduleError} />
+            <Text style={[styles.reminderOptionText, { color: palette.text }]}>Whole day event</Text>
+          </Pressable>
+          {reminderAllDay ? (
+            <CalendarDateField value={reminderDate} onChange={(value) => { setReminderDate(value); setReminderDateError(false); setReminderScheduleError(false); }} placeholder="Choose reminder date" palette={palette} error={reminderDateError || reminderScheduleError} />
+          ) : (
+            <View style={styles.inlineInputs}>
+              <View style={styles.grow}>
+                <CalendarDateField value={reminderDate} onChange={(value) => { setReminderDate(value); setReminderDateError(false); setReminderScheduleError(false); }} placeholder="Choose reminder date" palette={palette} error={reminderDateError || reminderScheduleError} />
+              </View>
+              <View style={styles.timeInput}>
+                <ReminderTimeField value={reminderTime} onChange={(value) => { setReminderTime(value); setReminderTimeError(false); setReminderScheduleError(false); }} palette={palette} error={reminderTimeError || reminderScheduleError} />
+              </View>
             </View>
-          </View>
-          {Platform.OS === "web" ? <Text style={[styles.helpText, { color: palette.muted }]}>Enter time with AM or PM, such as 9:00 AM.</Text> : null}
+          )}
+          {!reminderAllDay && Platform.OS === "web" ? <Text style={[styles.helpText, { color: palette.muted }]}>Enter time with AM or PM, such as 9:00 AM.</Text> : null}
           <Text style={[styles.fieldLabel, { color: palette.muted }]}>REPEAT</Text>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
             {REPEAT_OPTIONS.map((option) => (
               <Pressable key={option.id} onPress={() => setReminderRepeat(option.id)} style={[styles.chip, { backgroundColor: reminderRepeat === option.id ? palette.action : palette.bg, borderColor: reminderRepeat === option.id ? palette.action : palette.line }]}>
-                <Text style={[styles.chipText, { color: reminderRepeat === option.id ? "#FFFFFF" : palette.text }]}>{option.label}</Text>
+                <View style={styles.repeatOptionContent}>
+                  <View style={[styles.repeatColorBadge, { backgroundColor: REMINDER_REPEAT_COLORS[option.id] }]} />
+                  <Text style={[styles.chipText, { color: reminderRepeat === option.id ? "#FFFFFF" : palette.text }]}>{option.label}</Text>
+                </View>
               </Pressable>
             ))}
           </ScrollView>
@@ -2857,94 +3199,142 @@ export function CareToolsScreen({
           </View>
           <Text style={[styles.helpText, { color: palette.muted }]}>Notifications are scheduled one occurrence at a time. Mark a repeating reminder done to schedule its next occurrence.</Text>
         </View>
-          </>
+        </ScrollView>
+          </View>
         ) : (
           <>
+        <View style={styles.reminderListPage}>
         <CareButton title="＋  Add a reminder" onPress={beginAddReminder} palette={palette} />
-        <Text style={[styles.sectionTitle, { color: palette.text }]}>Upcoming reminders</Text>
-        {sortedReminders.length === 0 ? (
-          <EmptyCard title="No reminders yet" description="Add a medication, grooming, or checkup reminder for one of your pets." palette={palette} />
-        ) : sortedReminders.map((reminder) => {
+        <View style={[styles.reminderViewTabs, { backgroundColor: palette.soft }]} accessibilityRole="tablist">
+          <Pressable
+            accessibilityRole="tab"
+            accessibilityState={{ selected: !completedHistoryOpen }}
+            onPress={() => setCompletedHistoryOpen(false)}
+            style={[styles.tab, !completedHistoryOpen && { backgroundColor: palette.card }]}
+          >
+            <Text style={[styles.tabText, { color: !completedHistoryOpen ? palette.primary : palette.muted }]}>Upcoming</Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="tab"
+            accessibilityState={{ selected: completedHistoryOpen }}
+            onPress={() => setCompletedHistoryOpen(true)}
+            style={[styles.tab, completedHistoryOpen && { backgroundColor: palette.card }]}
+          >
+            <Text style={[styles.tabText, { color: completedHistoryOpen ? palette.primary : palette.muted }]}>Completed</Text>
+          </Pressable>
+        </View>
+        {!completedHistoryOpen ? (
+        <View style={[styles.listSectionCard, styles.reminderListCard, { backgroundColor: palette.card, borderColor: palette.line }]}>
+          <Text style={[styles.sectionTitle, styles.listSectionTitle, { color: palette.text }]}>Upcoming reminders</Text>
+          <ScrollView style={styles.reminderListScroll} contentContainerStyle={styles.listSectionScrollContent} nestedScrollEnabled showsVerticalScrollIndicator>
+            {sortedReminders.length === 0 ? (
+              <EmptyCard title="No reminders yet" description="Add a medication, grooming, or checkup reminder for one of your pets." palette={palette} />
+            ) : sortedReminders.map((reminder) => {
           const overdue = new Date(reminder.dueAt) < new Date();
           const reminderPet = petById.get(reminder.petId);
           return (
-            <View key={reminder.id} style={[styles.recordCard, { backgroundColor: palette.card, borderColor: overdue ? "#A61B1B" : palette.line }]}>
+            <View key={reminder.id} style={[styles.recordCard, styles.reminderRecordCard, reminderPet?.profilePhotoUri && styles.reminderRecordCardWithPhoto, { backgroundColor: palette.card, borderColor: overdue ? "#A61B1B" : palette.line }]}>
+              <View pointerEvents="none" style={[styles.reminderRepeatStripe, { backgroundColor: REMINDER_REPEAT_COLORS[reminder.repeat] }]} />
               <View style={styles.cardHeaderRow}>
-                {reminderPet?.profilePhotoUri ? (
-                  <View style={styles.recordPetIdentity}>
-                    <Image source={{ uri: reminderPet.profilePhotoUri }} contentFit="cover" style={styles.recordPetAvatar} />
-                    <View style={[styles.iconBadge, styles.recordPetIconBadge, { backgroundColor: palette.soft }]}><SolidPetIcon name={iconNameOrDefault(getReminderIcon(reminder, healthRecords))} color={palette.primary} cutout={palette.soft} size={16} /></View>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={`View full details for reminder ${reminder.title}`}
+                  accessibilityHint="Opens reminder details"
+                  onPress={() => setSelectedReminder(reminder)}
+                  style={({ pressed }) => [styles.reminderDetailsPressable, { opacity: pressed ? 0.78 : 1 }]}
+                >
+                  {reminderPet?.profilePhotoUri ? (
+                    <View style={styles.recordPetIdentity}>
+                      <Image source={{ uri: reminderPet.profilePhotoUri }} contentFit="cover" style={styles.recordPetAvatar} />
+                      <View style={[styles.iconBadge, styles.recordPetIconBadge, { backgroundColor: palette.soft }]}><SolidPetIcon name={iconNameOrDefault(getReminderIcon(reminder, healthRecords))} color={palette.primary} cutout={palette.soft} size={16} /></View>
+                    </View>
+                  ) : <View style={[styles.iconBadge, { backgroundColor: palette.soft }]}><SolidPetIcon name={iconNameOrDefault(getReminderIcon(reminder, healthRecords))} color={palette.primary} cutout={palette.soft} /></View>}
+                  <View style={styles.grow}>
+                    <Text style={[styles.cardTitle, { color: palette.text }]}>{reminder.title}</Text>
+                    <Text style={[styles.bodyText, { color: palette.primary }]}>{reminderPet?.name ?? "General"} · {reminder.repeat === "once" ? "One-time" : `Repeats ${reminder.repeat}`}</Text>
+                    {reminder.notes ? <Text style={[styles.bodyText, { color: palette.muted }]}>{reminder.notes}</Text> : null}
+                    {reminder.notificationId ? <Text style={[styles.helpText, { color: palette.muted }]}>Device notification scheduled</Text> : null}
                   </View>
-                ) : <View style={[styles.iconBadge, { backgroundColor: palette.soft }]}><SolidPetIcon name={iconNameOrDefault(getReminderIcon(reminder, healthRecords))} color={palette.primary} cutout={palette.soft} /></View>}
-                <View style={styles.grow}>
-                  <Text style={[styles.cardTitle, { color: palette.text }]}>{reminder.title}</Text>
-                  <Text style={[styles.bodyText, { color: palette.primary }]}>{reminderPet?.name ?? "General"} · {reminder.repeat === "once" ? "One-time" : `Repeats ${reminder.repeat}`}</Text>
-                  {reminder.notes ? <Text style={[styles.bodyText, { color: palette.muted }]}>{reminder.notes}</Text> : null}
+                </Pressable>
+                <View style={styles.reminderDateActions}>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={`View full details for reminder ${reminder.title}, due ${displayReminderDueDate(reminder.dueAt, reminder.allDay)}`}
+                    onPress={() => setSelectedReminder(reminder)}
+                    style={[styles.reminderDateBadge, { borderColor: overdue ? "#A61B1B" : palette.line, backgroundColor: overdue ? "#A61B1B" : palette.bg }]}
+                  >
+                    <Text style={[styles.dateText, styles.reminderDateBadgeText, { color: overdue ? "#FFFFFF" : palette.muted }]}>{overdue ? "Overdue · " : reminder.snoozedFrom ? "Snoozed · " : ""}{displayReminderDueDate(reminder.dueAt, reminder.allDay)}</Text>
+                  </Pressable>
+                  {localDateInput(new Date(reminder.dueAt)) === localDateInput(new Date()) ? <CareButton title="Mark done" onPress={() => confirmCompleteReminder(reminder)} palette={palette} /> : null}
+                  {overdue ? <CareButton title={`Snooze ${SNOOZE_OPTIONS.find((option) => option.id === (reminder.snoozeMinutes ?? 60))?.label ?? "1 hour"}`} onPress={() => void snoozeReminder(reminder)} palette={palette} secondary /> : null}
                 </View>
-                <Text style={[styles.dateText, overdue ? styles.overdueReminderDateText : { color: palette.muted }]}>{overdue ? "Overdue · " : reminder.snoozedFrom ? "Snoozed · " : ""}{displayDate(reminder.dueAt)}</Text>
               </View>
-              <Text style={[styles.helpText, { color: palette.muted }]}>{reminder.notificationId ? "Device notification scheduled" : "In-app reminder only"}</Text>
               <View style={styles.actionRow}>
-                <CareButton title={reminder.repeat === "once" ? "Mark done" : "Done · schedule next"} onPress={() => void completeReminder(reminder)} palette={palette} />
-                <CareButton title={`Snooze ${SNOOZE_OPTIONS.find((option) => option.id === (reminder.snoozeMinutes ?? 60))?.label ?? "1 hour"}`} onPress={() => void snoozeReminder(reminder)} palette={palette} secondary />
-                <IconActionButton icon="edit" label={`Edit ${reminder.title}`} onPress={() => beginEditReminder(reminder)} palette={palette} />
                 {!reminder.notificationId && notificationsAvailable() ? <CareButton title="Retry alert" onPress={() => void retryReminderNotification(reminder)} palette={palette} secondary /> : null}
-                <IconActionButton icon="remove" label={`Remove ${reminder.title}`} onPress={() => void deleteReminder(reminder)} palette={palette} destructive />
               </View>
             </View>
           );
-        })}
-        <View style={[styles.historyHeading, { marginTop: 22 }]}>
-          <Text style={[styles.sectionTitle, { color: palette.text }]}>Completed recently</Text>
-          {reminderHistory.length > 0 ? <CareButton title="Clear history" onPress={clearReminderHistory} palette={palette} secondary /> : null}
+            })}
+          </ScrollView>
         </View>
-        {reminderHistory.length > 0 ? (
-          <>
-            <Text style={[styles.fieldLabel, { color: palette.muted }]}>FILTER BY PET</Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
-              {[{ id: "", name: "All pets" }, ...pets].map((pet) => {
-                const selected = reminderHistoryPetFilter === pet.id;
-                return (
-                  <Pressable
-                    key={pet.id || "all-reminder-history"}
-                    accessibilityRole="radio"
-                    accessibilityState={{ selected }}
-                    accessibilityLabel={`${pet.name} completed reminders`}
-                    onPress={() => setReminderHistoryPetFilter(pet.id)}
-                    style={[styles.chip, { backgroundColor: selected ? palette.action : palette.bg, borderColor: selected ? palette.action : palette.line }]}
-                  >
-                    <Text style={[styles.chipText, { color: selected ? "#FFFFFF" : palette.text }]}>{pet.name}</Text>
-                  </Pressable>
-                );
-              })}
-            </ScrollView>
-          </>
-        ) : null}
-        {reminderHistory.length === 0 ? (
-          <Text style={[styles.helpText, { color: palette.muted }]}>Completed reminders will appear here.</Text>
-        ) : visibleReminderHistory.length === 0 ? (
-          <Text style={[styles.helpText, { color: palette.muted }]}>No completed reminders for this pet.</Text>
-        ) : visibleReminderHistory.map((completion) => (
-          <View key={completion.id} style={[styles.recordCard, { backgroundColor: palette.card, borderColor: palette.line }]}>
-            <View style={styles.cardHeaderRow}>
-              <View style={[styles.iconBadge, { backgroundColor: palette.soft }]}><Text style={{ color: palette.primary, fontWeight: "900" }}>✓</Text></View>
-              <View style={styles.grow}>
-                <Text style={[styles.cardTitle, { color: palette.text }]}>{completion.title}</Text>
-                <Text style={[styles.bodyText, { color: palette.muted }]}>{completion.petName} · Due {displayDate(completion.scheduledFor)}</Text>
-              </View>
-              <Text style={[styles.dateText, { color: palette.muted }]}>{displayDate(completion.completedAt)}</Text>
-            </View>
-            <View style={styles.actionRow}>
-              <CareButton
-                title={completion.restoredReminderId ? "Restored" : "Restore reminder"}
-                onPress={() => void restoreCompletedReminder(completion)}
-                palette={palette}
-                secondary
-                disabled={Boolean(completion.restoredReminderId)}
-              />
-            </View>
+        ) : (
+        <View style={[styles.listSectionCard, styles.reminderListCard, { backgroundColor: palette.card, borderColor: palette.line }]}>
+          <View style={[styles.historyHeading, styles.listSectionTitle]}>
+            <Text style={[styles.sectionTitle, { color: palette.text, marginTop: 0 }]}>Completed reminders</Text>
+            {reminderHistory.length > 0 ? <CareButton title="Clear history" onPress={clearReminderHistory} palette={palette} secondary /> : null}
           </View>
-        ))}
+          <ScrollView style={styles.reminderListScroll} contentContainerStyle={styles.listSectionScrollContent} nestedScrollEnabled showsVerticalScrollIndicator>
+            {reminderHistory.length > 0 ? (
+              <>
+                <Text style={[styles.fieldLabel, { color: palette.muted }]}>FILTER BY PET</Text>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
+                  {[{ id: "", name: "All pets" }, ...pets].map((pet) => {
+                    const selected = reminderHistoryPetFilter === pet.id;
+                    return (
+                      <Pressable
+                        key={pet.id || "all-reminder-history"}
+                        accessibilityRole="radio"
+                        accessibilityState={{ selected }}
+                        accessibilityLabel={`${pet.name} completed reminders`}
+                        onPress={() => setReminderHistoryPetFilter(pet.id)}
+                        style={[styles.chip, { backgroundColor: selected ? palette.action : palette.bg, borderColor: selected ? palette.action : palette.line }]}
+                      >
+                        <Text style={[styles.chipText, { color: selected ? "#FFFFFF" : palette.text }]}>{pet.name}</Text>
+                      </Pressable>
+                    );
+                  })}
+                </ScrollView>
+              </>
+            ) : null}
+            {reminderHistory.length === 0 ? (
+              <Text style={[styles.helpText, { color: palette.muted }]}>Completed reminders will appear here.</Text>
+            ) : visibleReminderHistory.length === 0 ? (
+              <Text style={[styles.helpText, { color: palette.muted }]}>No completed reminders for this pet.</Text>
+            ) : visibleReminderHistory.map((completion) => (
+              <View key={completion.id} style={[styles.recordCard, styles.reminderHistoryRecordCard, { backgroundColor: palette.card, borderColor: palette.line }]}>
+                <View pointerEvents="none" style={[styles.reminderRepeatStripe, { backgroundColor: REMINDER_REPEAT_COLORS[completion.repeat ?? "once"] }]} />
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={`View full details for completed reminder ${completion.title}`}
+                  accessibilityHint="Opens completed reminder details"
+                  onPress={() => setSelectedReminderCompletion(completion)}
+                  style={({ pressed }) => [styles.reminderDetailsPressable, { opacity: pressed ? 0.78 : 1 }]}
+                >
+                  <View style={styles.cardHeaderRow}>
+                    <View style={[styles.iconBadge, { backgroundColor: palette.soft }]}><Text style={{ color: palette.primary, fontWeight: "900" }}>✓</Text></View>
+                    <View style={styles.grow}>
+                      <Text style={[styles.cardTitle, { color: palette.text }]}>{completion.title}</Text>
+                      <Text style={[styles.bodyText, { color: palette.muted }]}>{completion.petName} · Due {displayDate(completion.scheduledFor)}</Text>
+                    </View>
+                    <Text style={[styles.dateText, { color: palette.muted }]}>{displayDate(completion.completedAt)}</Text>
+                  </View>
+                </Pressable>
+              </View>
+            ))}
+          </ScrollView>
+        </View>
+        )}
+        </View>
           </>
         )}
       </>
@@ -2961,7 +3351,7 @@ export function CareToolsScreen({
     <SafeAreaView style={[styles.safeArea, { backgroundColor: palette.bg }]}>
       <ScrollView
         ref={careScrollRef}
-        contentContainerStyle={styles.content}
+        contentContainerStyle={[styles.content, (tab === "journal" || tab === "reminders") && styles.journalScreenContent]}
         keyboardShouldPersistTaps="handled"
         refreshControl={(
           <RefreshControl
@@ -2975,7 +3365,7 @@ export function CareToolsScreen({
       >
         <View style={[styles.header, { borderBottomColor: palette.line }]}>
           <Pressable accessibilityRole="button" accessibilityLabel="Back to home" onPress={onBack} style={[styles.backButton, { backgroundColor: palette.soft }]}>
-            <Text style={{ color: palette.primary, fontSize: 24 }}>‹</Text>
+            <HomeIcon color={palette.primary} cutout={palette.soft} size={21} />
           </Pressable>
           <View style={styles.grow}>
             <Text style={[styles.eyebrow, { color: palette.primary }]}>YOUR CARE SPACE</Text>
@@ -3137,24 +3527,233 @@ export function CareToolsScreen({
           {photoViewerUri ? <Image source={{ uri: photoViewerUri }} contentFit="contain" style={styles.photoViewerImage} /> : null}
         </View>
       </Modal>
+      <Modal visible={selectedReminderCompletion !== null} transparent animationType="fade" onRequestClose={() => setSelectedReminderCompletion(null)}>
+        <View style={styles.modalScrim}>
+          {selectedReminderCompletion ? (
+            <View style={[styles.healthDetailModal, { backgroundColor: palette.card }]}>
+              <View style={styles.modalHeader}>
+                <View style={styles.grow}>
+                  <Text style={[styles.fieldLabel, { color: palette.primary }]}>COMPLETED REMINDER</Text>
+                  <Text style={[styles.cardTitle, { color: palette.text }]} numberOfLines={2}>{selectedReminderCompletion.title}</Text>
+                </View>
+                <Pressable accessibilityRole="button" accessibilityLabel="Close completed reminder details" onPress={() => setSelectedReminderCompletion(null)} style={[styles.closeDetailButton, { backgroundColor: palette.soft }]}>
+                  <Text style={{ color: palette.primary, fontSize: 20, fontWeight: "700" }}>×</Text>
+                </Pressable>
+              </View>
+              <ScrollView style={styles.healthDetailScroll} contentContainerStyle={styles.healthDetailContent}>
+                <View style={[styles.healthDetailSection, { borderColor: palette.line }]}>
+                  <Text style={[styles.healthDetailLabel, { color: palette.muted }]}>FOR</Text>
+                  <Text style={[styles.healthDetailValue, { color: palette.text }]}>{selectedReminderCompletion.petName || petById.get(selectedReminderCompletion.petId)?.name || "General reminder"}</Text>
+                </View>
+                <View style={[styles.healthDetailSection, { borderColor: palette.line }]}>
+                  <Text style={[styles.healthDetailLabel, { color: palette.muted }]}>SCHEDULED FOR</Text>
+                  <Text style={[styles.healthDetailValue, { color: palette.text }]}>{displayReminderDueDate(selectedReminderCompletion.scheduledFor, selectedReminderCompletion.allDay)}</Text>
+                </View>
+                <View style={[styles.healthDetailSection, { borderColor: palette.line }]}>
+                  <Text style={[styles.healthDetailLabel, { color: palette.muted }]}>COMPLETED AT</Text>
+                  <Text style={[styles.healthDetailValue, { color: palette.text }]}>{displayDate(selectedReminderCompletion.completedAt)}</Text>
+                </View>
+                {selectedReminderCompletion.repeat ? (
+                  <View style={[styles.healthDetailSection, { borderColor: palette.line }]}>
+                    <Text style={[styles.healthDetailLabel, { color: palette.muted }]}>REPEAT</Text>
+                    <Text style={[styles.healthDetailValue, { color: palette.text }]}>{selectedReminderCompletion.repeat === "once" ? "One-time" : `Repeats ${selectedReminderCompletion.repeat}`}</Text>
+                  </View>
+                ) : null}
+                {selectedReminderCompletion.snoozeMinutes ? (
+                  <View style={[styles.healthDetailSection, { borderColor: palette.line }]}>
+                    <Text style={[styles.healthDetailLabel, { color: palette.muted }]}>SNOOZE DURATION</Text>
+                    <Text style={[styles.healthDetailValue, { color: palette.text }]}>{SNOOZE_OPTIONS.find((option) => option.id === selectedReminderCompletion.snoozeMinutes)?.label ?? `${selectedReminderCompletion.snoozeMinutes} minutes`}</Text>
+                  </View>
+                ) : null}
+                <View style={[styles.healthDetailSection, styles.healthDetailNotes, { borderColor: palette.line }]}>
+                  <View style={styles.notesHeaderRow}>
+                    <Text style={[styles.healthDetailLabel, { color: palette.muted }]}>NOTES</Text>
+                    {selectedReminderCompletion.notes?.trim() ? <CopyNotesButton text={selectedReminderCompletion.notes} palette={palette} onCopied={() => setNotice("Notes copied to clipboard.")} /> : null}
+                  </View>
+                  <Text style={[styles.healthDetailValue, { color: palette.text }]}>{selectedReminderCompletion.notes?.trim() || "No notes added."}</Text>
+                </View>
+                {selectedReminderCompletion.healthRecordId ? (() => {
+                  const linkedRecord = healthRecords.find((record) => record.id === selectedReminderCompletion.healthRecordId);
+                  return linkedRecord ? (
+                    <View style={[styles.healthDetailSection, { borderColor: palette.line }]}>
+                      <Text style={[styles.healthDetailLabel, { color: palette.muted }]}>LINKED HEALTHCARE RECORD</Text>
+                      <Text style={[styles.healthDetailValue, { color: palette.text }]}>{linkedRecord.title} · {linkedRecord.dateGiven}</Text>
+                    </View>
+                  ) : null;
+                })() : null}
+              </ScrollView>
+              <View style={styles.healthDetailActions}>
+                <CareButton
+                  title={selectedReminderCompletion.restoredReminderId ? "Restored" : "Restore reminder"}
+                  onPress={() => {
+                    const completion = selectedReminderCompletion;
+                    setSelectedReminderCompletion(null);
+                    void restoreCompletedReminder(completion);
+                  }}
+                  palette={palette}
+                  secondary
+                  disabled={Boolean(selectedReminderCompletion.restoredReminderId)}
+                />
+                <IconActionButton
+                  icon="remove"
+                  label={`Remove completed reminder ${selectedReminderCompletion.title}`}
+                  onPress={() => removeReminderCompletion(selectedReminderCompletion)}
+                  palette={palette}
+                  destructive
+                />
+              </View>
+            </View>
+          ) : null}
+        </View>
+      </Modal>
+      <Modal visible={selectedReminder !== null} transparent animationType="fade" onRequestClose={() => setSelectedReminder(null)}>
+        <View style={styles.modalScrim}>
+          {selectedReminder ? (
+            <View style={[styles.healthDetailModal, { backgroundColor: palette.card }]}>
+              <View style={[styles.modalHeader, styles.recordDetailHeader, { borderBottomColor: palette.line }]}>
+                <View style={styles.grow}>
+                  <Text style={[styles.fieldLabel, { color: palette.primary }]}>CARE REMINDER</Text>
+                  <Text style={[styles.cardTitle, { color: palette.text }]} numberOfLines={2}>{selectedReminder.title}</Text>
+                </View>
+                <Pressable accessibilityRole="button" accessibilityLabel="Close reminder details" onPress={() => setSelectedReminder(null)} style={[styles.closeDetailButton, { backgroundColor: palette.soft }]}>
+                  <Text style={{ color: palette.primary, fontSize: 20, fontWeight: "700" }}>×</Text>
+                </Pressable>
+              </View>
+              <ScrollView style={styles.healthDetailScroll} contentContainerStyle={styles.healthDetailContent}>
+                <View style={[styles.healthDetailSection, { borderColor: palette.line }]}>
+                  <Text style={[styles.healthDetailLabel, { color: palette.muted }]}>FOR</Text>
+                  <Text style={[styles.healthDetailValue, { color: palette.text }]}>{petById.get(selectedReminder.petId)?.name ?? "General reminder"}</Text>
+                </View>
+                <View style={[styles.healthDetailSection, { borderColor: palette.line }]}>
+                  <Text style={[styles.healthDetailLabel, { color: palette.muted }]}>NEXT DUE</Text>
+                  <Text style={[styles.healthDetailValue, { color: new Date(selectedReminder.dueAt) < new Date() ? "#C46C5C" : palette.text }]}>
+                    {new Date(selectedReminder.dueAt) < new Date() ? "Overdue · " : ""}{displayReminderDueDate(selectedReminder.dueAt, selectedReminder.allDay)}
+                  </Text>
+                </View>
+                <View style={[styles.healthDetailSection, { borderColor: palette.line }]}>
+                  <Text style={[styles.healthDetailLabel, { color: palette.muted }]}>REPEAT</Text>
+                  <Text style={[styles.healthDetailValue, { color: palette.text }]}>{selectedReminder.repeat === "once" ? "One-time" : `Repeats ${selectedReminder.repeat}`}</Text>
+                </View>
+                {selectedReminder.notificationId ? (
+                  <View style={[styles.healthDetailSection, { borderColor: palette.line }]}>
+                    <Text style={[styles.healthDetailLabel, { color: palette.muted }]}>NOTIFICATION</Text>
+                    <Text style={[styles.healthDetailValue, { color: palette.text }]}>Device notification scheduled</Text>
+                  </View>
+                ) : null}
+                <View style={[styles.healthDetailSection, { borderColor: palette.line }]}>
+                  <Text style={[styles.healthDetailLabel, { color: palette.muted }]}>SNOOZE DURATION</Text>
+                  <Text style={[styles.healthDetailValue, { color: palette.text }]}>{SNOOZE_OPTIONS.find((option) => option.id === (selectedReminder.snoozeMinutes ?? 60))?.label ?? "1 hour"}</Text>
+                </View>
+                {selectedReminder.snoozedFrom ? (
+                  <View style={[styles.healthDetailSection, { borderColor: palette.line }]}>
+                    <Text style={[styles.healthDetailLabel, { color: palette.muted }]}>SNOOZED FROM</Text>
+                    <Text style={[styles.healthDetailValue, { color: palette.text }]}>{displayDate(selectedReminder.snoozedFrom)}</Text>
+                  </View>
+                ) : null}
+                <View style={[styles.healthDetailSection, styles.healthDetailNotes, { borderColor: palette.line }]}>
+                  <View style={styles.notesHeaderRow}>
+                    <Text style={[styles.healthDetailLabel, { color: palette.muted }]}>NOTES</Text>
+                    {selectedReminder.notes?.trim() ? <CopyNotesButton text={selectedReminder.notes} palette={palette} onCopied={() => setNotice("Notes copied to clipboard.")} /> : null}
+                  </View>
+                  <Text style={[styles.healthDetailValue, { color: palette.text }]}>{selectedReminder.notes?.trim() || "No notes added."}</Text>
+                </View>
+                {selectedReminder.healthRecordId ? (() => {
+                  const linkedRecord = healthRecords.find((record) => record.id === selectedReminder.healthRecordId);
+                  return linkedRecord ? (
+                    <View style={[styles.healthDetailSection, { borderColor: palette.line }]}>
+                      <Text style={[styles.healthDetailLabel, { color: palette.muted }]}>LINKED HEALTHCARE RECORD</Text>
+                      <Text style={[styles.healthDetailValue, { color: palette.text }]}>{linkedRecord.title} · {linkedRecord.dateGiven}</Text>
+                    </View>
+                  ) : null;
+                })() : null}
+              </ScrollView>
+              <View style={styles.healthDetailActions}>
+                {localDateInput(new Date(selectedReminder.dueAt)) === localDateInput(new Date()) ? (
+                  <CareButton
+                    title="Mark done"
+                    onPress={() => {
+                      const reminder = selectedReminder;
+                      setSelectedReminder(null);
+                      confirmCompleteReminder(reminder);
+                    }}
+                    palette={palette}
+                  />
+                ) : null}
+                {new Date(selectedReminder.dueAt) < new Date() ? (
+                  <CareButton
+                    title={`Snooze ${SNOOZE_OPTIONS.find((option) => option.id === (selectedReminder.snoozeMinutes ?? 60))?.label ?? "1 hour"}`}
+                    onPress={() => {
+                      const reminder = selectedReminder;
+                      setSelectedReminder(null);
+                      void snoozeReminder(reminder);
+                    }}
+                    palette={palette}
+                    secondary
+                  />
+                ) : null}
+                <IconActionButton
+                  icon="edit"
+                  label={`Edit ${selectedReminder.title}`}
+                  onPress={() => {
+                    const reminder = selectedReminder;
+                    setSelectedReminder(null);
+                    beginEditReminder(reminder);
+                  }}
+                  palette={palette}
+                />
+                <IconActionButton
+                  icon="remove"
+                  label={`Remove ${selectedReminder.title}`}
+                  onPress={() => {
+                    const reminder = selectedReminder;
+                    setSelectedReminder(null);
+                    void deleteReminder(reminder);
+                  }}
+                  palette={palette}
+                  destructive
+                />
+              </View>
+            </View>
+          ) : null}
+        </View>
+      </Modal>
       <Modal visible={selectedJournalEntry !== null} transparent animationType="fade" onRequestClose={() => setSelectedJournalEntry(null)}>
         <View style={styles.modalScrim}>
           {selectedJournalEntry ? (
             <View style={[styles.journalDetailModal, { backgroundColor: palette.card }]}>
-              <View style={styles.modalHeader}>
+              <View style={[styles.modalHeader, styles.recordDetailHeader, { borderBottomColor: palette.line }]}>
                 <Text style={[styles.cardTitle, styles.grow, { color: palette.text }]}>Journal entry</Text>
                 <Pressable accessibilityRole="button" accessibilityLabel="Close journal entry details" onPress={() => setSelectedJournalEntry(null)} style={[styles.closeDetailButton, { backgroundColor: palette.soft }]}>
                   <Text style={{ color: palette.primary, fontSize: 20, fontWeight: "700" }}>×</Text>
                 </Pressable>
               </View>
               <ScrollView style={styles.journalDetailScroll} contentContainerStyle={styles.journalDetailContent}>
-                <Text style={[styles.healthDetailTitle, { color: palette.text }]}>{selectedJournalEntry.title}</Text>
-                <Text style={[styles.healthDetailPet, { color: palette.primary }]}>{petById.get(selectedJournalEntry.petId)?.name ?? "Pet"}</Text>
-                <Text style={[styles.healthDetailMeta, { color: palette.muted }]}>{new Date(selectedJournalEntry.createdAt).toLocaleString()}</Text>
-                {selectedJournalEntry.notes ? <Text style={[styles.journalDetailNotes, { color: palette.text }]}>{selectedJournalEntry.notes}</Text> : null}
+                <View style={[styles.healthDetailSection, { borderColor: palette.line }]}>
+                  <Text style={[styles.healthDetailLabel, { color: palette.muted }]}>TITLE</Text>
+                  <Text style={[styles.healthDetailTitle, { color: palette.text, marginTop: 0 }]}>{selectedJournalEntry.title}</Text>
+                </View>
+                <View style={[styles.healthDetailSection, { borderColor: palette.line }]}>
+                  <Text style={[styles.healthDetailLabel, { color: palette.muted }]}>PET</Text>
+                  <Text style={[styles.healthDetailPet, { color: palette.primary, marginTop: 0, marginBottom: 0 }]}>{petById.get(selectedJournalEntry.petId)?.name ?? (selectedJournalEntry.petId === GENERAL_REMINDER_PET_ID ? "General" : "Pet")}</Text>
+                </View>
+                <View style={[styles.healthDetailSection, { borderColor: palette.line }]}>
+                  <Text style={[styles.healthDetailLabel, { color: palette.muted }]}>DATE ADDED</Text>
+                  <Text style={[styles.healthDetailMeta, { color: palette.muted, marginTop: 0 }]}>{new Date(selectedJournalEntry.createdAt).toLocaleString()}</Text>
+                </View>
+                {selectedJournalEntry.notes ? (
+                  <View style={[styles.healthDetailSection, styles.healthDetailNotes, { borderColor: palette.line }]}>
+                    <View style={styles.notesHeaderRow}>
+                      <Text style={[styles.healthDetailLabel, { color: palette.muted }]}>NOTES</Text>
+                      <CopyNotesButton text={selectedJournalEntry.notes} palette={palette} onCopied={() => setNotice("Notes copied to clipboard.")} />
+                    </View>
+                    <Text style={[styles.journalDetailNotes, { color: palette.text }]}>{selectedJournalEntry.notes}</Text>
+                  </View>
+                ) : null}
                 {(selectedJournalEntry.photos?.length ?? 0) > 0 ? (
                   <>
-                    <Text style={[styles.healthDetailLabel, { color: palette.muted, marginTop: 16 }]}>PHOTOS · {selectedJournalEntry.photos?.length}</Text>
+                    <View style={[styles.journalDetailAttachmentHeading, { borderColor: palette.line }]}>
+                      <Text style={[styles.healthDetailLabel, { color: palette.muted }]}>PHOTOS · {selectedJournalEntry.photos?.length}</Text>
+                    </View>
                     <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.journalDetailPhotos}>
                       {selectedJournalEntry.photos?.map((uri, index) => (
                         <View key={`${uri}-${index}`} style={styles.journalDetailPhotoItem}>
@@ -3168,7 +3767,9 @@ export function CareToolsScreen({
                 ) : null}
                 {(selectedJournalEntry.documents?.length ?? 0) > 0 ? (
                   <>
-                    <Text style={[styles.healthDetailLabel, { color: palette.muted, marginTop: 16 }]}>ATTACHED DOCUMENTS · {selectedJournalEntry.documents?.length}</Text>
+                    <View style={[styles.journalDetailAttachmentHeading, { borderColor: palette.line }]}>
+                      <Text style={[styles.healthDetailLabel, { color: palette.muted }]}>ATTACHED DOCUMENTS · {selectedJournalEntry.documents?.length}</Text>
+                    </View>
                     {selectedJournalEntry.documents?.map((document) => (
                       <View key={document.id} style={[styles.journalDocumentRow, { borderColor: palette.line }]}>
                         <View style={styles.grow}>
@@ -3184,7 +3785,6 @@ export function CareToolsScreen({
                 ) : null}
               </ScrollView>
               <View style={styles.healthDetailActions}>
-                <CareButton title="Close" onPress={() => setSelectedJournalEntry(null)} palette={palette} secondary />
                 <IconActionButton icon="edit" label={`Edit ${selectedJournalEntry.title}`} onPress={() => beginEditJournalEntry(selectedJournalEntry)} palette={palette} />
                 <IconActionButton icon="remove" label={`Remove ${selectedJournalEntry.title}`} onPress={() => removeJournalEntry(selectedJournalEntry)} palette={palette} destructive />
               </View>
@@ -3222,7 +3822,10 @@ export function CareToolsScreen({
                   <Text style={[styles.healthDetailValue, { color: palette.text }]}>{selectedHealthRecord.clinic || "Not added"}</Text>
                 </View>
                 <View style={[styles.healthDetailSection, styles.healthDetailNotes, { borderColor: palette.line }]}>
-                  <Text style={[styles.healthDetailLabel, { color: palette.muted }]}>NOTES</Text>
+                  <View style={styles.notesHeaderRow}>
+                    <Text style={[styles.healthDetailLabel, { color: palette.muted }]}>NOTES</Text>
+                    {selectedHealthRecord.notes.trim() ? <CopyNotesButton text={selectedHealthRecord.notes} palette={palette} onCopied={() => setNotice("Notes copied to clipboard.")} /> : null}
+                  </View>
                   <Text style={[styles.healthDetailValue, { color: palette.text }]}>{selectedHealthRecord.notes || "No notes added."}</Text>
                 </View>
                 {(selectedHealthRecord.photos?.length ?? 0) > 0 ? (
@@ -3290,11 +3893,13 @@ function EmptyCard({ title, description, palette }: { title: string; description
 const styles = StyleSheet.create({
   safeArea: { flex: 1 },
   content: { width: "100%", maxWidth: 900, alignSelf: "center", paddingHorizontal: 24, paddingBottom: 42 },
+  journalScreenContent: { flexGrow: 1, height: "100%" },
   header: { minHeight: 82, borderBottomWidth: 1, flexDirection: "row", alignItems: "center", gap: 13 },
   backButton: { width: 40, height: 40, borderRadius: 14, alignItems: "center", justifyContent: "center" },
   eyebrow: { fontSize: 8, fontWeight: "800", letterSpacing: 1.6, marginBottom: 4 },
   headerTitle: { fontSize: 23, fontWeight: "700" },
   tabs: { flexDirection: "row", borderRadius: 13, padding: 4, gap: 3, marginTop: 17, marginBottom: 15 },
+  reminderViewTabs: { flexDirection: "row", borderRadius: 13, padding: 4, gap: 3, marginTop: 17, marginBottom: 15 },
   tab: { flex: 1, alignItems: "center", justifyContent: "center", minHeight: 39, borderRadius: 10 },
   tabLabelWrap: { position: "relative", alignItems: "center", justifyContent: "center" },
   tabText: { fontSize: 10, fontWeight: "800" },
@@ -3316,6 +3921,8 @@ const styles = StyleSheet.create({
   chipRow: { flexDirection: "row", gap: 7, paddingVertical: 2 },
   chip: { borderWidth: 1, borderRadius: 999, paddingHorizontal: 12, paddingVertical: 8 },
   chipText: { fontSize: 9, fontWeight: "700" },
+  repeatOptionContent: { flexDirection: "row", alignItems: "center", gap: 6 },
+  repeatColorBadge: { width: 7, height: 7, borderRadius: 4 },
   iconChoice: { width: 68, minHeight: 64, borderWidth: 1, borderRadius: 13, alignItems: "center", justifyContent: "center", gap: 2, paddingHorizontal: 4, paddingVertical: 5 },
   iconChoiceText: { fontSize: 20 },
   iconChoiceLabel: { width: "100%", minHeight: 18, textAlign: "center", fontSize: 7, lineHeight: 9, fontWeight: "700" },
@@ -3339,10 +3946,11 @@ const styles = StyleSheet.create({
   grow: { flex: 1 },
   cardHeaderRow: { flexDirection: "row", alignItems: "flex-start", gap: 10 },
   detailBackButton: { alignSelf: "flex-start", paddingVertical: 10, paddingHorizontal: 2 },
-  petDetailHeader: { flexDirection: "row", alignItems: "center", gap: 13, marginBottom: 5 },
-  petProfileCard: { position: "relative", paddingTop: 52 },
+  petDetailHeader: { flexDirection: "row", alignItems: "flex-start", gap: 13, marginBottom: 5 },
+  petProfileCard: { position: "relative", paddingTop: 14 },
   petProfileActions: { position: "absolute", top: 10, right: 12, zIndex: 2, flexDirection: "row", gap: 7 },
   petDetailCopy: { paddingRight: 72 },
+  petDetailInfoGroup: { gap: 3, marginTop: 2 },
   petListCopy: { paddingRight: 76 },
   petDetailAvatar: { width: 82, height: 82, borderRadius: 24 },
   petDetailAvatarPlaceholder: { alignItems: "center", justifyContent: "center" },
@@ -3352,7 +3960,13 @@ const styles = StyleSheet.create({
   petDetailName: { fontSize: 22, fontWeight: "800" },
   petOpenArrow: { fontSize: 28, fontWeight: "700", paddingHorizontal: 4 },
   healthHistoryHeading: { flexDirection: "row", alignItems: "flex-end", gap: 8, marginTop: 18, marginBottom: 9 },
+  weightTrackingHeading: { marginTop: 0 },
   healthSearchInput: { marginTop: 10, marginBottom: 4 },
+  healthClinicFilter: { marginTop: 9, marginBottom: 4 },
+  healthFiltersPanel: { gap: 4, paddingTop: 7 },
+  healthFilterDisclosure: { minHeight: 38, flexDirection: "row", alignItems: "center", justifyContent: "space-between", borderRadius: 10, paddingHorizontal: 11, paddingVertical: 7, marginTop: 5 },
+  healthFilterDisclosureTitle: { fontSize: 9, fontWeight: "800" },
+  healthFilterDisclosureAction: { fontSize: 8, fontWeight: "800" },
   dashboardCard: { borderRadius: 15, padding: 15, gap: 10, marginTop: 12 },
   dashboardColumns: { gap: 11 },
   dashboardSection: { gap: 4 },
@@ -3383,6 +3997,22 @@ const styles = StyleSheet.create({
   petAlbumUploadTrack: { height: 5, borderRadius: 3, overflow: "hidden" },
   petAlbumUploadFill: { height: "100%", borderRadius: 3 },
   weightCard: { borderWidth: 1, borderRadius: 15, padding: 14, gap: 10, marginTop: 12 },
+  listSectionCard: { borderWidth: 1, borderRadius: 15, padding: 13, marginTop: 12, overflow: "hidden" },
+  journalListPage: { flex: 1, minHeight: 0 },
+  journalListCard: { flex: 1, minHeight: 0 },
+  journalEntriesScroll: { flex: 1, minHeight: 0, width: "100%" },
+  reminderListPage: { flex: 1, minHeight: 0 },
+  reminderListCard: { flex: 1, minHeight: 0 },
+  reminderListScroll: { flex: 1, minHeight: 0, width: "100%" },
+  reminderFormPage: { flex: 1, minHeight: 0 },
+  reminderFormScroll: { flex: 1, minHeight: 0, width: "100%" },
+  reminderFormContent: { paddingBottom: 8 },
+  listSectionHeader: { marginTop: 0, marginBottom: 10 },
+  listSectionTitle: { marginTop: 0, marginBottom: 10 },
+  listSectionScroll: { maxHeight: 360, width: "100%" },
+  healthHistoryResults: { marginTop: 0 },
+  healthHistoryDivider: { height: StyleSheet.hairlineWidth, marginTop: 12, marginBottom: 8 },
+  listSectionScrollContent: { paddingBottom: 3 },
   weightForm: { gap: 9, marginTop: 5 },
   weightChart: { gap: 8, marginVertical: 5 },
   weightChartItem: { flexDirection: "row", alignItems: "center", gap: 8 },
@@ -3397,7 +4027,6 @@ const styles = StyleSheet.create({
   healthRecordCard: { borderWidth: 1, borderRadius: 13, padding: 12, gap: 6 },
   healthRecordTitle: { fontSize: 12, fontWeight: "800" },
   nextDueText: { fontSize: 9, fontWeight: "800", textAlign: "right", maxWidth: 130 },
-  openDetailsHint: { fontSize: 8, fontWeight: "800", alignSelf: "flex-end", marginTop: 1 },
   healthDetailModal: { width: "100%", maxWidth: 460, maxHeight: "85%", borderRadius: 18, padding: 17 },
   petAlbumModal: { width: "100%", height: "88%", maxWidth: 520, maxHeight: "88%", borderRadius: 18, padding: 16, gap: 10, overflow: "hidden" },
   petAlbumModalScroll: { flex: 1, minHeight: 0, width: "100%" },
@@ -3409,6 +4038,9 @@ const styles = StyleSheet.create({
   healthDetailPet: { fontSize: 12, fontWeight: "700", marginTop: 4, marginBottom: 14 },
   healthDetailSection: { borderTopWidth: 1, paddingVertical: 11, gap: 5 },
   healthDetailNotes: { borderBottomWidth: 1 },
+  notesHeaderRow: { minHeight: 28, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10 },
+  copyNotesButton: { minHeight: 28, justifyContent: "center", borderRadius: 8, paddingHorizontal: 10, paddingVertical: 5 },
+  copyNotesButtonText: { fontSize: 8, fontWeight: "800" },
   healthDetailLabel: { fontSize: 8, fontWeight: "800", letterSpacing: 1 },
   healthDetailValue: { fontSize: 12, lineHeight: 19 },
   healthDetailMeta: { fontSize: 9, marginTop: 12 },
@@ -3421,12 +4053,11 @@ const styles = StyleSheet.create({
   journalAttachmentIndicators: { flexDirection: "row", flexWrap: "wrap", gap: 10, marginTop: 4 },
   journalIndicator: { fontSize: 9, fontWeight: "800" },
   journalEntryOpen: { gap: 5 },
-  journalListActions: { flexDirection: "row", alignItems: "flex-end", justifyContent: "space-between", marginTop: 2 },
-  journalEntryActions: { flexDirection: "row", alignItems: "center", gap: 4 },
   journalDetailModal: { width: "100%", maxWidth: 520, maxHeight: "88%", borderRadius: 18, padding: 16 },
   journalDetailScroll: { flexShrink: 1 },
   journalDetailContent: { paddingBottom: 12 },
-  journalDetailNotes: { fontSize: 12, lineHeight: 19, marginTop: 8 },
+  journalDetailAttachmentHeading: { borderTopWidth: StyleSheet.hairlineWidth, paddingTop: 12, paddingBottom: 2, marginTop: 8 },
+  journalDetailNotes: { fontSize: 12, lineHeight: 19, marginTop: 5 },
   journalDetailPhotos: { flexDirection: "row", gap: 10, marginTop: 10 },
   journalDetailPhotoItem: { width: 135, gap: 5 },
   journalDetailPhoto: { width: 135, height: 135, borderRadius: 12 },
@@ -3443,7 +4074,14 @@ const styles = StyleSheet.create({
   removePhotoText: { color: "#FFFFFF", fontSize: 15, lineHeight: 17, fontWeight: "800" },
   petAge: { fontSize: 8, fontWeight: "700", textAlign: "right" },
   dateText: { fontSize: 8, fontWeight: "700", textAlign: "right", maxWidth: 120 },
-  overdueReminderDateText: { color: "#FFFFFF", backgroundColor: "#A61B1B", borderRadius: 7, paddingHorizontal: 7, paddingVertical: 4, overflow: "hidden" },
+  reminderDateBadge: { maxWidth: 132, alignSelf: "flex-end", borderWidth: 1, borderRadius: 7, paddingHorizontal: 7, paddingVertical: 4 },
+  reminderDateBadgeText: { maxWidth: 116, textAlign: "right" },
+  reminderRecordCard: { position: "relative", overflow: "hidden", paddingTop: 5, paddingBottom: 0 },
+  reminderRecordCardWithPhoto: { paddingTop: 9 },
+  reminderHistoryRecordCard: { position: "relative", overflow: "hidden" },
+  reminderRepeatStripe: { position: "absolute", left: 0, top: 0, bottom: 0, width: 4, borderTopLeftRadius: 14, borderBottomLeftRadius: 14 },
+  reminderDetailsPressable: { flex: 1, flexDirection: "row", alignItems: "flex-start", gap: 10 },
+  reminderDateActions: { alignItems: "flex-end", gap: 6 },
   dateFieldRow: { flexDirection: "row", alignItems: "center", gap: 7 },
   dateFieldButton: { minHeight: 45, flex: 1, borderWidth: 1, borderRadius: 10, paddingHorizontal: 11, flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   dateFieldText: { fontSize: 11, fontWeight: "600" },
@@ -3452,6 +4090,7 @@ const styles = StyleSheet.create({
   calendarModal: { width: "100%", maxWidth: 400, borderRadius: 18, padding: 14 },
   typePickerModal: { width: "100%", maxWidth: 420, maxHeight: "75%", borderRadius: 18, padding: 15 },
   modalHeader: { minHeight: 42, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10 },
+  recordDetailHeader: { borderBottomWidth: StyleSheet.hairlineWidth, paddingBottom: 8, marginBottom: 4 },
   typeOptionsList: { maxHeight: 420, marginTop: 4 },
   typeOptionRow: { minHeight: 48, flexDirection: "row", alignItems: "center", justifyContent: "space-between", borderBottomWidth: 1, paddingHorizontal: 5 },
   typeOptionLabel: { fontSize: 11, fontWeight: "700" },

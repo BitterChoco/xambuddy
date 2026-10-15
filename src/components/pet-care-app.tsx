@@ -16,10 +16,12 @@ import {
 } from "react-native";
 import type { ComponentProps } from "react";
 import { SafeAreaView as NativeSafeAreaView } from "react-native-safe-area-context";
-import { CareToolsScreen, iconNameOrDefault, initializeCareNotifications, SolidPetIcon, updateOverdueReminderBadge } from "@/components/care-tools";
+import DraggableFlatList, { ScaleDecorator } from "react-native-draggable-flatlist";
+import { HomeIcon } from "@/components/action-icon";
+import { CareToolsScreen, completeReminderFromCalendar, iconNameOrDefault, initializeCareNotifications, snoozeReminderFromCalendar, SolidPetIcon, updateOverdueReminderBadge } from "@/components/care-tools";
 import { EXPENSE_CURRENCY_OPTIONS, EXPENSE_CURRENCY_STORAGE_KEY, ExpensesScreen } from "@/components/expenses";
 import type { ExpenseCurrencyCode } from "@/components/expenses";
-import { calendarMonthDates } from "@/utils/care-calendar";
+import { calendarMonthDates, reminderDatesInMonth, REMINDER_REPEAT_COLORS, type CalendarReminderRepeat } from "@/utils/care-calendar";
 
 
 type Pet = {
@@ -83,6 +85,7 @@ type AppManifest = {
 };
 
 type DataSource = "remote" | "cached";
+type LibraryCardId = "directory" | "care" | "expenses";
 
 const REMOTE_MANIFEST_URL = "https://github.com/BitterChoco/storage-release/raw/refs/heads/main/pet-care-companion/data/manifest.json";
 
@@ -95,6 +98,9 @@ const EMPTY_SETTINGS = {
   availableThemes: ["light", "blue", "orange", "green", "yellow", "rose", "dark", "midnight", "charcoal"] as ThemeName[],
   autoSyncEnabled: true,
   showCalendar: true,
+  showCalendarEventListByDefault: true,
+  showPetDirectory: true,
+  showExpenses: true,
 };
 
 let CATEGORIES = EMPTY_CATEGORIES;
@@ -115,9 +121,12 @@ const DATA_CACHE_KEYS = {
 } as const;
 
 const PERSONAL_REMINDER_KEY = "petcare-reminders-v1";
+const PERSONAL_REMINDER_HISTORY_KEY = "petcare-reminder-history-v1";
 const PERSONAL_PETS_KEY = "petcare-personal-pets-v1";
+const DASHBOARD_LIBRARY_ORDER_KEY = "petcare-dashboard-library-order-v1";
 
-type HomeReminder = { id: string; petId: string; title: string; dueAt: string; icon?: string };
+type HomeReminder = { id: string; petId: string; title: string; dueAt: string; repeat: CalendarReminderRepeat; allDay?: boolean; icon?: string };
+type HomeReminderCompletion = { id: string; reminderId: string; petId: string; petName: string; title: string; scheduledFor: string; completedAt: string; repeat?: CalendarReminderRepeat; allDay?: boolean; icon?: string };
 type HomePet = { id: string; name: string; profilePhotoUri?: string };
 
 function localDateInput(date: Date) {
@@ -127,7 +136,8 @@ function localDateInput(date: Date) {
   return `${year}-${month}-${day}`;
 }
 
-function displayReminderDateTime(dueAt: string) {
+function displayReminderDateTime(dueAt: string, allDay?: boolean) {
+  if (allDay) return "All day";
   return new Date(dueAt).toLocaleString(undefined, {
     month: "short",
     day: "numeric",
@@ -400,6 +410,9 @@ function getDefaultSettings() {
     availableThemes: ThemeName[];
     autoSyncEnabled: boolean;
     showCalendar: boolean;
+    showCalendarEventListByDefault: boolean;
+    showPetDirectory: boolean;
+    showExpenses: boolean;
   };
 }
 
@@ -642,18 +655,21 @@ function Header({
   eyebrow,
   title,
   onBack,
+  backToHome = false,
   right,
 }: {
   eyebrow: string;
   title: string;
   onBack?: () => void;
+  backToHome?: boolean;
   right?: React.ReactNode;
 }) {
+  const { palette } = useContext(PetCareThemeContext);
   return (
     <View style={styles.header}>
       {onBack ? (
-        <IconButton label="Back" onPress={onBack} style={styles.backButton}>
-          <Text style={styles.backArrow}>‹</Text>
+        <IconButton label={backToHome ? "Back to home" : "Back"} onPress={onBack} style={[styles.backButton, { backgroundColor: palette.soft }]}>
+          {backToHome ? <HomeIcon color={palette.primary} cutout={palette.soft} size={22} /> : <Text style={[styles.backArrow, { color: palette.primary }]}>‹</Text>}
         </IconButton>
       ) : null}
       <View style={styles.headerCopy}>
@@ -709,6 +725,9 @@ function MenuScreen({
   isOffline,
   isStale,
   showCalendar,
+  showCalendarEventListByDefault,
+  showPetDirectory,
+  showExpenses,
 }: {
   onOpenPets: () => void;
   onOpenCare: () => void;
@@ -720,14 +739,51 @@ function MenuScreen({
   isOffline: boolean;
   isStale: boolean;
   showCalendar: boolean;
+  showCalendarEventListByDefault: boolean;
+  showPetDirectory: boolean;
+  showExpenses: boolean;
 }) {
   const { palette } = useContext(PetCareThemeContext);
+  const [libraryCardOrder, setLibraryCardOrder] = React.useState<LibraryCardId[]>(["directory", "care", "expenses"]);
+  const [libraryOrderLoaded, setLibraryOrderLoaded] = React.useState(false);
   const [homeReminders, setHomeReminders] = useState<HomeReminder[]>([]);
+  const [homeReminderHistory, setHomeReminderHistory] = useState<HomeReminderCompletion[]>([]);
   const [homePetsById, setHomePetsById] = useState<Map<string, HomePet>>(() => new Map());
   const [remindersLoaded, setRemindersLoaded] = useState(false);
   const [reminderBadgeClock, setReminderBadgeClock] = useState(() => Date.now());
   const [calendarMonth, setCalendarMonth] = useState(() => new Date(new Date().getFullYear(), new Date().getMonth(), 1));
   const [calendarSelectedDate, setCalendarSelectedDate] = useState(() => localDateInput(new Date()));
+  const [selectedCalendarEventsExpanded, setSelectedCalendarEventsExpanded] = useState(showCalendarEventListByDefault);
+  const [selectedCalendarStatuses, setSelectedCalendarStatuses] = useState<Array<"overdue" | "pending" | "completed">>(["overdue", "pending"]);
+  const visibleLibraryCardIds = libraryCardOrder.filter((id) => id === "care" || (id === "directory" && showPetDirectory) || (id === "expenses" && showExpenses));
+
+  React.useEffect(() => {
+    let active = true;
+    AsyncStorage.getItem(DASHBOARD_LIBRARY_ORDER_KEY).then((raw) => {
+      if (!active || !raw) return;
+      const stored: unknown = JSON.parse(raw);
+      if (Array.isArray(stored)) {
+        const validIds = stored.filter((id): id is LibraryCardId => id === "directory" || id === "care" || id === "expenses");
+        setLibraryCardOrder([...new Set<LibraryCardId>([...validIds, "directory", "care", "expenses"])]);
+      }
+    }).catch(() => {
+      // Keep the default dashboard card order when no valid saved order is available.
+    }).finally(() => {
+      if (active) setLibraryOrderLoaded(true);
+    });
+    return () => { active = false; };
+  }, []);
+
+  React.useEffect(() => {
+    if (!libraryOrderLoaded) return;
+    AsyncStorage.setItem(DASHBOARD_LIBRARY_ORDER_KEY, JSON.stringify(libraryCardOrder)).catch(() => undefined);
+  }, [libraryCardOrder, libraryOrderLoaded]);
+
+  function reorderVisibleLibraryCards(nextVisibleOrder: LibraryCardId[]) {
+    const visibleIds = new Set(visibleLibraryCardIds);
+    let nextIndex = 0;
+    setLibraryCardOrder((current) => current.map((id) => visibleIds.has(id) ? nextVisibleOrder[nextIndex++] : id));
+  }
   const overdueReminderCount = remindersLoaded
     ? homeReminders.filter((reminder) => new Date(reminder.dueAt).getTime() < reminderBadgeClock).length
     : 0;
@@ -738,42 +794,111 @@ function MenuScreen({
   }, []);
 
   const monthEvents = React.useMemo(() => {
-    const monthStart = new Date(calendarMonth.getFullYear(), calendarMonth.getMonth(), 1);
-    const monthEnd = new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() + 1, 1);
-
     return homeReminders
-      .map((reminder) => {
+      .flatMap((reminder) => {
         const due = new Date(reminder.dueAt);
-        if (Number.isNaN(due.getTime())) return null;
-        if (due >= monthStart && due < monthEnd) {
+        if (Number.isNaN(due.getTime())) return [];
+        return reminderDatesInMonth(reminder.dueAt, reminder.repeat, calendarMonth.getFullYear(), calendarMonth.getMonth()).map((date) => {
+          const occurrenceDate = new Date(`${date}T00:00:00`);
+          occurrenceDate.setHours(due.getHours(), due.getMinutes(), due.getSeconds(), due.getMilliseconds());
           return {
-            id: reminder.id,
-            date: localDateInput(due),
-            dueAt: reminder.dueAt,
+            id: `${reminder.id}-${date}`,
+            reminderId: reminder.id,
+            date,
+            dueAt: occurrenceDate.toISOString(),
             title: reminder.title,
             petId: reminder.petId,
             icon: reminder.icon,
-            overdue: due.getTime() < Date.now(),
+            repeat: reminder.repeat,
+            allDay: reminder.allDay,
+            color: REMINDER_REPEAT_COLORS[reminder.repeat],
+            completed: false,
+            overdue: occurrenceDate.getTime() < Date.now(),
             kind: "Reminder",
           };
-        }
-        return null;
+        });
       })
-      .filter((event): event is { id: string; date: string; dueAt: string; title: string; petId: string; icon: string | undefined; overdue: boolean; kind: string } => Boolean(event))
+      .concat(homeReminderHistory.flatMap((completion) => {
+        const due = new Date(completion.scheduledFor);
+        if (Number.isNaN(due.getTime())) return [];
+        const repeat = completion.repeat ?? "once";
+        const date = localDateInput(due);
+        if (due.getFullYear() !== calendarMonth.getFullYear() || due.getMonth() !== calendarMonth.getMonth()) return [];
+        return [{
+          id: `completed-${completion.id}`,
+          reminderId: completion.reminderId,
+          date,
+          dueAt: completion.scheduledFor,
+          title: completion.title,
+          petId: completion.petId,
+          icon: completion.icon,
+          repeat,
+          allDay: completion.allDay,
+          color: REMINDER_REPEAT_COLORS[repeat],
+          completed: true,
+          overdue: false,
+          kind: "Reminder",
+        }];
+      }))
       .sort((a, b) => a.date.localeCompare(b.date) || a.title.localeCompare(b.title));
   }, [calendarMonth, homeReminders]);
 
   const calendarDates = calendarMonthDates(calendarMonth.getFullYear(), calendarMonth.getMonth());
   const selectedEvents = monthEvents.filter((event) => event.date === calendarSelectedDate);
+  const orderedSelectedEvents = [...selectedEvents].sort((a, b) => {
+    const statusRank = (event: typeof a) => event.completed ? 2 : event.overdue ? 0 : 1;
+    return statusRank(a) - statusRank(b) || a.dueAt.localeCompare(b.dueAt) || a.title.localeCompare(b.title);
+  });
+  const selectedEventCounts = {
+    overdue: selectedEvents.filter((event) => event.overdue && !event.completed).length,
+    pending: selectedEvents.filter((event) => !event.overdue && !event.completed).length,
+    completed: selectedEvents.filter((event) => event.completed).length,
+  };
+  const filteredSelectedEvents = orderedSelectedEvents.filter((event) => {
+    const status = event.completed ? "completed" : event.overdue ? "overdue" : "pending";
+    return selectedCalendarStatuses.includes(status);
+  });
+  function toggleCalendarStatus(status: "overdue" | "pending" | "completed") {
+    setSelectedCalendarStatuses((current) => current.includes(status)
+      ? current.filter((item) => item !== status)
+      : [...current, status]);
+  }
+  async function markCalendarReminderDone(reminderId: string) {
+    try {
+      const result = await completeReminderFromCalendar(reminderId);
+      if (result) {
+        setHomeReminders(result.reminders);
+        setHomeReminderHistory(result.history);
+      }
+    } catch {
+      // Keep the calendar usable if local storage or notification scheduling fails.
+    }
+  }
+  function confirmCalendarReminderDone(reminderId: string, title: string) {
+    Alert.alert("Mark reminder done?", `Mark “${title}” as completed?`, [
+      { text: "Cancel", style: "cancel" },
+      { text: "Mark done", onPress: () => { void markCalendarReminderDone(reminderId); } },
+    ]);
+  }
+  async function snoozeCalendarReminder(reminderId: string) {
+    try {
+      const reminders = await snoozeReminderFromCalendar(reminderId);
+      if (reminders) setHomeReminders(reminders);
+    } catch {
+      // Keep the calendar usable if local storage or notification scheduling fails.
+    }
+  }
   const weekdays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
   React.useEffect(() => {
     let active = true;
     Promise.all([
       AsyncStorage.getItem(PERSONAL_REMINDER_KEY),
+      AsyncStorage.getItem(PERSONAL_REMINDER_HISTORY_KEY),
       AsyncStorage.getItem(PERSONAL_PETS_KEY),
-    ]).then(([remindersRaw, petsRaw]) => {
+    ]).then(([remindersRaw, reminderHistoryRaw, petsRaw]) => {
       const remindersValue: unknown = remindersRaw ? JSON.parse(remindersRaw) : [];
+      const reminderHistoryValue: unknown = reminderHistoryRaw ? JSON.parse(reminderHistoryRaw) : [];
       const petsValue: unknown = petsRaw ? JSON.parse(petsRaw) : [];
       const reminders = Array.isArray(remindersValue)
         ? remindersValue.filter((item): item is HomeReminder => item !== null
@@ -782,8 +907,25 @@ function MenuScreen({
           && typeof item.petId === "string"
           && typeof item.title === "string"
           && typeof item.dueAt === "string"
+          && (item.repeat === "once" || item.repeat === "daily" || item.repeat === "weekly" || item.repeat === "monthly" || item.repeat === "yearly")
+          && (item.allDay === undefined || typeof item.allDay === "boolean")
           && (item.icon === undefined || typeof item.icon === "string")
           && !Number.isNaN(new Date(item.dueAt).getTime()))
+        : [];
+      const reminderHistory = Array.isArray(reminderHistoryValue)
+        ? reminderHistoryValue.filter((item): item is HomeReminderCompletion => item !== null
+          && typeof item === "object"
+          && typeof item.id === "string"
+          && typeof item.reminderId === "string"
+          && typeof item.petId === "string"
+          && typeof item.petName === "string"
+          && typeof item.title === "string"
+          && typeof item.scheduledFor === "string"
+          && typeof item.completedAt === "string"
+          && (item.repeat === undefined || item.repeat === "once" || item.repeat === "daily" || item.repeat === "weekly" || item.repeat === "monthly" || item.repeat === "yearly")
+          && (item.allDay === undefined || typeof item.allDay === "boolean")
+          && (item.icon === undefined || typeof item.icon === "string")
+          && !Number.isNaN(new Date(item.scheduledFor).getTime()))
         : [];
       const pets = Array.isArray(petsValue)
         ? petsValue.filter((item): item is HomePet => item !== null
@@ -794,11 +936,13 @@ function MenuScreen({
         : [];
       if (active) {
         setHomeReminders(reminders.sort((a, b) => a.dueAt.localeCompare(b.dueAt)));
+        setHomeReminderHistory(reminderHistory);
         setHomePetsById(new Map(pets.map((pet) => [pet.id, pet])));
       }
     }).catch(() => {
       if (active) {
         setHomeReminders([]);
+        setHomeReminderHistory([]);
         setHomePetsById(new Map());
       }
     }).finally(() => {
@@ -809,7 +953,15 @@ function MenuScreen({
 
   return (
     <SafeAreaView style={styles.safeArea}>
-      <ScrollView contentContainerStyle={styles.menuContent}>
+      <DraggableFlatList
+        data={visibleLibraryCardIds}
+        keyExtractor={(id) => id}
+        contentContainerStyle={styles.menuContent}
+        animationConfig={{ damping: 20, mass: 0.2, stiffness: 140, overshootClamping: true }}
+        activationDistance={8}
+        onDragEnd={({ data }) => reorderVisibleLibraryCards(data)}
+        ListHeaderComponent={(
+          <>
         <View style={styles.topBar}>
           <View style={styles.brandIcon}>
             <Text style={styles.brandPaw}>✿</Text>
@@ -874,6 +1026,7 @@ function MenuScreen({
                   const day = Number(date.slice(-2));
                   const isToday = date === localDateInput(new Date());
                   const selected = date === calendarSelectedDate;
+                  const eventColors = [...new Set(monthEvents.filter((event) => event.date === date).map((event) => event.color))];
                   const eventCount = monthEvents.filter((event) => event.date === date).length;
                   return (
                     <Pressable
@@ -884,20 +1037,65 @@ function MenuScreen({
                       style={[styles.homeCalendarDayCell, selected && styles.homeCalendarDaySelected, isToday && !selected && styles.homeCalendarDayToday]}
                     >
                       <Text style={[styles.homeCalendarDayNumber, selected && styles.homeCalendarDayNumberSelected]}>{day}</Text>
-                      {eventCount ? <View style={[styles.homeCalendarEventDot, selected && styles.homeCalendarEventDotSelected]} /> : null}
+                      {eventCount ? (
+                        <View style={styles.homeCalendarEventDots}>
+                          {eventColors.map((color) => <View key={color} style={[styles.homeCalendarEventDot, { backgroundColor: color }]} />)}
+                        </View>
+                      ) : null}
                     </Pressable>
                   );
                 })}
               </View>
-              <View style={styles.homeCalendarLegend}>
-                <View style={styles.homeCalendarEventDot} />
-                <Text style={styles.homeCalendarLegendText}>Reminder events</Text>
+              <View style={styles.homeCalendarSelectedDayHeader}>
+                <Text style={styles.homeCalendarSelectedDate}>{new Date(`${calendarSelectedDate}T00:00:00`).toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })}</Text>
+                <View style={styles.homeCalendarSelectedDayControls}>
+                  <View style={styles.homeCalendarTotalCountBadge}>
+                    <Text style={styles.homeCalendarSelectedCount}>{selectedEvents.length} {selectedEvents.length === 1 ? "event" : "events"}</Text>
+                  </View>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityState={{ expanded: selectedCalendarEventsExpanded }}
+                  accessibilityLabel={selectedCalendarEventsExpanded ? "Collapse calendar event list" : "Expand calendar event list"}
+                  onPress={() => setSelectedCalendarEventsExpanded((expanded) => !expanded)}
+                  style={({ pressed }) => [styles.homeCalendarListToggle, pressed && styles.pressed]}
+                >
+                  <Text style={styles.homeCalendarListToggleText}>{selectedCalendarEventsExpanded ? "Hide list" : "Show list"}</Text>
+                </Pressable>
+                </View>
               </View>
-              <Text style={styles.homeCalendarSelectedDate}>{new Date(`${calendarSelectedDate}T00:00:00`).toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })}</Text>
-              {selectedEvents.length ? (
-                <View style={styles.homeCalendarList}>
-                  {selectedEvents.map((event) => (
-                    <View key={event.id} style={styles.homeCalendarItem}>
+              <View style={styles.homeCalendarStatusCounts}>
+                <Pressable
+                  accessibilityRole="checkbox"
+                  accessibilityState={{ checked: selectedCalendarStatuses.includes("overdue") }}
+                  accessibilityLabel={`${selectedEventCounts.overdue} overdue events filter`}
+                  onPress={() => toggleCalendarStatus("overdue")}
+                  style={[styles.homeCalendarStatusFilter, { backgroundColor: selectedCalendarStatuses.includes("overdue") ? palette.soft : palette.bg, borderColor: selectedCalendarStatuses.includes("overdue") ? palette.primary : palette.line, borderWidth: selectedCalendarStatuses.includes("overdue") ? 2 : 1 }]}
+                >
+                  <Text style={[styles.homeCalendarStatusCount, { color: selectedCalendarStatuses.includes("overdue") ? palette.primary : palette.muted }]}>Overdue {selectedEventCounts.overdue}</Text>
+                </Pressable>
+                <Pressable
+                  accessibilityRole="checkbox"
+                  accessibilityState={{ checked: selectedCalendarStatuses.includes("pending") }}
+                  accessibilityLabel={`${selectedEventCounts.pending} pending events filter`}
+                  onPress={() => toggleCalendarStatus("pending")}
+                  style={[styles.homeCalendarStatusFilter, { backgroundColor: selectedCalendarStatuses.includes("pending") ? palette.soft : palette.bg, borderColor: selectedCalendarStatuses.includes("pending") ? palette.primary : palette.line, borderWidth: selectedCalendarStatuses.includes("pending") ? 2 : 1 }]}
+                >
+                  <Text style={[styles.homeCalendarStatusCount, { color: selectedCalendarStatuses.includes("pending") ? palette.primary : palette.muted }]}>Pending {selectedEventCounts.pending}</Text>
+                </Pressable>
+                <Pressable
+                  accessibilityRole="checkbox"
+                  accessibilityState={{ checked: selectedCalendarStatuses.includes("completed") }}
+                  accessibilityLabel={`${selectedEventCounts.completed} completed events filter`}
+                  onPress={() => toggleCalendarStatus("completed")}
+                  style={[styles.homeCalendarStatusFilter, { backgroundColor: selectedCalendarStatuses.includes("completed") ? palette.soft : palette.bg, borderColor: selectedCalendarStatuses.includes("completed") ? palette.primary : palette.line, borderWidth: selectedCalendarStatuses.includes("completed") ? 2 : 1 }]}
+                >
+                  <Text style={[styles.homeCalendarStatusCount, { color: selectedCalendarStatuses.includes("completed") ? palette.primary : palette.muted }]}>Completed {selectedEventCounts.completed}</Text>
+                </Pressable>
+              </View>
+              {selectedCalendarEventsExpanded && filteredSelectedEvents.length ? (
+                <ScrollView style={styles.homeCalendarListScroll} contentContainerStyle={styles.homeCalendarList} nestedScrollEnabled showsVerticalScrollIndicator>
+                  {filteredSelectedEvents.map((event) => (
+                    <View key={event.id} style={[styles.homeCalendarItem, { borderLeftColor: event.color }]}>
                       {homePetsById.get(event.petId)?.profilePhotoUri ? (
                         <View style={styles.homeCalendarPetIdentity}>
                           <Image source={{ uri: homePetsById.get(event.petId)?.profilePhotoUri }} contentFit="cover" style={styles.homeCalendarPetAvatar} />
@@ -907,88 +1105,68 @@ function MenuScreen({
                       <View style={styles.homeReminderCopy}>
                         <Text style={styles.homeReminderTitle} numberOfLines={1}>{event.title}</Text>
                         <Text style={styles.homeReminderPet}>{homePetsById.get(event.petId)?.name ?? "General"}</Text>
+                        {event.completed ? (
+                          <View style={styles.homeReminderCompletedBadge}>
+                            <Text style={styles.homeReminderCompletedText}>✓ Completed</Text>
+                          </View>
+                        ) : null}
                         {event.overdue ? (
                           <View style={styles.homeReminderOverdueBadge}>
-                            <NativeText style={[styles.homeReminderDateTime, { color: "#FFFFFF" }]} numberOfLines={1}>Overdue · {displayReminderDateTime(event.dueAt)}</NativeText>
+                            <NativeText style={[styles.homeReminderDateTime, { color: "#FFFFFF" }]} numberOfLines={1}>Overdue · {displayReminderDateTime(event.dueAt, event.allDay)}</NativeText>
                           </View>
                         ) : (
-                          <Text style={styles.homeReminderDateTime} numberOfLines={1}>{displayReminderDateTime(event.dueAt)}</Text>
+                          <Text style={styles.homeReminderDateTime} numberOfLines={1}>{displayReminderDateTime(event.dueAt, event.allDay)}</Text>
                         )}
                       </View>
+                      {!event.completed && event.date === localDateInput(new Date()) ? (
+                        <View style={styles.homeCalendarEventActions}>
+                          <Pressable
+                            accessibilityRole="button"
+                            accessibilityLabel={`Mark ${event.title} done`}
+                              onPress={() => confirmCalendarReminderDone(event.reminderId, event.title)}
+                            style={({ pressed }) => [styles.homeCalendarEventAction, styles.homeCalendarDoneAction, pressed && styles.pressed]}
+                          >
+                            <Text style={styles.homeCalendarDoneActionText}>Mark done</Text>
+                          </Pressable>
+                          {event.overdue ? (
+                            <Pressable
+                              accessibilityRole="button"
+                              accessibilityLabel={`Snooze ${event.title}`}
+                              onPress={() => void snoozeCalendarReminder(event.reminderId)}
+                              style={({ pressed }) => [styles.homeCalendarEventAction, styles.homeCalendarSnoozeAction, pressed && styles.pressed]}
+                            >
+                              <Text style={styles.homeCalendarSnoozeActionText}>Snooze</Text>
+                            </Pressable>
+                          ) : null}
+                        </View>
+                      ) : null}
                     </View>
                   ))}
-                </View>
-              ) : (
-                <Text style={styles.homeReminderEmptyText}>No care events for this day.</Text>
-              )}
+                </ScrollView>
+              ) : selectedCalendarEventsExpanded ? (
+                <Text style={styles.homeReminderEmptyText}>
+                  {selectedEvents.length === 0
+                    ? "No care events for this day."
+                    : selectedCalendarStatuses.length === 0
+                      ? "Select a status to show events."
+                      : "No events match the selected statuses."}
+                </Text>
+              ) : null}
             </View>
           )}
         </View> : null}
 
-        <View style={styles.sectionHeader}>
+        {visibleLibraryCardIds.length > 0 ? <View style={styles.sectionHeader}>
           <View>
             <Text style={styles.sectionEyebrow}>YOUR LIBRARY</Text>
             <Text style={styles.sectionTitle}>Where shall we begin?</Text>
           </View>
-          <Text style={styles.sectionCount}>03 / 03</Text>
-        </View>
-
-        <Pressable accessibilityRole="button" accessibilityLabel="Browse the Pet Directory" onPress={onOpenPets} style={({ pressed }) => [styles.menuCardPressable, pressed && styles.pressed]}>
-          <View style={styles.menuCard}>
-            <View style={styles.menuCardArt}>
-              <View style={styles.menuCardSun} />
-              <SolidMenuIcon kind="book" />
-              <View style={styles.menuCardSparkle}><Text style={styles.menuCardSparkleText}>✦</Text></View>
-            </View>
-            <View style={styles.menuCardCopy}>
-              <View style={styles.cardTag}><Text style={styles.cardTagText}>THE STARTING POINT</Text></View>
-              <Text style={styles.menuCardTitle}>Pet Directory</Text>
-              <Text style={styles.menuCardDescription}>Discover categories, save favourites, and find the care notes you need.</Text>
-              <Text style={styles.menuCardAction}>Browse the collection <Text style={styles.menuCardArrow}>→</Text></Text>
-            </View>
-            <Text style={styles.menuCardNumber}>01</Text>
-          </View>
-        </Pressable>
-
-        <Pressable accessibilityRole="button" accessibilityLabel={overdueReminderCount > 0 ? `Open My Pets and personal care tools, ${overdueReminderCount} overdue reminders` : "Open My Pets and personal care tools"} onPress={onOpenCare} style={({ pressed }) => [styles.menuCardPressable, styles.myPetsMenuCard, pressed && styles.pressed]}>
-          <View style={styles.menuCard}>
-            <View style={[styles.menuCardArt, styles.myPetsMenuArt]}>
-              <View style={styles.menuCardSun} />
-              <SolidMenuIcon kind="paw" />
-              <View style={styles.menuCardSparkle}><Text style={styles.menuCardSparkleText}>✚</Text></View>
-            </View>
-            <View style={styles.menuCardCopy}>
-              <View style={styles.cardTag}><Text style={styles.cardTagText}>YOUR PERSONAL CARE</Text></View>
-              <Text style={styles.menuCardTitle}>My Pets</Text>
-              <Text style={styles.menuCardDescription}>Create pet profiles, keep photos, and organize reminders and care notes.</Text>
-              <Text style={styles.menuCardAction}>Open your care center <Text style={styles.menuCardArrow}>→</Text></Text>
-            </View>
-            <Text style={[styles.menuCardNumber, styles.myPetsMenuCardNumber]}>02</Text>
-            {overdueReminderCount > 0 ? (
-              <View style={styles.myPetsOverdueBadge}>
-                <NativeText style={styles.myPetsOverdueBadgeText}>{overdueReminderCount > 99 ? "99+" : overdueReminderCount}</NativeText>
-              </View>
-            ) : null}
-          </View>
-        </Pressable>
-
-        <Pressable accessibilityRole="button" accessibilityLabel="Open pet-care expenses" onPress={onOpenExpenses} style={({ pressed }) => [styles.menuCardPressable, styles.expensesMenuCard, pressed && styles.pressed]}>
-          <View style={styles.menuCard}>
-            <View style={[styles.menuCardArt, styles.expensesMenuArt]}>
-              <View style={styles.menuCardSun} />
-              <Text style={[styles.expensesMenuSymbol, { color: palette.menuIcon }]}>$</Text>
-              <View style={styles.menuCardSparkle}><Text style={styles.menuCardSparkleText}>＋</Text></View>
-            </View>
-            <View style={styles.menuCardCopy}>
-              <View style={styles.cardTag}><Text style={styles.cardTagText}>PET-CARE BUDGET</Text></View>
-              <Text style={styles.menuCardTitle}>Expenses</Text>
-              <Text style={styles.menuCardDescription}>Track vet visits, food, medicine, and everyday costs with spending summaries.</Text>
-              <Text style={styles.menuCardAction}>Review expenses <Text style={styles.menuCardArrow}>→</Text></Text>
-            </View>
-            <Text style={styles.menuCardNumber}>03</Text>
-          </View>
-        </Pressable>
-
+          <Text style={styles.sectionCount}>{`0${visibleLibraryCardIds.length}/03`}</Text>
+        </View> : null}
+          </>
+        )}
+        ListFooterComponent={(
+          <>
         <View style={styles.comingSoon}>
           <View style={styles.comingSoonIcon}><Text style={styles.comingSoonGlyph}>＋</Text></View>
           <View style={styles.comingSoonCopy}>
@@ -1003,7 +1181,88 @@ function MenuScreen({
           <Text style={styles.footerText}>MADE FOR THE ONES WHO MAKE US WHOLE</Text>
           <Text style={styles.footerPaw}>✳</Text>
         </View>
-      </ScrollView>
+          </>
+        )}
+        renderItem={({ item, drag, getIndex }) => {
+          const cardIndex = getIndex() ?? Math.max(libraryCardOrder.indexOf(item), 0);
+            const cardNumber = String(cardIndex + 1).padStart(2, "0");
+            const label = item === "directory" ? "Pet Directory" : item === "care" ? "My Pets" : "Expenses";
+            const accessibilityLabel = item === "care" && overdueReminderCount > 0
+              ? `Open My Pets and personal care tools, ${overdueReminderCount} overdue reminders`
+              : item === "directory" ? "Browse the Pet Directory" : item === "care" ? "Open My Pets and personal care tools" : "Open pet-care expenses";
+            return (
+              <ScaleDecorator activeScale={1.02}>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={accessibilityLabel}
+                  accessibilityHint={`Long press and drag to rearrange ${label}`}
+                  onPress={item === "directory" ? onOpenPets : item === "care" ? onOpenCare : onOpenExpenses}
+                  onLongPress={drag}
+                  delayLongPress={220}
+                  style={({ pressed }) => [
+                    styles.menuCardPressable,
+                    item === "care" && styles.myPetsMenuCard,
+                    item === "expenses" && styles.expensesMenuCard,
+                    { marginTop: cardIndex > 0 ? 12 : 0, opacity: pressed ? 0.78 : 1 },
+                  ]}
+                >
+                  <View style={styles.menuCard}>
+                    {item === "directory" ? (
+                      <>
+                        <View style={styles.menuCardArt}>
+                          <View style={styles.menuCardSun} />
+                          <SolidMenuIcon kind="book" />
+                          <View style={styles.menuCardSparkle}><Text style={styles.menuCardSparkleText}>✦</Text></View>
+                        </View>
+                        <View style={styles.menuCardCopy}>
+                          <View style={styles.cardTag}><Text style={styles.cardTagText}>THE STARTING POINT</Text></View>
+                          <Text style={styles.menuCardTitle}>Pet Directory</Text>
+                          <Text style={styles.menuCardDescription}>Discover categories, save favourites, and find the care notes you need.</Text>
+                          <Text style={styles.menuCardAction}>Browse the collection <Text style={styles.menuCardArrow}>→</Text></Text>
+                        </View>
+                      </>
+                    ) : item === "care" ? (
+                      <>
+                        <View style={[styles.menuCardArt, styles.myPetsMenuArt]}>
+                          <View style={styles.menuCardSun} />
+                          <SolidMenuIcon kind="paw" />
+                          <View style={styles.menuCardSparkle}><Text style={styles.menuCardSparkleText}>✚</Text></View>
+                        </View>
+                        <View style={styles.menuCardCopy}>
+                          <View style={styles.cardTag}><Text style={styles.cardTagText}>YOUR PERSONAL CARE</Text></View>
+                          <Text style={styles.menuCardTitle}>My Pets</Text>
+                          <Text style={styles.menuCardDescription}>Create pet profiles, keep photos, and organize reminders and care notes.</Text>
+                          <Text style={styles.menuCardAction}>Open your care center <Text style={styles.menuCardArrow}>→</Text></Text>
+                        </View>
+                        {overdueReminderCount > 0 ? (
+                          <View style={styles.myPetsOverdueBadge}>
+                            <NativeText style={styles.myPetsOverdueBadgeText}>{overdueReminderCount > 99 ? "99+" : overdueReminderCount}</NativeText>
+                          </View>
+                        ) : null}
+                      </>
+                    ) : (
+                      <>
+                        <View style={[styles.menuCardArt, styles.expensesMenuArt]}>
+                          <View style={styles.menuCardSun} />
+                          <Text style={[styles.expensesMenuSymbol, { color: palette.menuIcon }]}>$</Text>
+                          <View style={styles.menuCardSparkle}><Text style={styles.menuCardSparkleText}>＋</Text></View>
+                        </View>
+                        <View style={styles.menuCardCopy}>
+                          <View style={styles.cardTag}><Text style={styles.cardTagText}>PET-CARE BUDGET</Text></View>
+                          <Text style={styles.menuCardTitle}>Expenses</Text>
+                          <Text style={styles.menuCardDescription}>Track vet visits, food, medicine, and everyday costs with spending summaries.</Text>
+                          <Text style={styles.menuCardAction}>Review expenses <Text style={styles.menuCardArrow}>→</Text></Text>
+                        </View>
+                      </>
+                    )}
+                    <Text style={[styles.menuCardNumber, item === "care" && styles.myPetsMenuCardNumber]}>{cardNumber}</Text>
+                    <Text style={styles.menuCardDragHint}>⠿</Text>
+                  </View>
+                </Pressable>
+              </ScaleDecorator>
+            );
+          }}
+      />
     </SafeAreaView>
   );
 }
@@ -1038,6 +1297,14 @@ function SettingsScreen({
   isStale,
   showCalendar,
   onToggleShowCalendar,
+  showCalendarEventListByDefault,
+  onToggleShowCalendarEventListByDefault,
+  showPetDirectory,
+  onToggleShowPetDirectory,
+  showExpenses,
+  onToggleShowExpenses,
+  onRestoreDefaults,
+  backToHome,
 }: {
   themeName: ThemeName;
   favoritesOnly: boolean;
@@ -1056,6 +1323,14 @@ function SettingsScreen({
   isStale: boolean;
   showCalendar: boolean;
   onToggleShowCalendar: () => void;
+  showCalendarEventListByDefault: boolean;
+  onToggleShowCalendarEventListByDefault: () => void;
+  showPetDirectory: boolean;
+  onToggleShowPetDirectory: () => void;
+  showExpenses: boolean;
+  onToggleShowExpenses: () => void;
+  onRestoreDefaults: () => void;
+  backToHome: boolean;
 }) {
   const { palette } = useContext(PetCareThemeContext);
   const [expenseCurrency, setExpenseCurrency] = useState<ExpenseCurrencyCode>("USD");
@@ -1080,16 +1355,48 @@ function SettingsScreen({
     AsyncStorage.setItem(EXPENSE_CURRENCY_STORAGE_KEY, expenseCurrency).catch(() => undefined);
   }, [expenseCurrency, expenseCurrencyLoaded]);
 
+  function confirmRestoreDefaults() {
+    Alert.alert(
+      "Restore default configurations?",
+      "This resets your theme, dashboard visibility, favourites-only preference, event-list setting, expense currency, and sync preference. Your saved pet data will not be changed.",
+      [
+        { text: "Cancel", style: "cancel" },
+        { text: "Restore defaults", onPress: () => {
+          onRestoreDefaults();
+          setExpenseCurrency("USD");
+        } },
+      ],
+    );
+  }
+
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: palette.bg }]}>
       <ScrollView contentContainerStyle={styles.settingsContent}>
-        <Header eyebrow="MAKE IT YOURS" title="Settings" onBack={onBack} />
+        <Header eyebrow="MAKE IT YOURS" title="Settings" onBack={onBack} backToHome={backToHome} />
 
         <View style={styles.settingsIntro}>
           <Text style={styles.listIntroTitle}>A space that feels like yours.</Text>
           <Text style={styles.listIntroDescription}>
             Choose your theme, dashboard options, and how your pet library opens.
           </Text>
+        </View>
+
+        <View style={[styles.settingsGroupCard, { backgroundColor: palette.card, borderColor: palette.line }]}>
+          <View style={styles.settingsSectionHeading}>
+            <View>
+              <Text style={styles.sectionEyebrow}>CONFIGURATIONS</Text>
+              <Text style={styles.sectionTitle}>Restore defaults</Text>
+            </View>
+          </View>
+          <Text style={styles.preferenceDescription}>Reset Settings preferences to their defaults. Saved pet profiles, health records, reminders, and expenses will remain unchanged.</Text>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Restore all default configurations"
+            onPress={confirmRestoreDefaults}
+            style={({ pressed }) => [styles.restoreDefaultsButton, { backgroundColor: palette.soft, borderColor: palette.line, opacity: pressed ? 0.76 : 1 }]}
+          >
+            <Text style={[styles.restoreDefaultsText, { color: palette.primary }]}>Restore all default configurations</Text>
+          </Pressable>
         </View>
 
         <View style={[styles.settingsGroupCard, { backgroundColor: palette.card, borderColor: palette.line }]}>
@@ -1136,8 +1443,8 @@ function SettingsScreen({
         <View style={[styles.settingsGroupCard, { backgroundColor: palette.card, borderColor: palette.line }]}>
         <View style={styles.settingsSectionHeading}>
           <View>
-            <Text style={styles.sectionEyebrow}>DASHBOARD</Text>
-            <Text style={styles.sectionTitle}>Dashboard preferences</Text>
+            <Text style={styles.sectionEyebrow}>CALENDAR</Text>
+            <Text style={styles.sectionTitle}>Calendar preferences</Text>
           </View>
         </View>
         <View style={styles.settingsPreferenceRow}>
@@ -1156,61 +1463,115 @@ function SettingsScreen({
             <View style={[styles.toggleThumb, showCalendar && styles.toggleThumbOn]} />
           </Pressable>
         </View>
+        {showCalendar ? (
+          <View style={[styles.settingsPreferenceRow, styles.nestedSettingsPreferenceRow, { borderTopColor: palette.line }]}>
+            <View style={[styles.preferenceIcon, styles.calendarListPreferenceIcon]}><Text style={styles.preferenceIconText}>☷</Text></View>
+            <View style={styles.preferenceCopy}>
+              <Text style={styles.preferenceTitle}>Show events list as default</Text>
+              <Text style={styles.preferenceDescription}>Expand the selected day’s event list automatically.</Text>
+            </View>
+            <Pressable
+              accessibilityRole="switch"
+              accessibilityState={{ checked: showCalendarEventListByDefault }}
+              accessibilityLabel="Show calendar events list by default"
+              onPress={onToggleShowCalendarEventListByDefault}
+              style={[styles.toggleTrack, showCalendarEventListByDefault && styles.toggleTrackOn]}
+            >
+              <View style={[styles.toggleThumb, showCalendarEventListByDefault && styles.toggleThumbOn]} />
+            </Pressable>
+          </View>
+        ) : null}
         </View>
 
         <View style={[styles.settingsGroupCard, { backgroundColor: palette.card, borderColor: palette.line }]}>
         <View style={styles.settingsSectionHeading}>
           <View>
             <Text style={styles.sectionEyebrow}>PET DIRECTORY</Text>
-            <Text style={styles.sectionTitle}>List preferences</Text>
+            <Text style={styles.sectionTitle}>Directory preferences</Text>
           </View>
         </View>
         <View style={styles.settingsPreferenceRow}>
-          <View style={styles.preferenceIcon}><Text style={styles.preferenceIconText}>♥</Text></View>
+          <View style={[styles.preferenceIcon, styles.directoryPreferenceIcon]}><Text style={styles.preferenceIconText}>▤</Text></View>
           <View style={styles.preferenceCopy}>
-            <Text style={styles.preferenceTitle}>Open to favourites</Text>
-            <Text style={styles.preferenceDescription}>Start the Pet Directory with saved categories and pets only.</Text>
+            <Text style={styles.preferenceTitle}>Show Pet Directory</Text>
+            <Text style={styles.preferenceDescription}>Display the Pet Directory card on your dashboard.</Text>
           </View>
           <Pressable
             accessibilityRole="switch"
-            accessibilityState={{ checked: favoritesOnly }}
-            accessibilityLabel="Default to favourites only"
-            onPress={onToggleFavoritesOnly}
-            style={[styles.toggleTrack, favoritesOnly && styles.toggleTrackOn]}
+            accessibilityState={{ checked: showPetDirectory }}
+            accessibilityLabel="Show Pet Directory on dashboard"
+            onPress={onToggleShowPetDirectory}
+            style={[styles.toggleTrack, showPetDirectory && styles.toggleTrackOn]}
           >
-            <View style={[styles.toggleThumb, favoritesOnly && styles.toggleThumbOn]} />
+            <View style={[styles.toggleThumb, showPetDirectory && styles.toggleThumbOn]} />
           </Pressable>
         </View>
+        {showPetDirectory ? (
+          <View style={[styles.settingsPreferenceRow, styles.nestedSettingsPreferenceRow, { borderTopColor: palette.line }]}>
+            <View style={[styles.preferenceIcon, styles.favoritesPreferenceIcon]}><Text style={styles.preferenceIconText}>♥</Text></View>
+            <View style={styles.preferenceCopy}>
+              <Text style={styles.preferenceTitle}>Open to favourites</Text>
+              <Text style={styles.preferenceDescription}>Start the Pet Directory with saved categories and pets only.</Text>
+            </View>
+            <Pressable
+              accessibilityRole="switch"
+              accessibilityState={{ checked: favoritesOnly }}
+              accessibilityLabel="Default to favourites only"
+              onPress={onToggleFavoritesOnly}
+              style={[styles.toggleTrack, favoritesOnly && styles.toggleTrackOn]}
+            >
+              <View style={[styles.toggleThumb, favoritesOnly && styles.toggleThumbOn]} />
+            </Pressable>
+          </View>
+        ) : null}
         </View>
 
         <View style={[styles.settingsGroupCard, { backgroundColor: palette.card, borderColor: palette.line }]}>
         <View style={styles.settingsSectionHeading}>
           <View>
             <Text style={styles.sectionEyebrow}>EXPENSES</Text>
-            <Text style={styles.sectionTitle}>Expense configurations</Text>
+            <Text style={styles.sectionTitle}>Expense preferences</Text>
           </View>
         </View>
-        <View style={styles.expenseSettingsContent}>
-          <Text style={styles.preferenceTitle}>Currency</Text>
-          <Text style={styles.preferenceDescription}>Currency can be changed here. Changing currency does not convert expense amounts.</Text>
-          <View style={styles.expenseCurrencyOptions}>
-            {EXPENSE_CURRENCY_OPTIONS.map((option) => {
-              const selected = expenseCurrency === option.code;
-              return (
-                <Pressable
-                  key={option.code}
-                  accessibilityRole="radio"
-                  accessibilityState={{ selected }}
-                  accessibilityLabel={`${option.code} currency`}
-                  onPress={() => setExpenseCurrency(option.code)}
-                  style={[styles.expenseCurrencyOption, selected && styles.expenseCurrencyOptionSelected]}
-                >
-                  <Text style={[styles.expenseCurrencyOptionText, selected && styles.expenseCurrencyOptionTextSelected]}>{option.label}</Text>
-                </Pressable>
-              );
-            })}
+        <View style={styles.settingsPreferenceRow}>
+          <View style={[styles.preferenceIcon, styles.expensesPreferenceIcon]}><Text style={styles.preferenceIconText}>$</Text></View>
+          <View style={styles.preferenceCopy}>
+            <Text style={styles.preferenceTitle}>Show Expenses</Text>
+            <Text style={styles.preferenceDescription}>Display the Expenses card on your dashboard.</Text>
           </View>
+          <Pressable
+            accessibilityRole="switch"
+            accessibilityState={{ checked: showExpenses }}
+            accessibilityLabel="Show Expenses on dashboard"
+            onPress={onToggleShowExpenses}
+            style={[styles.toggleTrack, showExpenses && styles.toggleTrackOn]}
+          >
+            <View style={[styles.toggleThumb, showExpenses && styles.toggleThumbOn]} />
+          </Pressable>
         </View>
+        {showExpenses ? (
+          <View style={styles.expenseSettingsContent}>
+            <Text style={styles.preferenceTitle}>Currency</Text>
+            <Text style={styles.preferenceDescription}>Currency can be changed here. Changing currency does not convert expense amounts.</Text>
+            <View style={styles.expenseCurrencyOptions}>
+              {EXPENSE_CURRENCY_OPTIONS.map((option) => {
+                const selected = expenseCurrency === option.code;
+                return (
+                  <Pressable
+                    key={option.code}
+                    accessibilityRole="radio"
+                    accessibilityState={{ selected }}
+                    accessibilityLabel={`${option.code} currency`}
+                    onPress={() => setExpenseCurrency(option.code)}
+                    style={[styles.expenseCurrencyOption, selected && styles.expenseCurrencyOptionSelected]}
+                  >
+                    <Text style={[styles.expenseCurrencyOptionText, selected && styles.expenseCurrencyOptionTextSelected]}>{option.label}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          </View>
+        ) : null}
         </View>
 
         <View style={styles.settingsSavedNote}>
@@ -1391,11 +1752,12 @@ function PetsListScreen({
 
   return (
     <SafeAreaView style={styles.safeArea}>
-      <ScrollView contentContainerStyle={styles.listContent} keyboardShouldPersistTaps="handled">
+      <ScrollView contentContainerStyle={[styles.listContent, styles.categoryScreenContent]} keyboardShouldPersistTaps="handled">
         <Header
           eyebrow="THE CARE LIBRARY"
           title="Pet Directory"
           onBack={onBack}
+          backToHome
           right={(
             <View style={styles.headerActions}>
               <IconButton label="Open settings" onPress={onOpenSettings} style={styles.headerSettingsButton}>
@@ -1450,8 +1812,9 @@ function PetsListScreen({
           <Text style={styles.resultsCount}>{filteredCategories.length} CATEGORIES</Text>
         </View>
 
-        {filteredCategories.length > 0 ? (
-          <View style={styles.categoryList}>
+        <View style={styles.categoryListCard}>
+          {filteredCategories.length > 0 ? (
+          <ScrollView style={styles.categoryListScroll} contentContainerStyle={styles.categoryList} nestedScrollEnabled showsVerticalScrollIndicator>
             {filteredCategories.map((category) => {
               const pets = getCategoryDetails(category.id)?.pets ?? [];
               const categoryFavorite = favoriteCategories.includes(category.id);
@@ -1498,7 +1861,7 @@ function PetsListScreen({
                 </View>
               );
             })}
-          </View>
+          </ScrollView>
         ) : (
           <View style={styles.emptyState}>
             <Text style={styles.emptyEmoji}>🐾</Text>
@@ -1512,7 +1875,8 @@ function PetsListScreen({
               </Pressable>
             ) : null}
           </View>
-        )}
+          )}
+        </View>
 
         <View style={styles.listFooter}>
           <Text style={styles.footerPaw}>✳</Text>
@@ -2055,6 +2419,9 @@ export default function PetCareApp() {
   const [isSyncing, setIsSyncing] = useState(false);
   const [autoSyncEnabled, setAutoSyncEnabled] = useState(DEFAULT_SETTINGS.autoSyncEnabled);
   const [showCalendar, setShowCalendar] = useState(DEFAULT_SETTINGS.showCalendar);
+  const [showCalendarEventListByDefault, setShowCalendarEventListByDefault] = useState(DEFAULT_SETTINGS.showCalendarEventListByDefault);
+  const [showPetDirectory, setShowPetDirectory] = useState(DEFAULT_SETTINGS.showPetDirectory);
+  const [showExpenses, setShowExpenses] = useState(DEFAULT_SETTINGS.showExpenses);
   const [isStale, setIsStale] = useState(false);
   const [booting, setBooting] = useState(true);
   const [bootStatus, setBootStatus] = useState("Checking resources");
@@ -2223,7 +2590,7 @@ export default function PetCareApp() {
     AsyncStorage.getItem("petcare-settings")
       .then((raw) => {
         if (!raw) return;
-        const saved = JSON.parse(raw) as { theme?: string; filters?: { favoritesOnly?: boolean }; autoSyncEnabled?: boolean; showCalendar?: boolean };
+        const saved = JSON.parse(raw) as { theme?: string; filters?: { favoritesOnly?: boolean }; autoSyncEnabled?: boolean; showCalendar?: boolean; showCalendarEventListByDefault?: boolean; showPetDirectory?: boolean; showExpenses?: boolean };
         if (active) {
           if (saved.theme && DEFAULT_SETTINGS.availableThemes.includes(saved.theme as ThemeName)) {
             setThemeName(saved.theme as ThemeName);
@@ -2236,6 +2603,15 @@ export default function PetCareApp() {
           }
           if (typeof saved.showCalendar === "boolean") {
             setShowCalendar(saved.showCalendar);
+          }
+          if (typeof saved.showCalendarEventListByDefault === "boolean") {
+            setShowCalendarEventListByDefault(saved.showCalendarEventListByDefault);
+          }
+          if (typeof saved.showPetDirectory === "boolean") {
+            setShowPetDirectory(saved.showPetDirectory);
+          }
+          if (typeof saved.showExpenses === "boolean") {
+            setShowExpenses(saved.showExpenses);
           }
         }
       })
@@ -2264,11 +2640,11 @@ export default function PetCareApp() {
     if (!settingsLoaded) return;
     AsyncStorage.setItem(
       "petcare-settings",
-      JSON.stringify({ theme: themeName, filters: { favoritesOnly }, autoSyncEnabled, showCalendar }),
+      JSON.stringify({ theme: themeName, filters: { favoritesOnly }, autoSyncEnabled, showCalendar, showCalendarEventListByDefault, showPetDirectory, showExpenses }),
     ).catch(() => {
       // The active settings remain usable for this session if persistence fails.
     });
-  }, [autoSyncEnabled, favoritesOnly, settingsLoaded, showCalendar, themeName]);
+  }, [autoSyncEnabled, favoritesOnly, settingsLoaded, showCalendar, showCalendarEventListByDefault, showPetDirectory, showExpenses, themeName]);
 
   const toggleFavorite = (id: string, values: string[], setValues: (value: string[]) => void) => {
     setValues(values.includes(id) ? values.filter((value) => value !== id) : [...values, id]);
@@ -2278,6 +2654,16 @@ export default function PetCareApp() {
     setSettingsReturnTo(returnTo);
     setScreen("settings");
   };
+  function restoreDefaultSettings() {
+    setThemeName(DEFAULT_SETTINGS.theme);
+    setFavoritesOnly(DEFAULT_SETTINGS.filters.favoritesOnly);
+    setAutoSyncEnabled(DEFAULT_SETTINGS.autoSyncEnabled);
+    setShowCalendar(DEFAULT_SETTINGS.showCalendar);
+    setShowCalendarEventListByDefault(DEFAULT_SETTINGS.showCalendarEventListByDefault);
+    setShowPetDirectory(DEFAULT_SETTINGS.showPetDirectory);
+    setShowExpenses(DEFAULT_SETTINGS.showExpenses);
+    void AsyncStorage.setItem(DASHBOARD_LIBRARY_ORDER_KEY, JSON.stringify(["directory", "care", "expenses"])).catch(() => undefined);
+  }
   const palette = THEME_PALETTES[themeName];
 
   if (booting) {
@@ -2308,6 +2694,9 @@ export default function PetCareApp() {
             isOffline={isOffline}
             isStale={isStale}
             showCalendar={showCalendar}
+            showCalendarEventListByDefault={showCalendarEventListByDefault}
+            showPetDirectory={showPetDirectory}
+            showExpenses={showExpenses}
           />
         ) : screen === "pets" ? (
           <PetsListScreen
@@ -2331,6 +2720,7 @@ export default function PetCareApp() {
             onSelectTheme={setThemeName}
             onToggleFavoritesOnly={() => setFavoritesOnly((value) => !value)}
             onBack={() => setScreen(settingsReturnTo)}
+            backToHome={settingsReturnTo === "menu"}
             lastUpdatedAt={lastUpdatedAt}
             lastCheckedAt={lastCheckedAt}
             onRefreshData={() => bootstrapResources(true)}
@@ -2343,6 +2733,13 @@ export default function PetCareApp() {
             isStale={isStale}
             showCalendar={showCalendar}
             onToggleShowCalendar={() => setShowCalendar((value) => !value)}
+            showCalendarEventListByDefault={showCalendarEventListByDefault}
+            onToggleShowCalendarEventListByDefault={() => setShowCalendarEventListByDefault((value) => !value)}
+            showPetDirectory={showPetDirectory}
+            onToggleShowPetDirectory={() => setShowPetDirectory((value) => !value)}
+            showExpenses={showExpenses}
+            onToggleShowExpenses={() => setShowExpenses((value) => !value)}
+            onRestoreDefaults={restoreDefaultSettings}
           />
         )}
       </View>
@@ -2420,6 +2817,7 @@ const styles = StyleSheet.create({
   menuCardAction: { color: GREEN, fontSize: 10, fontWeight: "800", marginTop: 14 },
   menuCardArrow: { fontSize: 14 },
   menuCardNumber: { color: "#D5D8CF", fontSize: 10, fontWeight: "800", position: "absolute", top: 15, right: 17, letterSpacing: 1 },
+  menuCardDragHint: { color: "#9AA197", fontSize: 18, fontWeight: "800", position: "absolute", bottom: 9, right: 12, lineHeight: 20 },
   myPetsMenuCardNumber: { top: 37 },
   myPetsOverdueBadge: { position: "absolute", top: 7, right: 7, minWidth: 19, height: 19, alignItems: "center", justifyContent: "center", borderRadius: 10, paddingHorizontal: 5, backgroundColor: "#D94B4B" },
   myPetsOverdueBadgeText: { color: "#FFFFFF", fontSize: 8, fontWeight: "900", lineHeight: 10 },
@@ -2445,21 +2843,38 @@ const styles = StyleSheet.create({
   homeCalendarDayToday: { borderWidth: 1, borderColor: GREEN },
   homeCalendarDayNumber: { color: INK, fontSize: 9, fontWeight: "700" },
   homeCalendarDayNumberSelected: { color: GREEN },
+  homeCalendarEventDots: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 2 },
   homeCalendarEventDot: { width: 5, height: 5, borderRadius: 3, backgroundColor: GREEN },
-  homeCalendarEventDotSelected: { backgroundColor: GREEN },
   homeCalendarLegend: { flexDirection: "row", alignItems: "center", gap: 7, paddingHorizontal: 2 },
-  homeCalendarLegendText: { color: MUTED, fontSize: 8, fontWeight: "700" },
-  homeCalendarSelectedDate: { color: INK, fontSize: 11, fontWeight: "800", marginTop: 4 },
-  homeCalendarList: { gap: 8, marginTop: 4 },
-  homeCalendarItem: { flexDirection: "row", alignItems: "center", gap: 10, minHeight: 48, backgroundColor: "#FFFFFF", borderWidth: 1, borderColor: "#D4DDD0", borderRadius: 11, paddingHorizontal: 10, paddingVertical: 8 },
+  homeCalendarSelectedDayHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8, marginTop: 4 },
+  homeCalendarSelectedDate: { color: INK, fontSize: 11, fontWeight: "800", flex: 1 },
+  homeCalendarSelectedCount: { color: MUTED, fontSize: 8, fontWeight: "800" },
+  homeCalendarStatusCounts: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6, marginTop: 5 },
+  homeCalendarSelectedDayControls: { flexDirection: "row", alignItems: "center", gap: 6 },
+  homeCalendarTotalCountBadge: { backgroundColor: "#E8EFE5", borderRadius: 999, paddingHorizontal: 8, paddingVertical: 4 },
+  homeCalendarListToggle: { minHeight: 27, justifyContent: "center", backgroundColor: "#FFFFFF", borderWidth: 1, borderColor: GREEN, borderRadius: 8, paddingHorizontal: 9, paddingVertical: 4 },
+  homeCalendarListToggleText: { color: GREEN, fontSize: 8, fontWeight: "800" },
+  homeCalendarStatusFilter: { borderRadius: 999, borderWidth: 1, paddingHorizontal: 8, paddingVertical: 4 },
+  homeCalendarStatusCount: { fontSize: 8, fontWeight: "800" },
+  homeCalendarListScroll: { width: "100%", marginTop: 4 },
+  homeCalendarList: { gap: 8, paddingBottom: 2 },
+  homeCalendarItem: { flexDirection: "row", alignItems: "center", gap: 10, minHeight: 48, backgroundColor: "#FFFFFF", borderWidth: 1, borderColor: "#D4DDD0", borderLeftWidth: 4, borderRadius: 11, paddingHorizontal: 10, paddingVertical: 8 },
   homeCalendarPetIdentity: { position: "relative", alignSelf: "flex-start" },
   homeCalendarPetAvatar: { width: 34, height: 34, borderRadius: 11 },
   homeCalendarEventIcon: { width: 28, height: 28, borderRadius: 9, backgroundColor: "#E8EFE5", alignItems: "center", justifyContent: "center" },
   homeCalendarEventIconOverlay: { position: "absolute", top: -4, right: -4, width: 18, height: 18, borderRadius: 7, borderWidth: 2, borderColor: "#FFFFFF" },
   homeReminderCopy: { flex: 1, gap: 4 },
+  homeCalendarEventActions: { alignItems: "flex-end", gap: 5, marginLeft: 4, alignSelf: "flex-start" },
+  homeCalendarEventAction: { minHeight: 27, justifyContent: "center", borderRadius: 8, paddingHorizontal: 9, paddingVertical: 4 },
+  homeCalendarDoneAction: { backgroundColor: "#E8EFE5" },
+  homeCalendarDoneActionText: { color: GREEN, fontSize: 8, fontWeight: "800" },
+  homeCalendarSnoozeAction: { backgroundColor: "#E8EFE5" },
+  homeCalendarSnoozeActionText: { color: GREEN, fontSize: 8, fontWeight: "800" },
   homeReminderTitle: { color: INK, fontSize: 10, fontWeight: "800" },
   homeReminderPet: { color: MUTED, fontSize: 8, fontWeight: "600" },
   homeReminderDateTime: { color: MUTED, fontSize: 8, fontWeight: "700" },
+  homeReminderCompletedBadge: { alignSelf: "flex-start", backgroundColor: "#E8EFE5", borderRadius: 7, paddingHorizontal: 7, paddingVertical: 3 },
+  homeReminderCompletedText: { color: GREEN, fontSize: 7, fontWeight: "800" },
   homeReminderDate: { color: GREEN, fontSize: 8, fontWeight: "800", textAlign: "right", maxWidth: 112 },
   homeReminderOverdueBadge: { alignSelf: "flex-start", maxWidth: "100%", backgroundColor: "#A61B1B", borderRadius: 7, paddingHorizontal: 7, paddingVertical: 4 },
   homeReminderEmpty: { minHeight: 54, justifyContent: "center", backgroundColor: CARD, borderWidth: 1, borderColor: LINE, borderStyle: "dashed", borderRadius: 13, paddingHorizontal: 14, paddingVertical: 11 },
@@ -2475,6 +2890,7 @@ const styles = StyleSheet.create({
   footerText: { color: "#9AA197", fontSize: 8, fontWeight: "800", letterSpacing: 1.5 },
 
   listContent: { maxWidth: 900, width: "100%", alignSelf: "center", paddingHorizontal: 26, paddingBottom: 42 },
+  categoryScreenContent: { flexGrow: 1, height: "100%" },
   header: { flexDirection: "row", alignItems: "center", minHeight: 89, borderBottomWidth: 1, borderBottomColor: LINE, gap: 14 },
   headerActions: { flexDirection: "row", alignItems: "center", gap: 8 },
   headerSettingsButton: { width: 38, height: 38, borderRadius: 13, backgroundColor: "#E8EFE5" },
@@ -2509,7 +2925,9 @@ const styles = StyleSheet.create({
   resultsHeading: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginTop: 27, marginBottom: 11 },
   resultsTitle: { color: INK, fontSize: 9, fontWeight: "800", letterSpacing: 1.25 },
   resultsCount: { color: MUTED, fontSize: 8, fontWeight: "700", letterSpacing: 0.7 },
-  categoryList: { gap: 7 },
+  categoryListCard: { flex: 1, minHeight: 0, backgroundColor: CARD, borderWidth: 1, borderColor: LINE, borderRadius: 16, padding: 10, overflow: "hidden" },
+  categoryListScroll: { flex: 1, minHeight: 0, width: "100%" },
+  categoryList: { gap: 7, paddingBottom: 2 },
   categoryCard: { backgroundColor: CARD, borderWidth: 1, borderColor: LINE, borderRadius: 13, paddingHorizontal: 11, overflow: "hidden", position: "relative" },
   categoryMain: { minHeight: 76, flexDirection: "row", alignItems: "center", gap: 10, paddingTop: 0, paddingRight: 28 },
   emojiLogo: { alignItems: "center", justifyContent: "center", overflow: "hidden" },
@@ -2562,7 +2980,12 @@ const styles = StyleSheet.create({
   themeRadioSelected: { borderColor: GREEN },
   themeRadioDot: { width: 9, height: 9, borderRadius: 5, backgroundColor: GREEN },
   settingsPreferenceRow: { minHeight: 70, flexDirection: "row", alignItems: "center", gap: 11 },
+  nestedSettingsPreferenceRow: { minHeight: 62, borderTopWidth: StyleSheet.hairlineWidth, marginLeft: 47, paddingTop: 7 },
   preferenceIcon: { width: 36, height: 36, borderRadius: 12, backgroundColor: "#FCEDEA", alignItems: "center", justifyContent: "center" },
+  calendarListPreferenceIcon: { backgroundColor: "#E8EFE5" },
+  directoryPreferenceIcon: { backgroundColor: "#E8EFE5" },
+  favoritesPreferenceIcon: { backgroundColor: "#FCEDEA" },
+  expensesPreferenceIcon: { backgroundColor: "#F0E8DE" },
   preferenceIconText: { color: "#D87967", fontSize: 18 },
   preferenceCopy: { flex: 1, gap: 4 },
   preferenceTitle: { color: INK, fontSize: 10, fontWeight: "800" },
@@ -2573,6 +2996,8 @@ const styles = StyleSheet.create({
   expenseCurrencyOptionSelected: { borderColor: GREEN, backgroundColor: "#E8EFE5" },
   expenseCurrencyOptionText: { color: MUTED, fontSize: 8, fontWeight: "700" },
   expenseCurrencyOptionTextSelected: { color: GREEN, fontWeight: "800" },
+  restoreDefaultsButton: { minHeight: 42, alignItems: "center", justifyContent: "center", borderWidth: 1, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 9 },
+  restoreDefaultsText: { fontSize: 9, fontWeight: "800" },
   settingsInfoRow: { minHeight: 30, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12, paddingVertical: 5, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: LINE },
   settingsSavedNote: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7, marginTop: 19 },
   settingsSavedIcon: { color: GREEN, fontSize: 12, fontWeight: "800" },

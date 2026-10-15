@@ -1,6 +1,8 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import * as Clipboard from "expo-clipboard";
 import * as FileSystem from "expo-file-system/legacy";
 import * as Sharing from "expo-sharing";
+import { Image } from "expo-image";
 import React, { useEffect, useMemo, useState } from "react";
 import {
   Alert,
@@ -19,7 +21,7 @@ import {
 import DateTimePicker from "@react-native-community/datetimepicker";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { csvCell, dateInput, filterExpenseHistory, parseDate, updateExpenseById } from "@/utils/expense-utils";
-import { ActionIcon } from "@/components/action-icon";
+import { ActionIcon, HomeIcon } from "@/components/action-icon";
 
 type ExpensePalette = {
   bg: string;
@@ -31,7 +33,7 @@ type ExpensePalette = {
   action: string;
   soft: string;
 };
-type ExpensePeriod = "week" | "month" | "year";
+type ExpensePeriod = "day" | "week" | "month" | "year";
 type ExpenseCategory = "General" | "Vet care" | "Food" | "Medication" | "Grooming" | "Supplies" | "Other";
 export const EXPENSE_CURRENCY_OPTIONS = [
   { code: "USD", label: "$ · USD" },
@@ -56,8 +58,8 @@ type Expense = {
   notes: string;
   createdAt: string;
 };
-type ExpensePet = { id: string; name: string };
-type PeriodBucket = { key: string; label: string; total: number };
+type ExpensePet = { id: string; name: string; profilePhotoUri?: string };
+type PeriodBucket = { key: string; label: string; total: number; dateRange?: string };
 
 const EXPENSE_STORAGE_KEY = "petcare-expenses-v1";
 const EXPENSE_PETS_KEY = "petcare-personal-pets-v1";
@@ -65,6 +67,7 @@ export const EXPENSE_CURRENCY_STORAGE_KEY = "petcare-expense-currency-v1";
 const CATEGORIES: ExpenseCategory[] = ["General", "Vet care", "Food", "Medication", "Grooming", "Supplies"];
 type ExpenseScreenData = { expenses: Expense[]; pets: ExpensePet[]; currencyCode?: ExpenseCurrencyCode };
 const PERIOD_OPTIONS: { id: ExpensePeriod; label: string }[] = [
+  { id: "day", label: "Daily" },
   { id: "week", label: "Weekly" },
   { id: "month", label: "Monthly" },
   { id: "year", label: "Yearly" },
@@ -99,7 +102,8 @@ async function loadExpenseScreenData(): Promise<ExpenseScreenData> {
     ? storedPets.filter((pet): pet is ExpensePet => pet !== null
       && typeof pet === "object"
       && typeof pet.id === "string"
-      && typeof pet.name === "string")
+      && typeof pet.name === "string"
+      && (pet.profilePhotoUri === undefined || typeof pet.profilePhotoUri === "string"))
     : [];
   return {
     expenses,
@@ -120,6 +124,10 @@ function currency(amount: number, currencyCode: ExpenseCurrencyCode) {
 
 function periodBounds(period: ExpensePeriod, offset: number) {
   const now = new Date();
+  if (period === "day") {
+    const start = new Date(now.getFullYear(), now.getMonth(), now.getDate() + offset);
+    return { start, end: new Date(start.getFullYear(), start.getMonth(), start.getDate() + 1) };
+  }
   if (period === "week") {
     const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const weekdayFromMonday = (start.getDay() + 6) % 7;
@@ -138,6 +146,11 @@ function periodBounds(period: ExpensePeriod, offset: number) {
 
 function periodOffsetForDate(period: ExpensePeriod, selectedDate: Date) {
   const current = periodBounds(period, 0).start;
+  if (period === "day") {
+    const currentDay = Date.UTC(current.getFullYear(), current.getMonth(), current.getDate());
+    const selectedDay = Date.UTC(selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate());
+    return Math.round((selectedDay - currentDay) / 86_400_000);
+  }
   if (period === "week") {
     const selected = new Date(selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate());
     selected.setDate(selected.getDate() - (selected.getDay() + 6) % 7);
@@ -151,7 +164,14 @@ function periodOffsetForDate(period: ExpensePeriod, selectedDate: Date) {
 
 function makeBuckets(period: ExpensePeriod, start: Date, expenses: Expense[]): PeriodBucket[] {
   const buckets: PeriodBucket[] = [];
-  if (period === "week") {
+  if (period === "day") {
+    buckets.push({
+      key: dateInput(start),
+      label: start.toLocaleDateString(undefined, { weekday: "short" }),
+      total: 0,
+      dateRange: start.toLocaleDateString(undefined, { month: "short", day: "numeric" }),
+    });
+  } else if (period === "week") {
     for (let index = 0; index < 7; index += 1) {
       const day = new Date(start);
       day.setDate(day.getDate() + index);
@@ -159,11 +179,14 @@ function makeBuckets(period: ExpensePeriod, start: Date, expenses: Expense[]): P
         key: dateInput(day),
         label: day.toLocaleDateString(undefined, { weekday: "short" }),
         total: 0,
+        dateRange: day.toLocaleDateString(undefined, { month: "short", day: "numeric" }),
       });
     }
   } else if (period === "month") {
-    for (let index = 0; index < 5; index += 1) {
-      buckets.push({ key: `week-${index}`, label: `W${index + 1}`, total: 0 });
+    const dayCount = new Date(start.getFullYear(), start.getMonth() + 1, 0).getDate();
+    for (let index = 0; index < dayCount; index += 1) {
+      const day = new Date(start.getFullYear(), start.getMonth(), index + 1);
+      buckets.push({ key: dateInput(day), label: String(index + 1), total: 0 });
     }
   } else {
     for (let index = 0; index < 12; index += 1) {
@@ -176,10 +199,12 @@ function makeBuckets(period: ExpensePeriod, start: Date, expenses: Expense[]): P
     const date = parseDate(expense.date);
     if (!date) continue;
     let bucketIndex = 0;
-    if (period === "week") {
+    if (period === "day") {
+      bucketIndex = 0;
+    } else if (period === "week") {
       bucketIndex = Math.round((date.getTime() - start.getTime()) / 86_400_000);
     } else if (period === "month") {
-      bucketIndex = Math.min(Math.floor((date.getDate() - 1) / 7), 4);
+      bucketIndex = date.getDate() - 1;
     } else {
       bucketIndex = date.getMonth();
     }
@@ -189,7 +214,7 @@ function makeBuckets(period: ExpensePeriod, start: Date, expenses: Expense[]): P
   return buckets;
 }
 
-function ExpenseDatePicker({ value, onChange, palette, error, maxDate = new Date() }: { value: string; onChange: (value: string) => void; palette: ExpensePalette; error: boolean; maxDate?: Date }) {
+function ExpenseDatePicker({ value, onChange, palette, error, maxDate = new Date(), compactTrigger = false }: { value: string; onChange: (value: string) => void; palette: ExpensePalette; error: boolean; maxDate?: Date; compactTrigger?: boolean }) {
   const [visible, setVisible] = useState(false);
   const [draftDate, setDraftDate] = useState(() => parseDate(value) ?? new Date());
   const selectedDate = parseDate(value) ?? new Date();
@@ -213,12 +238,12 @@ function ExpenseDatePicker({ value, onChange, palette, error, maxDate = new Date
       onChange: (event: React.ChangeEvent<HTMLInputElement>) => onChange(event.currentTarget.value),
       style: {
         boxSizing: "border-box",
-        minHeight: 43,
+        minHeight: compactTrigger ? 34 : 43,
         width: "100%",
         border: `1px solid ${error ? "#C64040" : palette.line}`,
         borderRadius: 10,
-        padding: "9px 11px",
-        fontSize: 12,
+        padding: compactTrigger ? "5px 6px" : "9px 11px",
+        fontSize: compactTrigger ? 10 : 12,
         color: palette.text,
         backgroundColor: palette.bg,
       },
@@ -231,10 +256,10 @@ function ExpenseDatePicker({ value, onChange, palette, error, maxDate = new Date
         accessibilityRole="button"
         accessibilityLabel={`Expense date: ${selectedDate.toLocaleDateString()}. Choose date`}
         onPress={() => { setDraftDate(selectedDate); setVisible(true); }}
-        style={[styles.datePickerButton, { backgroundColor: palette.bg, borderColor: error ? "#C64040" : palette.line }]}
+        style={[styles.datePickerButton, compactTrigger && styles.datePickerButtonCompact, { backgroundColor: palette.bg, borderColor: error ? "#C64040" : palette.line }]}
       >
-        <Text style={{ color: palette.text, fontSize: 11, fontWeight: "600" }}>{selectedDate.toLocaleDateString()}</Text>
-        <Text style={{ color: palette.primary, fontSize: 17 }}>▦</Text>
+        <Text numberOfLines={1} style={{ color: palette.text, fontSize: compactTrigger ? 9 : 11, fontWeight: "600", flex: 1 }}>{selectedDate.toLocaleDateString()}</Text>
+        <Text style={{ color: palette.primary, fontSize: compactTrigger ? 14 : 17 }}>▦</Text>
       </Pressable>
       {visible && Platform.OS === "android" ? (
         <DateTimePicker value={selectedDate} mode="date" display="calendar" maximumDate={maxDate} onValueChange={handleValueChange} onDismiss={() => setVisible(false)} />
@@ -257,7 +282,7 @@ function ExpenseDatePicker({ value, onChange, palette, error, maxDate = new Date
   );
 }
 
-function ExpensePeriodPicker({ period, value, onChange, palette }: { period: ExpensePeriod; value: Date; onChange: (date: Date) => void; palette: ExpensePalette }) {
+function ExpensePeriodPicker({ period, value, onChange, palette, compactTrigger = false }: { period: ExpensePeriod; value: Date; onChange: (date: Date) => void; palette: ExpensePalette; compactTrigger?: boolean }) {
   const [visible, setVisible] = useState(false);
   const [draftYear, setDraftYear] = useState(value.getFullYear());
 
@@ -270,16 +295,17 @@ function ExpensePeriodPicker({ period, value, onChange, palette }: { period: Exp
       return { start, end, offset: -index };
     });
     const selectedWeek = `${value.toLocaleDateString(undefined, { month: "short", day: "numeric" })} – ${new Date(value.getFullYear(), value.getMonth(), value.getDate() + 6).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}`;
+    const selectedWeekCompact = `${value.toLocaleDateString(undefined, { month: "short", day: "numeric" })}–${new Date(value.getFullYear(), value.getMonth(), value.getDate() + 6).toLocaleDateString(undefined, { month: "short", day: "numeric" })}`;
     return (
       <View>
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={`Selected week ${selectedWeek}. Choose week`}
           onPress={() => setVisible(true)}
-          style={[styles.datePickerButton, { backgroundColor: palette.bg, borderColor: palette.line }]}
+          style={[styles.datePickerButton, compactTrigger && styles.datePickerButtonCompact, { backgroundColor: palette.bg, borderColor: palette.line }]}
         >
-          <Text style={{ color: palette.text, fontSize: 10, fontWeight: "600" }}>{selectedWeek}</Text>
-          <Text style={{ color: palette.primary, fontSize: 17 }}>▦</Text>
+          <Text numberOfLines={1} style={{ color: palette.text, fontSize: compactTrigger ? 8 : 10, fontWeight: "600", flex: 1 }}>{compactTrigger ? selectedWeekCompact : selectedWeek}</Text>
+          <Text style={{ color: palette.primary, fontSize: compactTrigger ? 14 : 17 }}>▦</Text>
         </Pressable>
         <Modal visible={visible} transparent animationType="none" onRequestClose={() => setVisible(false)}>
           <View style={styles.modalScrim}>
@@ -320,6 +346,21 @@ function ExpensePeriodPicker({ period, value, onChange, palette }: { period: Exp
     );
   }
 
+  if (period === "day") {
+    return (
+      <ExpenseDatePicker
+        value={dateInput(value)}
+        onChange={(date) => {
+          const selectedDate = parseDate(date);
+          if (selectedDate) onChange(selectedDate);
+        }}
+        palette={palette}
+        error={false}
+        compactTrigger={compactTrigger}
+      />
+    );
+  }
+
   const today = new Date();
   const currentYear = today.getFullYear();
   if (Platform.OS === "web") {
@@ -338,14 +379,14 @@ function ExpensePeriodPicker({ period, value, onChange, palette }: { period: Exp
           if (Number.isInteger(yearValue) && yearValue >= 1900 && yearValue <= currentYear) onChange(new Date(yearValue, 0, 1));
         }
       },
-      style: {
+        style: {
         boxSizing: "border-box",
-        minHeight: 43,
+          minHeight: compactTrigger ? 34 : 43,
         width: "100%",
         border: `1px solid ${palette.line}`,
         borderRadius: 10,
-        padding: "9px 11px",
-        fontSize: 12,
+          padding: compactTrigger ? "5px 6px" : "9px 11px",
+          fontSize: compactTrigger ? 10 : 12,
         color: palette.text,
         backgroundColor: palette.bg,
       },
@@ -363,10 +404,10 @@ function ExpensePeriodPicker({ period, value, onChange, palette }: { period: Exp
         accessibilityRole="button"
         accessibilityLabel={period === "month" ? `Selected month ${monthName} ${value.getFullYear()}. Choose month` : `Selected year ${value.getFullYear()}. Choose year`}
         onPress={() => { setDraftYear(value.getFullYear()); setVisible(true); }}
-        style={[styles.datePickerButton, { backgroundColor: palette.bg, borderColor: palette.line }]}
+        style={[styles.datePickerButton, compactTrigger && styles.datePickerButtonCompact, { backgroundColor: palette.bg, borderColor: palette.line }]}
       >
-        <Text style={{ color: palette.text, fontSize: 11, fontWeight: "600" }}>{period === "month" ? `${monthName} ${value.getFullYear()}` : String(value.getFullYear())}</Text>
-        <Text style={{ color: palette.primary, fontSize: 17 }}>{period === "month" ? "▦" : "▤"}</Text>
+        <Text numberOfLines={1} style={{ color: palette.text, fontSize: compactTrigger ? 9 : 11, fontWeight: "600", flex: 1 }}>{period === "month" ? `${compactTrigger ? value.toLocaleDateString(undefined, { month: "short" }) : monthName} ${value.getFullYear()}` : String(value.getFullYear())}</Text>
+        <Text style={{ color: palette.primary, fontSize: compactTrigger ? 14 : 17 }}>{period === "month" ? "▦" : "▤"}</Text>
       </Pressable>
       <Modal visible={visible} transparent animationType="none" onRequestClose={() => setVisible(false)}>
         <View style={styles.modalScrim}>
@@ -438,8 +479,10 @@ export function ExpensesScreen({ palette, onBack }: { palette: ExpensePalette; o
   const [periodOffset, setPeriodOffset] = useState(0);
   const [historyCategory, setHistoryCategory] = useState<ExpenseCategory | "All">("All");
   const [historyPetId, setHistoryPetId] = useState("");
+  const [expandedCategory, setExpandedCategory] = useState<ExpenseCategory | null>(null);
   const [editingExpenseId, setEditingExpenseId] = useState<string | null>(null);
   const [expenseFormOpen, setExpenseFormOpen] = useState(false);
+  const [selectedExpense, setSelectedExpense] = useState<Expense | null>(null);
   const [petId, setPetId] = useState("");
   const [currencyCode, setCurrencyCode] = useState<ExpenseCurrencyCode>("USD");
   const [title, setTitle] = useState("");
@@ -513,25 +556,55 @@ export function ExpensesScreen({ palette, onBack }: { palette: ExpensePalette; o
       return expenseDate !== null && expenseDate >= bounds.start && expenseDate < bounds.end;
     })
     .sort((a, b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt)), [bounds.end, bounds.start, expenses]);
-  const historyExpenses = useMemo(() => filterExpenseHistory(periodExpenses, bounds.start, bounds.end, historyCategory, historyPetId), [bounds.end, bounds.start, historyCategory, historyPetId, periodExpenses]);
-  const buckets = useMemo(() => makeBuckets(period, bounds.start, periodExpenses), [bounds.start, period, periodExpenses]);
-  const total = periodExpenses.reduce((sum, expense) => sum + expense.amount, 0);
+  const filteredExpenses = useMemo(() => filterExpenseHistory(periodExpenses, bounds.start, bounds.end, historyCategory, historyPetId), [bounds.end, bounds.start, historyCategory, historyPetId, periodExpenses]);
+  const buckets = useMemo(() => makeBuckets(period, bounds.start, filteredExpenses), [bounds.start, filteredExpenses, period]);
+  const total = filteredExpenses.reduce((sum, expense) => sum + expense.amount, 0);
   const maxBucket = Math.max(...buckets.map((bucket) => bucket.total), 0);
   const categoryTotals = CATEGORIES.map((item) => ({
     category: item,
-    total: periodExpenses.filter((expense) => expense.category === item).reduce((sum, expense) => sum + expense.amount, 0),
+    total: filteredExpenses.filter((expense) => expense.category === item).reduce((sum, expense) => sum + expense.amount, 0),
   })).filter((item) => item.total > 0).sort((a, b) => b.total - a.total);
   const canMoveForward = periodOffset < 0;
-  function periodTitle() {
-    if (periodOffset === 0) return period === "week" ? "This week" : period === "month" ? "This month" : "This year";
-    if (period === "week") {
-      const lastDay = new Date(bounds.end);
-      lastDay.setDate(lastDay.getDate() - 1);
-      return `${bounds.start.toLocaleDateString(undefined, { month: "short", day: "numeric" })} – ${lastDay.toLocaleDateString(undefined, { month: "short", day: "numeric" })}`;
+  function drillDownToBucket(bucket: PeriodBucket, index: number) {
+    let nextPeriod: ExpensePeriod;
+    let selectedDate: Date | null = null;
+    if (period === "year") {
+      nextPeriod = "month";
+      selectedDate = new Date(bounds.start.getFullYear(), index, 1);
+    } else if (period === "month" || period === "week") {
+      nextPeriod = "day";
+      selectedDate = parseDate(bucket.key);
+    } else {
+      return;
     }
-    if (period === "month") return bounds.start.toLocaleDateString(undefined, { month: "long", year: "numeric" });
-    return String(bounds.start.getFullYear());
+    if (!selectedDate) return;
+    setPeriod(nextPeriod);
+    setPeriodOffset(periodOffsetForDate(nextPeriod, selectedDate));
   }
+
+  const chartColumns = buckets.map((bucket, index) => {
+    const barHeight = maxBucket > 0 ? Math.max((bucket.total / maxBucket) * 112, bucket.total > 0 ? 6 : 3) : 3;
+    const clickable = bucket.total > 0 && period !== "day";
+    return (
+      <Pressable
+        key={bucket.key}
+        accessibilityRole="button"
+        accessibilityState={{ disabled: !clickable }}
+        accessibilityLabel={`${bucket.label}${bucket.dateRange ? `, ${bucket.dateRange}` : ""}, ${currency(bucket.total, currencyCode)}`}
+        accessibilityHint={clickable ? "Opens this period" : undefined}
+        disabled={!clickable}
+        onPress={() => drillDownToBucket(bucket, index)}
+        style={({ pressed }) => [styles.chartColumn, pressed && clickable && styles.chartColumnPressed]}
+      >
+        <View style={styles.chartBarArea}>
+          {bucket.total > 0 ? <Text numberOfLines={1} style={[styles.barValue, { color: palette.muted }]}>{bucket.total >= 1000 ? `${(bucket.total / 1000).toFixed(1)}k` : bucket.total.toFixed(0)}</Text> : null}
+          <View style={[styles.chartBar, { height: barHeight, backgroundColor: palette.primary, opacity: bucket.total > 0 ? 1 : 0.2 }]} />
+        </View>
+        <Text style={[styles.chartLabel, { color: palette.muted }]}>{bucket.label}</Text>
+        {bucket.dateRange ? <Text style={[styles.chartDateRange, { color: palette.muted }]}>{bucket.dateRange}</Text> : null}
+      </Pressable>
+    );
+  });
 
   function resetExpenseForm() {
     setEditingExpenseId(null);
@@ -634,7 +707,7 @@ export function ExpensesScreen({ palette, onBack }: { palette: ExpensePalette; o
 
   function createExpenseCsv() {
     const header = ["Expense Date", "Pet", "Category", "Description", "Amount", "Currency label", "Notes"];
-    const dataRows = [...historyExpenses]
+    const dataRows = [...filteredExpenses]
         .sort((a, b) => a.date.localeCompare(b.date))
         .map((expense) => [
           expense.date,
@@ -649,7 +722,7 @@ export function ExpensesScreen({ palette, onBack }: { palette: ExpensePalette; o
   }
 
   async function ensureExpensesExist() {
-    if (historyExpenses.length === 0) {
+    if (filteredExpenses.length === 0) {
       setNotice("There are no expenses in the selected period and filters to export.");
       return false;
     }
@@ -737,7 +810,7 @@ export function ExpensesScreen({ palette, onBack }: { palette: ExpensePalette; o
       >
         <View style={[styles.header, { borderBottomColor: palette.line }]}>
           <Pressable accessibilityRole="button" accessibilityLabel="Back to home" onPress={requestExpenseScreenBack} style={[styles.backButton, { backgroundColor: palette.soft }]}>
-            <Text style={[styles.backGlyph, { color: palette.primary }]}>‹</Text>
+            <HomeIcon color={palette.primary} cutout={palette.soft} size={21} />
           </Pressable>
           <View style={styles.grow}>
             <Text style={[styles.eyebrow, { color: palette.primary }]}>YOUR PET BUDGET</Text>
@@ -769,85 +842,14 @@ export function ExpensesScreen({ palette, onBack }: { palette: ExpensePalette; o
             <Text style={[styles.eyebrow, { color: palette.primary }]}>SPENDING OVERVIEW</Text>
             <Text style={[styles.sectionTitle, { color: palette.text }]}>Your expenses</Text>
           </View>
-          <Text style={[styles.resultCount, { color: palette.muted }]}>{periodExpenses.length} items</Text>
-        </View>
-        <View style={[styles.periodBar, { backgroundColor: palette.soft }]}>
-          {PERIOD_OPTIONS.map((option) => (
-            <Pressable key={option.id} accessibilityRole="tab" accessibilityState={{ selected: period === option.id }} onPress={() => { setPeriod(option.id); setPeriodOffset(0); }} style={[styles.periodButton, period === option.id && { backgroundColor: palette.card }]}>
-              <Text style={[styles.periodText, { color: period === option.id ? palette.primary : palette.muted }]}>{option.label}</Text>
-            </Pressable>
-          ))}
-        </View>
-
-        <View style={[styles.summaryCard, { backgroundColor: palette.card, borderColor: palette.line }]}>
-          <View style={styles.summaryHeader}>
-            <View>
-              <Text style={[styles.summaryCaption, { color: palette.muted }]}>{periodTitle()}</Text>
-              <Text style={[styles.totalText, { color: palette.text }]}>{currency(total, currencyCode)}</Text>
-            </View>
-            <View style={styles.periodNavigation}>
-              <Pressable accessibilityRole="button" accessibilityLabel="Previous period" onPress={() => setPeriodOffset((value) => value - 1)} style={[styles.periodArrow, { backgroundColor: palette.soft }]}><Text style={{ color: palette.primary }}>‹</Text></Pressable>
-              <Pressable accessibilityRole="button" accessibilityLabel="Next period" disabled={!canMoveForward} onPress={() => setPeriodOffset((value) => value + 1)} style={[styles.periodArrow, { backgroundColor: palette.soft, opacity: canMoveForward ? 1 : 0.4 }]}><Text style={{ color: palette.primary }}>›</Text></Pressable>
-            </View>
-          </View>
-          <View style={styles.jumpToDateRow}>
-            <Text style={[styles.chartFootnote, { color: palette.muted }]}>Jump to date</Text>
-            <View style={styles.jumpToDatePicker}>
-              <ExpensePeriodPicker
-                period={period}
-                value={bounds.start}
-                onChange={(selectedDate) => setPeriodOffset(periodOffsetForDate(period, selectedDate))}
-                palette={palette}
-              />
-            </View>
-          </View>
-          <View style={styles.chart}>
-            {buckets.map((bucket) => {
-              const barHeight = maxBucket > 0 ? Math.max((bucket.total / maxBucket) * 112, bucket.total > 0 ? 6 : 3) : 3;
-              return (
-                <View key={bucket.key} style={styles.chartColumn}>
-                  <View style={styles.chartBarArea}>
-                    {bucket.total > 0 ? <Text numberOfLines={1} style={[styles.barValue, { color: palette.muted }]}>{bucket.total >= 1000 ? `${(bucket.total / 1000).toFixed(1)}k` : bucket.total.toFixed(0)}</Text> : null}
-                    <View style={[styles.chartBar, { height: barHeight, backgroundColor: palette.primary, opacity: bucket.total > 0 ? 1 : 0.2 }]} />
-                  </View>
-                  <Text style={[styles.chartLabel, { color: palette.muted }]}>{bucket.label}</Text>
-                </View>
-              );
-            })}
-          </View>
-          <Text style={[styles.chartFootnote, { color: palette.muted }]}>Spending by {period === "week" ? "day" : period === "month" ? "week" : "month"} · {currencyCode} display</Text>
-        </View>
-
-        {categoryTotals.length > 0 ? (
-          <View style={[styles.categoryCard, { backgroundColor: palette.card, borderColor: palette.line }]}>
-            <Text style={[styles.cardTitle, { color: palette.text }]}>By category</Text>
-            {categoryTotals.map((item) => {
-              const share = total > 0 ? item.total / total : 0;
-              return (
-                <View key={item.category} style={styles.categorySummaryRow}>
-                  <View style={styles.categorySummaryLabels}>
-                    <Text style={[styles.categoryName, { color: palette.text }]}>{item.category}</Text>
-                    <Text style={[styles.categoryAmount, { color: palette.muted }]}>{currency(item.total, currencyCode)}</Text>
-                  </View>
-                  <View style={[styles.progressTrack, { backgroundColor: palette.soft }]}>
-                    <View style={[styles.progressFill, { width: `${Math.round(share * 100)}%`, backgroundColor: palette.primary }]} />
-                  </View>
-                </View>
-              );
-            })}
-          </View>
-        ) : null}
-
-        <View style={styles.sectionHeading}>
-          <Text style={[styles.sectionTitle, { color: palette.text }]}>Expense history</Text>
-          <Text style={[styles.resultCount, { color: palette.muted }]}>{historyExpenses.length} items</Text>
+          <Text style={[styles.resultCount, { color: palette.muted }]}>{filteredExpenses.length} items</Text>
         </View>
         <Text style={[styles.fieldLabel, { color: palette.muted }]}>FILTER BY CATEGORY</Text>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
           {["All", ...CATEGORIES].map((item) => {
             const selected = historyCategory === item;
             return (
-                  <Pressable key={item} accessibilityRole="radio" accessibilityState={{ selected }} accessibilityLabel={`${item === "All" ? "All categories" : item} expenses`} onPress={() => setHistoryCategory(item as ExpenseCategory | "All")} style={[styles.chip, { backgroundColor: selected ? palette.action : palette.bg, borderColor: selected ? palette.action : palette.line }]}>
+              <Pressable key={item} accessibilityRole="radio" accessibilityState={{ selected }} accessibilityLabel={`${item === "All" ? "All categories" : item} expenses`} onPress={() => { setHistoryCategory(item as ExpenseCategory | "All"); setExpandedCategory(null); }} style={[styles.chip, { backgroundColor: selected ? palette.action : palette.bg, borderColor: selected ? palette.action : palette.line }]}>
                 <Text style={[styles.chipText, { color: selected ? "#FFFFFF" : palette.text }]}>{item}</Text>
               </Pressable>
             );
@@ -858,33 +860,137 @@ export function ExpensesScreen({ palette, onBack }: { palette: ExpensePalette; o
           {[{ id: "", name: "All pets" }, ...pets].map((pet) => {
             const selected = historyPetId === pet.id;
             return (
-              <Pressable key={pet.id || "all-pets"} accessibilityRole="radio" accessibilityState={{ selected }} accessibilityLabel={`${pet.name} expense history`} onPress={() => setHistoryPetId(pet.id)} style={[styles.chip, { backgroundColor: selected ? palette.action : palette.bg, borderColor: selected ? palette.action : palette.line }]}>
+              <Pressable key={pet.id || "all-pets"} accessibilityRole="radio" accessibilityState={{ selected }} accessibilityLabel={`${pet.name} expense history`} onPress={() => { setHistoryPetId(pet.id); setExpandedCategory(null); }} style={[styles.chip, { backgroundColor: selected ? palette.action : palette.bg, borderColor: selected ? palette.action : palette.line }]}>
                 <Text style={[styles.chipText, { color: selected ? "#FFFFFF" : palette.text }]}>{pet.name}</Text>
               </Pressable>
             );
           })}
         </ScrollView>
-        {!loaded ? <Text style={[styles.emptyText, { color: palette.muted }]}>Loading saved expenses…</Text> : historyExpenses.length === 0 ? (
+        <View style={[styles.periodBar, { backgroundColor: palette.soft }]}>
+          {PERIOD_OPTIONS.map((option) => (
+            <Pressable key={option.id} accessibilityRole="tab" accessibilityState={{ selected: period === option.id }} onPress={() => { setPeriod(option.id); setPeriodOffset(0); }} style={[styles.periodButton, period === option.id && { backgroundColor: palette.card }]}>
+              <Text style={[styles.periodText, { color: period === option.id ? palette.primary : palette.muted }]}>{option.label}</Text>
+            </Pressable>
+          ))}
+        </View>
+
+        <View style={[styles.summaryCard, { backgroundColor: palette.card, borderColor: palette.line }]}>
+          <View style={[styles.jumpToDateRow, compact && styles.jumpToDateRowCompact]}>
+            <View style={[styles.jumpToDatePicker, compact && styles.jumpToDatePickerCompact]}>
+              <ExpensePeriodPicker
+                period={period}
+                value={bounds.start}
+                onChange={(selectedDate) => setPeriodOffset(periodOffsetForDate(period, selectedDate))}
+                palette={palette}
+                compactTrigger={compact}
+              />
+            </View>
+            <View style={styles.periodNavigation}>
+              <Pressable accessibilityRole="button" accessibilityLabel="Previous period" onPress={() => setPeriodOffset((value) => value - 1)} style={[styles.periodArrow, compact && styles.periodArrowCompact, { backgroundColor: palette.soft }]}><Text style={{ color: palette.primary }}>‹</Text></Pressable>
+              <Pressable accessibilityRole="button" accessibilityLabel="Next period" disabled={!canMoveForward} onPress={() => setPeriodOffset((value) => value + 1)} style={[styles.periodArrow, compact && styles.periodArrowCompact, { backgroundColor: palette.soft, opacity: canMoveForward ? 1 : 0.4 }]}><Text style={{ color: palette.primary }}>›</Text></Pressable>
+            </View>
+          </View>
+          <View style={styles.summaryHeader}>
+            <Text style={[styles.totalText, { color: palette.text }]}>{currency(total, currencyCode)}</Text>
+          </View>
+          {period === "month" ? (
+            <ScrollView horizontal showsHorizontalScrollIndicator contentContainerStyle={styles.dailyChartScroll}>
+              <View style={[styles.chart, styles.dailyChart, { width: Math.max(300, buckets.length * 32) }]}>{chartColumns}</View>
+            </ScrollView>
+          ) : (
+            <View style={styles.chart}>{chartColumns}</View>
+          )}
+          <Text style={[styles.chartFootnote, { color: palette.muted }]}>Spending by {period === "day" || period === "week" || period === "month" ? "day" : "month"} · {currencyCode} display</Text>
+        </View>
+
+        {categoryTotals.length > 0 ? (
+          <View style={[styles.categoryCard, { backgroundColor: palette.card, borderColor: palette.line }]}>
+            <Text style={[styles.cardTitle, { color: palette.text }]}>By category</Text>
+            {categoryTotals.map((item) => {
+              const share = total > 0 ? item.total / total : 0;
+              const expanded = expandedCategory === item.category;
+              const categoryExpenses = filteredExpenses.filter((expense) => expense.category === item.category);
+              return (
+                <View key={item.category} style={[styles.categorySummaryRow, { backgroundColor: palette.bg, borderColor: palette.line }]}>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityState={{ expanded }}
+                    accessibilityLabel={`${item.category}, ${currency(item.total, currencyCode)}, ${expanded ? "hide" : "show"} ${categoryExpenses.length} expenses`}
+                    onPress={() => setExpandedCategory(expanded ? null : item.category)}
+                    style={({ pressed }) => [styles.categoryToggle, { opacity: pressed ? 0.76 : 1 }]}
+                  >
+                    <View style={styles.categoryToggleHeader}>
+                      <View style={styles.categoryToggleCopy}>
+                        <View style={styles.categoryTitleAndShare}>
+                          <Text style={[styles.categoryName, { color: palette.text }]}>{item.category}</Text>
+                          <Text style={[styles.categoryShare, { color: palette.muted }]}>{Math.round(share * 100)}%</Text>
+                        </View>
+                        <View style={styles.categoryAmountAndCount}>
+                          <Text style={[styles.categoryAmount, { color: palette.primary }]}>{currency(item.total, currencyCode)}</Text>
+                          <Text style={[styles.categoryEntryCount, { color: palette.muted }]}>{categoryExpenses.length} {categoryExpenses.length === 1 ? "entry" : "entries"}</Text>
+                        </View>
+                      </View>
+                      <View style={[styles.categoryDisclosureButton, { backgroundColor: palette.card, borderColor: palette.primary }]}>
+                        <Text style={[styles.categoryDisclosureText, { color: palette.primary }]}>{expanded ? "Hide entries" : "Show entries"}</Text>
+                      </View>
+                    </View>
+                    <View style={styles.categoryProgressRow}>
+                      <View style={[styles.progressTrack, { backgroundColor: palette.soft }]}>
+                        <View style={[styles.progressFill, { width: `${Math.round(share * 100)}%`, backgroundColor: palette.primary }]} />
+                      </View>
+                    </View>
+                  </Pressable>
+                  {expanded ? (
+                    <View style={[styles.categoryExpenseList, { borderTopColor: palette.line }]}>
+                      {categoryExpenses.map((expense) => {
+                        const expensePet = pets.find((pet) => pet.id === expense.petId);
+                        const expenseDate = new Date(`${expense.date}T00:00:00`);
+                        return (
+                          <Pressable
+                            key={expense.id}
+                            accessibilityRole="button"
+                            accessibilityLabel={`View details for ${expense.title}`}
+                            accessibilityHint="Opens the full expense record"
+                            onPress={() => setSelectedExpense(expense)}
+                            style={({ pressed }) => [styles.categoryExpenseRow, { backgroundColor: palette.card, borderColor: palette.line, opacity: pressed ? 0.76 : 1 }]}
+                          >
+                            <View style={[styles.categoryExpenseDateBadge, { backgroundColor: palette.soft }]}>
+                              <Text style={[styles.categoryExpenseMonth, { color: palette.primary }]}>{expenseDate.toLocaleDateString(undefined, { month: "short" }).toUpperCase()}</Text>
+                              <Text style={[styles.categoryExpenseDay, { color: palette.text }]}>{expenseDate.getDate()}</Text>
+                            </View>
+                            <View style={styles.expenseCopy}>
+                              <Text numberOfLines={2} style={[styles.expenseTitle, { color: palette.text }]}>{expense.title}</Text>
+                              {expense.petId ? (
+                                <View style={styles.categoryExpenseMetaRow}>
+                                  {expensePet?.profilePhotoUri ? (
+                                    <Image source={{ uri: expensePet.profilePhotoUri }} contentFit="cover" accessibilityLabel={`${expensePet.name}'s profile photo`} style={styles.categoryPetAvatar} />
+                                  ) : (
+                                    <View style={[styles.categoryPetAvatar, styles.categoryPetAvatarFallback, { backgroundColor: palette.soft }]}><Text style={styles.categoryPetAvatarGlyph}>🐾</Text></View>
+                                  )}
+                                  <Text numberOfLines={1} style={[styles.expenseMeta, styles.categoryExpensePetName, { color: palette.muted }]}>{expensePet?.name ?? "Pet"}</Text>
+                                </View>
+                              ) : null}
+                              {expense.notes ? <Text style={[styles.categoryExpenseNoteHint, { color: palette.muted }]} numberOfLines={1}>Note · {expense.notes}</Text> : null}
+                            </View>
+                            <View style={styles.categoryExpenseTrailing}>
+                              <Text style={[styles.expenseAmount, { color: palette.primary }]}>{currency(expense.amount, currencyCode)}</Text>
+                            </View>
+                          </Pressable>
+                        );
+                      })}
+                    </View>
+                  ) : null}
+                </View>
+              );
+            })}
+          </View>
+        ) : null}
+        {!loaded ? <Text style={[styles.emptyText, { color: palette.muted }]}>Loading saved expenses…</Text> : filteredExpenses.length === 0 ? (
           <View style={[styles.emptyCard, { backgroundColor: palette.card, borderColor: palette.line }]}>
-            <Text style={[styles.emptyTitle, { color: palette.text }]}>Nothing recorded for {periodTitle().toLocaleLowerCase()}</Text>
-            <Text style={[styles.emptyText, { color: palette.muted }]}>Add an expense above to start tracking pet-care costs.</Text>
+            <Text style={[styles.emptyTitle, { color: palette.text }]}>No expenses match these filters</Text>
+            <Text style={[styles.emptyText, { color: palette.muted }]}>Try another category or pet, or add an expense above.</Text>
           </View>
-        ) : historyExpenses.map((expense) => (
-          <View key={expense.id} style={[styles.expenseRow, { backgroundColor: palette.card, borderColor: palette.line }]}>
-            <View style={styles.expenseCopy}>
-              <Text style={[styles.expenseTitle, { color: palette.text }]}>{expense.title}</Text>
-              <Text style={[styles.expenseMeta, { color: palette.muted }]}>{pets.find((pet) => pet.id === expense.petId)?.name ?? "General"} · {expense.category} · {new Date(`${expense.date}T00:00:00`).toLocaleDateString()}</Text>
-              {expense.notes ? <Text style={[styles.expenseNotes, { color: palette.muted }]}>{expense.notes}</Text> : null}
-            </View>
-            <View style={styles.expenseAmountWrap}>
-              <Text style={[styles.expenseAmount, { color: palette.primary }]}>{currency(expense.amount, currencyCode)}</Text>
-              <View style={styles.expenseActions}>
-                <Pressable accessibilityRole="button" accessibilityLabel={`Edit ${expense.title}`} onPress={() => beginEditExpense(expense)} style={[styles.iconActionButton, { backgroundColor: palette.soft }]}><ActionIcon name="edit" color={palette.primary} cutout={palette.soft} size={18} /></Pressable>
-                <Pressable accessibilityRole="button" accessibilityLabel={`Remove ${expense.title}`} onPress={() => void removeExpense(expense)} style={[styles.iconActionButton, { backgroundColor: palette.soft }]}><ActionIcon name="remove" color={palette.primary} cutout={palette.soft} size={18} /></Pressable>
-              </View>
-            </View>
-          </View>
-        ))}
+        ) : null}
       </ScrollView>
       <Modal
         visible={expenseFormOpen}
@@ -905,7 +1011,7 @@ export function ExpensesScreen({ palette, onBack }: { palette: ExpensePalette; o
             </View>
             <View style={[styles.formCard, { backgroundColor: palette.card, borderColor: palette.line }]}>
               <View style={styles.inputRow}>
-                <TextInput value={title} onChangeText={setTitle} placeholder="Description (e.g. annual checkup)" placeholderTextColor={palette.muted} style={[styles.input, styles.descriptionInput, { backgroundColor: palette.bg, color: palette.text, borderColor: formError && !title.trim() ? "#C64040" : palette.line }]} />
+                <TextInput value={title} onChangeText={setTitle} maxLength={50} placeholder="Description (e.g. annual checkup)" placeholderTextColor={palette.muted} style={[styles.input, styles.descriptionInput, { backgroundColor: palette.bg, color: palette.text, borderColor: formError && !title.trim() ? "#C64040" : palette.line }]} />
                 <TextInput value={amount} onChangeText={setAmount} placeholder={`Amount (${currencyCode})`} placeholderTextColor={palette.muted} keyboardType="decimal-pad" style={[styles.input, styles.amountInput, { backgroundColor: palette.bg, color: palette.text, borderColor: formError && (!Number.isFinite(Number(amount)) || Number(amount) <= 0) ? "#C64040" : palette.line }]} />
               </View>
               <Text style={[styles.fieldLabel, { color: palette.muted }]}>PET · OPTIONAL</Text>
@@ -936,6 +1042,90 @@ export function ExpensesScreen({ palette, onBack }: { palette: ExpensePalette; o
             <Text style={[styles.currencyInfo, { color: palette.muted }]}>Currency can be changed in Settings. Changing currency does not convert expense amounts.</Text>
           </ScrollView>
         </SafeAreaView>
+      </Modal>
+      <Modal
+        visible={selectedExpense !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setSelectedExpense(null)}
+      >
+        <View style={styles.modalScrim}>
+          <View style={[styles.expenseDetailCard, { backgroundColor: palette.card, borderColor: palette.line }]}>
+            {selectedExpense ? (
+              <>
+                <View style={styles.expenseDetailHeader}>
+                  <View style={styles.grow}>
+                    <Text style={[styles.eyebrow, { color: palette.primary }]}>EXPENSE DETAILS</Text>
+                    <Text style={[styles.expenseDetailTitle, { color: palette.text }]}>{selectedExpense.title}</Text>
+                  </View>
+                  <Pressable accessibilityRole="button" accessibilityLabel="Close expense details" onPress={() => setSelectedExpense(null)} style={[styles.detailCloseButton, { backgroundColor: palette.soft }]}>
+                    <Text style={[styles.detailCloseText, { color: palette.primary }]}>×</Text>
+                  </Pressable>
+                </View>
+                <ScrollView style={styles.expenseDetailScroll} contentContainerStyle={styles.expenseDetailFields}>
+                  <View style={[styles.expenseDetailField, { borderColor: palette.line }]}>
+                    <Text style={[styles.fieldLabel, { color: palette.muted }]}>AMOUNT</Text>
+                    <Text style={[styles.expenseDetailValue, styles.expenseDetailAmount, { color: palette.primary }]}>{currency(selectedExpense.amount, currencyCode)}</Text>
+                  </View>
+                  <View style={[styles.expenseDetailField, { borderColor: palette.line }]}>
+                    <Text style={[styles.fieldLabel, { color: palette.muted }]}>PET</Text>
+                    <Text style={[styles.expenseDetailValue, { color: palette.text }]}>{pets.find((pet) => pet.id === selectedExpense.petId)?.name ?? "General"}</Text>
+                  </View>
+                  <View style={[styles.expenseDetailField, { borderColor: palette.line }]}>
+                    <Text style={[styles.fieldLabel, { color: palette.muted }]}>CATEGORY</Text>
+                    <Text style={[styles.expenseDetailValue, { color: palette.text }]}>{selectedExpense.category}</Text>
+                  </View>
+                  <View style={[styles.expenseDetailField, { borderColor: palette.line }]}>
+                    <Text style={[styles.fieldLabel, { color: palette.muted }]}>DATE</Text>
+                    <Text style={[styles.expenseDetailValue, { color: palette.text }]}>{new Date(`${selectedExpense.date}T00:00:00`).toLocaleDateString()}</Text>
+                  </View>
+                  <View style={[styles.expenseDetailField, styles.expenseDetailNotes, { borderColor: palette.line }]}>
+                    <View style={styles.expenseDetailNotesHeader}>
+                      <Text style={[styles.fieldLabel, { color: palette.muted }]}>NOTES</Text>
+                      {selectedExpense.notes ? (
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityLabel="Copy notes"
+                          onPress={() => { void Clipboard.setStringAsync(selectedExpense.notes).then(() => setNotice("Notes copied to clipboard.")).catch(() => undefined); }}
+                          style={({ pressed }) => [styles.copyNotesButton, { backgroundColor: palette.soft, opacity: pressed ? 0.75 : 1 }]}
+                        >
+                          <Text style={[styles.copyNotesButtonText, { color: palette.primary }]}>Copy</Text>
+                        </Pressable>
+                      ) : null}
+                    </View>
+                    <Text style={[styles.expenseDetailValue, { color: palette.text }]}>{selectedExpense.notes || "No notes added."}</Text>
+                  </View>
+                </ScrollView>
+                <View style={styles.expenseDetailActions}>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={`Edit ${selectedExpense.title}`}
+                    onPress={() => {
+                      const expenseToEdit = selectedExpense;
+                      setSelectedExpense(null);
+                      setTimeout(() => beginEditExpense(expenseToEdit), 0);
+                    }}
+                    style={({ pressed }) => [styles.iconActionButton, { backgroundColor: palette.soft, opacity: pressed ? 0.72 : 1 }]}
+                  >
+                    <ActionIcon name="edit" color={palette.primary} cutout={palette.soft} size={20} />
+                  </Pressable>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={`Remove ${selectedExpense.title}`}
+                    onPress={() => {
+                      const expenseToRemove = selectedExpense;
+                      setSelectedExpense(null);
+                      setTimeout(() => void removeExpense(expenseToRemove), 0);
+                    }}
+                    style={({ pressed }) => [styles.iconActionButton, { backgroundColor: palette.soft, opacity: pressed ? 0.72 : 1 }]}
+                  >
+                    <ActionIcon name="remove" color={palette.primary} cutout={palette.soft} size={20} />
+                  </Pressable>
+                </View>
+              </>
+            ) : null}
+          </View>
+        </View>
       </Modal>
       <Modal
         visible={leaveEditConfirmationVisible}
@@ -991,6 +1181,21 @@ const styles = StyleSheet.create({
   datePickerButton: { minHeight: 43, borderWidth: 1, borderRadius: 10, paddingHorizontal: 11, flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   modalScrim: { flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: "#00000066", padding: 18 },
   confirmationCard: { width: "100%", maxWidth: 420, borderWidth: 1, borderRadius: 18, padding: 18, gap: 12 },
+  expenseDetailCard: { width: "100%", maxWidth: 460, maxHeight: "88%", borderWidth: 1, borderRadius: 18, padding: 18, gap: 14 },
+  expenseDetailHeader: { flexDirection: "row", alignItems: "center", gap: 12 },
+  expenseDetailTitle: { fontSize: 18, fontWeight: "800" },
+  detailCloseButton: { width: 34, height: 34, borderRadius: 11, alignItems: "center", justifyContent: "center" },
+  detailCloseText: { fontSize: 23, lineHeight: 26 },
+  expenseDetailScroll: { flexShrink: 1, maxHeight: 380 },
+  expenseDetailFields: { paddingBottom: 12 },
+  expenseDetailField: { borderTopWidth: 1, paddingVertical: 11, gap: 5 },
+  expenseDetailNotes: { borderBottomWidth: 1 },
+  expenseDetailNotesHeader: { minHeight: 28, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10 },
+  expenseDetailValue: { fontSize: 11, lineHeight: 17 },
+  expenseDetailAmount: { fontSize: 20, fontWeight: "800" },
+  expenseDetailActions: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8, paddingTop: 12 },
+  copyNotesButton: { minHeight: 28, justifyContent: "center", borderRadius: 8, paddingHorizontal: 10, paddingVertical: 5 },
+  copyNotesButtonText: { fontSize: 8, fontWeight: "800" },
   dateModal: { width: "100%", maxWidth: 400, borderRadius: 18, padding: 14 },
   weekPickerModal: { maxHeight: "78%" },
   weekPickerList: { maxHeight: 460, marginTop: 5 },
@@ -1006,29 +1211,57 @@ const styles = StyleSheet.create({
   sectionHeading: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-end", gap: 10, marginTop: 24, marginBottom: 10 },
   sectionTitle: { fontSize: 17, fontWeight: "800" },
   resultCount: { fontSize: 8, fontWeight: "700" },
-  periodBar: { flexDirection: "row", borderRadius: 12, padding: 4, gap: 3 },
+  periodBar: { flexDirection: "row", borderRadius: 12, padding: 4, gap: 3, marginTop: 8 },
   periodButton: { flex: 1, minHeight: 36, borderRadius: 9, alignItems: "center", justifyContent: "center" },
   periodText: { fontSize: 9, fontWeight: "800" },
   summaryCard: { borderWidth: 1, borderRadius: 15, padding: 14, marginTop: 11 },
-  summaryHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
-  summaryCaption: { fontSize: 9, fontWeight: "700" },
+  summaryHeader: { marginTop: 8 },
   totalText: { fontSize: 25, fontWeight: "800", marginTop: 3 },
-  periodNavigation: { flexDirection: "row", gap: 7 },
+  periodNavigation: { flexDirection: "row", gap: 5 },
   periodArrow: { width: 33, height: 33, borderRadius: 11, alignItems: "center", justifyContent: "center" },
-  jumpToDateRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10, marginTop: 10 },
-  jumpToDatePicker: { width: 154 },
+  periodArrowCompact: { width: 25, height: 30, borderRadius: 9 },
+  jumpToDateRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 5 },
+  jumpToDateRowCompact: { gap: 3 },
+  jumpToDatePicker: { width: 140 },
+  jumpToDatePickerCompact: { width: 98 },
+  datePickerButtonCompact: { minHeight: 34, paddingHorizontal: 6, gap: 4 },
   chart: { height: 154, flexDirection: "row", alignItems: "stretch", gap: 5, marginTop: 15 },
+  dailyChartScroll: { paddingRight: 2 },
+  dailyChart: { gap: 4, marginTop: 15 },
   chartColumn: { flex: 1, alignItems: "center" },
+  chartColumnPressed: { opacity: 0.72 },
   chartBarArea: { flex: 1, width: "100%", alignItems: "center", justifyContent: "flex-end", gap: 4 },
   chartBar: { width: "58%", maxWidth: 32, minHeight: 3, borderTopLeftRadius: 6, borderTopRightRadius: 6 },
   barValue: { fontSize: 6, fontWeight: "700" },
   chartLabel: { fontSize: 7, fontWeight: "700", marginTop: 5 },
+  chartDateRange: { fontSize: 6, fontWeight: "600", marginTop: 2, textAlign: "center" },
   chartFootnote: { textAlign: "right", fontSize: 7, marginTop: 7 },
-  categoryCard: { borderWidth: 1, borderRadius: 15, padding: 14, gap: 12, marginTop: 10 },
-  categorySummaryRow: { gap: 6 },
-  categorySummaryLabels: { flexDirection: "row", justifyContent: "space-between", gap: 8 },
-  categoryName: { fontSize: 9, fontWeight: "700" },
-  categoryAmount: { fontSize: 8, fontWeight: "700" },
+  categoryCard: { borderWidth: 1, borderRadius: 15, paddingHorizontal: 14, paddingTop: 14, paddingBottom: 6, gap: 9, marginTop: 10 },
+  categorySummaryRow: { borderWidth: 1, borderRadius: 13, overflow: "hidden" },
+  categoryToggle: { gap: 11, paddingHorizontal: 12, paddingTop: 11, paddingBottom: 4 },
+  categoryToggleHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10 },
+  categoryToggleCopy: { flex: 1, gap: 5 },
+  categoryTitleAndShare: { flexDirection: "row", alignItems: "center", justifyContent: "flex-start", gap: 8 },
+  categoryAmountAndCount: { flexDirection: "row", flexWrap: "wrap", alignItems: "baseline", gap: 8 },
+  categoryDisclosureButton: { minHeight: 32, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7, borderWidth: 1, borderRadius: 9, paddingHorizontal: 9, paddingVertical: 6 },
+  categoryDisclosureText: { fontSize: 8, fontWeight: "800" },
+  categoryName: { fontSize: 10, fontWeight: "800" },
+  categoryAmount: { fontSize: 10, fontWeight: "800" },
+  categoryEntryCount: { fontSize: 8, fontWeight: "600" },
+  categoryProgressRow: { flexDirection: "row", alignItems: "center" },
+  categoryShare: { fontSize: 8, fontWeight: "800" },
+  categoryExpenseList: { gap: 7, paddingHorizontal: 10, paddingTop: 9, paddingBottom: 6, borderTopWidth: 1, borderTopColor: "#E5E9E1" },
+  categoryExpenseRow: { minHeight: 68, borderWidth: 1, borderRadius: 13, paddingHorizontal: 12, paddingVertical: 8, flexDirection: "row", alignItems: "center", gap: 9 },
+  categoryExpenseDateBadge: { width: 41, height: 44, borderRadius: 10, alignItems: "center", justifyContent: "center", gap: 1 },
+  categoryExpenseMonth: { fontSize: 7, fontWeight: "800", letterSpacing: 0.5 },
+  categoryExpenseDay: { fontSize: 13, fontWeight: "800", lineHeight: 16 },
+  categoryExpenseMetaRow: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 4 },
+  categoryPetAvatar: { width: 18, height: 18, borderRadius: 7 },
+  categoryPetAvatarFallback: { alignItems: "center", justifyContent: "center" },
+  categoryPetAvatarGlyph: { fontSize: 10 },
+  categoryExpensePetName: { maxWidth: 100 },
+  categoryExpenseNoteHint: { fontSize: 7, lineHeight: 11, marginTop: 2 },
+  categoryExpenseTrailing: { alignItems: "flex-end", justifyContent: "center", gap: 1 },
   progressTrack: { height: 6, borderRadius: 4, overflow: "hidden" },
   progressFill: { height: "100%", borderRadius: 4 },
   emptyCard: { borderWidth: 1, borderRadius: 15, padding: 16, gap: 6, marginTop: 14 },
@@ -1038,9 +1271,13 @@ const styles = StyleSheet.create({
   expenseCopy: { flex: 1, gap: 4 },
   expenseTitle: { fontSize: 10, fontWeight: "800" },
   expenseMeta: { fontSize: 8, lineHeight: 12 },
+  expenseNotesRow: { flexDirection: "row", alignItems: "flex-start", gap: 8 },
+  expenseNotesCopy: { flex: 1 },
+  expenseCopyButton: { minHeight: 27, justifyContent: "center", borderRadius: 8, paddingHorizontal: 9, paddingVertical: 4 },
+  expenseCopyButtonText: { fontSize: 8, fontWeight: "800" },
   expenseNotes: { fontSize: 8, lineHeight: 12 },
   expenseAmountWrap: { alignItems: "flex-end", gap: 7 },
   expenseActions: { flexDirection: "row", alignItems: "center", gap: 8 },
   expenseAmount: { fontSize: 10, fontWeight: "800" },
-  iconActionButton: { width: 32, height: 32, alignItems: "center", justifyContent: "center", borderRadius: 10 },
+  iconActionButton: { width: 36, height: 36, alignItems: "center", justifyContent: "center", borderRadius: 11 },
 });
