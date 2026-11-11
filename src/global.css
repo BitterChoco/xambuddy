@@ -1,0 +1,3 @@
+[data-expoimage] img[src*="heroes/"] {
+  z-index: 1;
+}

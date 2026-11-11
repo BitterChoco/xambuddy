@@ -1,0 +1,20 @@
+{
+  "defaultId": "dog",
+  "items": [
+    {
+      "id": "cat",
+      "name": "Cat",
+      "image": "profile_cat.png"
+    },
+    {
+      "id": "dog",
+      "name": "Dog",
+      "image": "profile_dog.png"
+    },
+    {
+      "id": "rabbit",
+      "name": "Rabbit",
+      "image": "profile_rabbit.png"
+    }
+  ]
+}
