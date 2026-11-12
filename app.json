@@ -4,11 +4,11 @@
     "slug": "xambuddy",
     "version": "1.0.0",
     "orientation": "landscape",
-    "icon": "./assets/game/icons/icon_1.png",
+    "icon": "./assets/images/icon_1.png",
     "scheme": "wild-paw-bloom-wars",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "icon": "./assets/game/icons/icon_1.png",
+      "icon": "./assets/images/icon_1.png",
       "infoPlist": {
         "NSLocalNetworkUsageDescription": "Wild Paw uses your local network to connect to nearby multiplayer matches.",
         "UISupportedInterfaceOrientations": [
@@ -24,7 +24,7 @@
     "android": {
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
-        "foregroundImage": "./assets/game/icons/icon_1.png",
+        "foregroundImage": "./assets/images/icon_1.png",
         "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
@@ -33,7 +33,7 @@
     },
     "web": {
       "output": "server",
-      "favicon": "./assets/game/icons/icon_1.png",
+      "favicon": "./assets/images/icon_1.png",
       "orientation": "landscape"
     },
     "plugins": [
@@ -48,6 +48,16 @@
         "expo-splash-screen",
         {
           "backgroundColor": "#06150f"
+        }
+      ],
+      "expo-web-browser",
+      [
+        "expo-audio",
+        {
+          "microphonePermission": false,
+          "recordAudioAndroid": false,
+          "enableBackgroundPlayback": false,
+          "enableBackgroundRecording": false
         }
       ]
     ],

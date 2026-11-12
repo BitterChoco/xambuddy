@@ -1,3 +1,9 @@
+import {
+    getRemoteAssetSource,
+    hasRemoteAsset,
+    readRemoteAssetJson,
+} from "@/services/remote-assets";
+
 export type BundledImage =
   | number
   | {
@@ -5,11 +11,6 @@ export type BundledImage =
       width?: number;
       height?: number;
     };
-
-type AssetContext = {
-  keys: () => string[];
-  (key: string): BundledImage;
-};
 
 export type ProfilePictureRecord = {
   id: string;
@@ -64,121 +65,95 @@ export const ITEM_RARITIES: ItemRarity[] = [
 ];
 
 const rarityCardImages: Record<ItemRarity, BundledImage> = {
-  common: require("@/assets/game/functions/card/hero_card_common.png"),
-  uncommon: require("@/assets/game/functions/card/hero_card_uncommon.png"),
-  rare: require("@/assets/game/functions/card/hero_card_rare.png"),
-  epic: require("@/assets/game/functions/card/hero_card_epic.png"),
-  legendary: require("@/assets/game/functions/card/hero_card_legendary.png"),
-  mythic: require("@/assets/game/functions/card/hero_card_mythic.png"),
+  common: getRemoteAssetSource("game/functions/card/hero_card_common.png"),
+  uncommon: getRemoteAssetSource("game/functions/card/hero_card_uncommon.png"),
+  rare: getRemoteAssetSource("game/functions/card/hero_card_rare.png"),
+  epic: getRemoteAssetSource("game/functions/card/hero_card_epic.png"),
+  legendary: getRemoteAssetSource(
+    "game/functions/card/hero_card_legendary.png",
+  ),
+  mythic: getRemoteAssetSource("game/functions/card/hero_card_mythic.png"),
 };
 
 export function getRarityCardImage(rarity?: ItemRarity) {
   return rarityCardImages[rarity ?? "common"];
 }
 
-function createAssetMap(context: AssetContext) {
-  return new Map(
-    context.keys().map((key) => [key.slice(2).toLowerCase(), context(key)]),
-  );
-}
+export type ProfilePictureId = string;
 
-const profilePictureCatalog =
-  require("@/assets/game/profile/picture/profile-pictures.json") as {
-    defaultId: string;
-    items: ProfilePictureRecord[];
-  };
-const profilePictureAssets = createAssetMap(
-  require.context(
-    "../../assets/game/profile/picture",
-    false,
-    /\.(png|jpe?g|webp)$/i,
-  ) as AssetContext,
-);
+export const PROFILE_PICTURE_CHOICES: (ProfilePictureRecord & {
+  source: BundledImage;
+})[] = [];
+export const PROFILE_PICTURES: Record<string, BundledImage> = {};
+export let DEFAULT_PROFILE_PICTURE = "";
+export const PROFILE_BORDERS: ProfileBorderRecord[] = [];
+export let DEFAULT_PROFILE_BORDER = "";
+export const HEROES: HeroRecord[] = [];
+export let DEFAULT_HERO_ID = "dog";
 
-export const PROFILE_PICTURE_CHOICES = profilePictureCatalog.items
-  .map((picture) => ({
-    ...picture,
-    source: profilePictureAssets.get(picture.image.toLowerCase()),
-  }))
-  .filter(
-    (picture): picture is ProfilePictureRecord & { source: BundledImage } =>
-      picture.source !== undefined,
-  );
-
-export type ProfilePictureId = (typeof PROFILE_PICTURE_CHOICES)[number]["id"];
-
-export const PROFILE_PICTURES: Record<string, BundledImage> =
-  Object.fromEntries(
-    PROFILE_PICTURE_CHOICES.map((picture) => [picture.id, picture.source]),
-  );
-
-export const DEFAULT_PROFILE_PICTURE = PROFILE_PICTURES[
-  profilePictureCatalog.defaultId
-]
-  ? profilePictureCatalog.defaultId
-  : (PROFILE_PICTURE_CHOICES[0]?.id ?? "");
-
-const profileBorderCatalog =
-  require("@/assets/game/profile/border/profile-borders.json") as {
-    defaultId: string;
-    items: ProfileBorderRecord[];
-  };
-const profileBorderAssets = createAssetMap(
-  require.context(
-    "../../assets/game/profile/border",
-    false,
-    /\.(png|jpe?g|webp)$/i,
-  ) as AssetContext,
-);
-
-export const PROFILE_BORDERS: ProfileBorderRecord[] = profileBorderCatalog.items
-  .map((border) => ({
-    ...border,
-    source: border.image
-      ? profileBorderAssets.get(border.image.toLowerCase())
-      : undefined,
-  }))
-  .filter((border) => !border.image || border.source !== undefined);
-
-export const DEFAULT_PROFILE_BORDER = PROFILE_BORDERS.some(
-  (border) => border.id === profileBorderCatalog.defaultId,
-)
-  ? profileBorderCatalog.defaultId
-  : (PROFILE_BORDERS[0]?.id ?? "");
-
-const heroCatalog = require("@/assets/game/heroes/type/heroes.json") as {
+type Catalog<T> = {
   defaultId: string;
-  items: HeroRecord[];
+  items: T[];
 };
-const heroAssets = createAssetMap(
-  require.context(
-    "../../assets/game/heroes/type",
-    false,
-    /\.(png|jpe?g|webp)$/i,
-  ) as AssetContext,
-);
-const skinAssets = createAssetMap(
-  require.context(
-    "../../assets/game/heroes/skin",
-    false,
-    /\.(png|jpe?g|webp)$/i,
-  ) as AssetContext,
-);
 
-export const HEROES: HeroRecord[] = heroCatalog.items
-  .map((hero) => ({
-    ...hero,
-    source: heroAssets.get(hero.image.toLowerCase()),
-  }))
-  .filter((hero): hero is HeroRecord & { source: BundledImage } =>
-    Boolean(hero.source),
+export async function initializeRemoteGameCatalogs() {
+  const [pictures, borders, heroes] = await Promise.all([
+    readRemoteAssetJson<Catalog<ProfilePictureRecord>>(
+      "game/constants/profile-pictures.json",
+    ),
+    readRemoteAssetJson<Catalog<ProfileBorderRecord>>(
+      "game/constants/profile-borders.json",
+    ),
+    readRemoteAssetJson<Catalog<HeroRecord>>("game/constants/heroes.json"),
+  ]);
+
+  PROFILE_PICTURE_CHOICES.splice(
+    0,
+    PROFILE_PICTURE_CHOICES.length,
+    ...pictures.items.map((picture) => ({
+      ...picture,
+      source: getRemoteAssetSource(`game/profile/picture/${picture.image}`),
+    })),
   );
+  for (const id of Object.keys(PROFILE_PICTURES)) delete PROFILE_PICTURES[id];
+  Object.assign(
+    PROFILE_PICTURES,
+    Object.fromEntries(
+      PROFILE_PICTURE_CHOICES.map((picture) => [picture.id, picture.source]),
+    ),
+  );
+  DEFAULT_PROFILE_PICTURE = PROFILE_PICTURES[pictures.defaultId]
+    ? pictures.defaultId
+    : (PROFILE_PICTURE_CHOICES[0]?.id ?? "");
 
-export const DEFAULT_HERO_ID = HEROES.some(
-  (hero) => hero.id === heroCatalog.defaultId,
-)
-  ? heroCatalog.defaultId
-  : (HEROES.find((hero) => hero.id === "dog")?.id ?? HEROES[0]?.id ?? "dog");
+  PROFILE_BORDERS.splice(
+    0,
+    PROFILE_BORDERS.length,
+    ...borders.items.map((border) => ({
+      ...border,
+      source: border.image
+        ? getRemoteAssetSource(`game/profile/border/${border.image}`)
+        : undefined,
+    })),
+  );
+  DEFAULT_PROFILE_BORDER = PROFILE_BORDERS.some(
+    (border) => border.id === borders.defaultId,
+  )
+    ? borders.defaultId
+    : (PROFILE_BORDERS[0]?.id ?? "");
+
+  HEROES.splice(
+    0,
+    HEROES.length,
+    ...heroes.items.map((hero) => ({
+      ...hero,
+      source: getRemoteAssetSource(`game/heroes/type/${hero.image}`),
+    })),
+  );
+  DEFAULT_HERO_ID = HEROES.some((hero) => hero.id === heroes.defaultId)
+    ? heroes.defaultId
+    : (HEROES.find((hero) => hero.id === "dog")?.id ?? HEROES[0]?.id ?? "dog");
+}
 
 export function isProfilePictureId(value: unknown): value is ProfilePictureId {
   return (
@@ -220,8 +195,8 @@ export function getSkinImage(
     return getHeroImage(heroId);
   }
 
-  return (
-    skinAssets.get(`${heroId}_${skinId}.png`.toLowerCase()) ??
-    getHeroImage(heroId)
-  );
+  const skinPath = `game/heroes/skin/${heroId}_${skinId}.png`;
+  return hasRemoteAsset(skinPath)
+    ? getRemoteAssetSource(skinPath)
+    : getHeroImage(heroId);
 }

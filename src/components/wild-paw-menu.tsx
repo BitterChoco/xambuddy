@@ -1,5 +1,11 @@
 import { ProfileBorderOverlay } from "@/components/ui/profile-border-overlay";
 import {
+  BUDDIES,
+  getBuddy,
+  getBuddyBonusSummary,
+  getBuddyRarityColor,
+} from "@/constants/buddy-catalog";
+import {
   awardCoins,
   getCoinBalance,
   spendCoins,
@@ -24,18 +30,46 @@ import {
   type ProfilePictureId,
 } from "@/constants/game-catalog";
 import {
+  DEFAULT_ORB_SKIN_ID,
+  getOrbRarityColor,
+  getOrbSkin,
+  ORB_SKINS,
+} from "@/constants/orb-catalog";
+import {
+  getPlayerLevelProgress,
+  getPlayerXp,
+  subscribeToPlayerXp,
+} from "@/constants/player-experience";
+import {
   DEFAULT_PLAYER_INVENTORY,
   loadPlayerInventory,
   savePlayerInventory,
   type PlayerInventory,
 } from "@/constants/player-inventory";
-import { getHeroPricing, getSkinPricing } from "@/constants/store-pricing";
+import {
+  getMusicVolume,
+  getSoundEffectsVolume,
+  getVibrationEnabled,
+  saveMusicVolume,
+  saveSoundEffectsVolume,
+  saveVibrationEnabled,
+  updateMusicVolume,
+  updateSoundEffectsVolume,
+} from "@/constants/player-settings";
+import {
+  getBuddyPricing,
+  getHeroPricing,
+  getOrbPricing,
+  getSkinPricing,
+} from "@/constants/store-pricing";
 import { getLocalHostAddresses } from "@/services/local-host-address";
 import {
   probeLocalServer,
   startLocalHostServer,
 } from "@/services/local-multiplayer-network";
+import { getRemoteAssetSource } from "@/services/remote-assets";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import Slider from "@react-native-community/slider";
 import { Image, type ImageSource } from "expo-image";
 import * as Network from "expo-network";
 import { router } from "expo-router";
@@ -45,6 +79,7 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   useWindowDimensions,
@@ -60,9 +95,10 @@ type MenuScreen =
   | "play"
   | "multiplayer"
   | "profile"
-  | "store";
-type SelectionTab = "hero" | "skin";
-type StoreTab = "hero" | "skin";
+  | "store"
+  | "settings";
+type SelectionTab = "hero" | "skin" | "orb" | "buddy";
+type StoreTab = "hero" | "skin" | "orb" | "buddy";
 type StorePriceSort = "featured" | "low-to-high" | "high-to-low";
 type ProfileTab = "picture" | "border";
 type MultiplayerView = "choice" | "host" | "join";
@@ -73,20 +109,25 @@ type LocalHost = {
   status: "online" | "offline";
 };
 
-const buttonImage = require("@/assets/game/functions/button_1.png");
-const menuBackground = require("@/assets/game/functions/background_1.png");
-const titleImage = require("@/assets/game/functions/title_1.png");
-const storeHeroTabImage = require("@/assets/game/functions/hero_1.png");
-const storeSkinTabImage = require("@/assets/game/functions/skin_1.png");
-const previewMinimizeImage = require("@/assets/game/functions/minimize_1.png");
-const previewExpandImage = require("@/assets/game/functions/expand_1.png");
-const coinImage = require("@/assets/game/icons/coin_1.png");
+const buttonImage = getRemoteAssetSource("game/functions/button_1.png");
+const menuBackground = getRemoteAssetSource("images/background_1.png");
+const titleImage = getRemoteAssetSource("game/functions/title_1.png");
+const storeHeroTabImage = getRemoteAssetSource("game/functions/hero_1.png");
+const storeSkinTabImage = getRemoteAssetSource("game/functions/skin_1.png");
+const storeOrbTabImage = getRemoteAssetSource("game/orbs/orb_2-1.png");
+const storeBuddyTabImage = getRemoteAssetSource("game/buddy/buddy_default.png");
+const previewMinimizeImage = getRemoteAssetSource(
+  "game/functions/minimize_1.png",
+);
+const previewExpandImage = getRemoteAssetSource("game/functions/expand_1.png");
+const coinImage = getRemoteAssetSource("game/icons/coin_1.png");
+const orbImage = getRemoteAssetSource("game/orbs/orb_1-1.png");
 const PROFILE_STORAGE_KEY = "wild-paw.player-profile";
-const shopImage = require("@/assets/game/icons/shop_1.png");
-const calendarImage = require("@/assets/game/icons/calendar_1.png");
-const taskImage = require("@/assets/game/icons/task_1.png");
-const homeImage = require("@/assets/game/icons/home_1.png");
-const settingsImage = require("@/assets/game/icons/settings_1.png");
+const shopImage = getRemoteAssetSource("game/icons/shop_1.png");
+const calendarImage = getRemoteAssetSource("game/icons/calendar_1.png");
+const taskImage = getRemoteAssetSource("game/icons/task_1.png");
+const homeImage = getRemoteAssetSource("game/icons/home_1.png");
+const settingsImage = getRemoteAssetSource("game/icons/settings_1.png");
 
 function CoinBalanceBadge({ balance }: { balance: number }) {
   return (
@@ -106,14 +147,18 @@ function ProfilePicture({
   name,
   picture,
   border,
+  level,
   onPress,
   onStorePress,
+  onSettingsPress,
 }: {
   name: string;
   picture: ProfilePictureId;
   border: string;
+  level: number;
   onPress: () => void;
   onStorePress: () => void;
+  onSettingsPress: () => void;
 }) {
   return (
     <View style={styles.profileRail}>
@@ -137,6 +182,7 @@ function ProfilePicture({
         <Text numberOfLines={1} style={styles.profileUserName}>
           {name || "Player 1"}
         </Text>
+        <Text style={styles.profileLevelBadge}>LEVEL {level}</Text>
       </Pressable>
       <Pressable
         accessibilityRole="button"
@@ -167,14 +213,19 @@ function ProfilePicture({
           accessibilityLabel="Tasks"
         />
       </View>
-      <View style={styles.profileMenuIconTile}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Open settings"
+        onPress={onSettingsPress}
+        style={styles.profileMenuIconTile}
+      >
         <Image
           source={settingsImage}
           style={styles.profileMenuIcon}
           contentFit="contain"
           accessibilityLabel="Settings"
         />
-      </View>
+      </Pressable>
     </View>
   );
 }
@@ -287,6 +338,8 @@ export function WildPawMenu() {
   const { width: viewportWidth } = useWindowDimensions();
   const storeCardWidthStyle = styles.storeItemCardFourCol;
   const [screen, setScreen] = useState<MenuScreen>("main");
+  const [vibrationEnabled, setVibrationEnabled] = useState(true);
+  const [soundEffectsVolume, setSoundEffectsVolume] = useState(0.75);
   const [selectedHero, setSelectedHero] = useState<HeroId>(DEFAULT_HERO_ID);
   const [selectedSkins, setSelectedSkins] = useState<Record<HeroId, string>>(
     {},
@@ -312,12 +365,16 @@ export function WildPawMenu() {
   const [storeMessage, setStoreMessage] = useState("");
   const [purchasingItem, setPurchasingItem] = useState<string | null>(null);
   const [coinBalance, setCoinBalance] = useState(0);
+  const [musicVolume, setMusicVolume] = useState(0.5);
+  const [playerXp, setPlayerXp] = useState(0);
   const [profileName, setProfileName] = useState("Player 1");
   const [profilePicture, setProfilePicture] = useState<ProfilePictureId>(
     DEFAULT_PROFILE_PICTURE,
   );
   const [profileBorder, setProfileBorder] = useState(DEFAULT_PROFILE_BORDER);
   const [profileTab, setProfileTab] = useState<ProfileTab>("picture");
+  const [orbMessage, setOrbMessage] = useState("");
+  const [buddyMessage, setBuddyMessage] = useState("");
   const [profileLoaded, setProfileLoaded] = useState(false);
   const [multiplayerView, setMultiplayerView] =
     useState<MultiplayerView>("choice");
@@ -330,6 +387,48 @@ export function WildPawMenu() {
     "Start hosting on this phone to see its address for other players.",
   );
   const titleWiggle = useMemo(() => new Animated.Value(0), []);
+  const playerLevel = getPlayerLevelProgress(playerXp);
+
+  useEffect(() => {
+    let isMounted = true;
+    void getVibrationEnabled().then((enabled) => {
+      if (isMounted) setVibrationEnabled(enabled);
+    });
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let isMounted = true;
+    void Promise.all([getMusicVolume(), getSoundEffectsVolume()]).then(
+      ([volume, soundEffectsVolume]) => {
+        if (!isMounted) return;
+        setMusicVolume(volume);
+        setSoundEffectsVolume(soundEffectsVolume);
+      },
+    );
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  const toggleVibration = (enabled: boolean) => {
+    setVibrationEnabled(enabled);
+    void saveVibrationEnabled(enabled).catch(() => {
+      setVibrationEnabled(!enabled);
+    });
+  };
+
+  const changeMusicVolume = (volume: number) => {
+    setMusicVolume(volume);
+    updateMusicVolume(volume);
+  };
+
+  const changeSoundEffectsVolume = (volume: number) => {
+    setSoundEffectsVolume(volume);
+    updateSoundEffectsVolume(volume);
+  };
 
   useEffect(() => {
     let isMounted = true;
@@ -338,6 +437,23 @@ export function WildPawMenu() {
       .then((balance) => {
         if (isMounted) {
           setCoinBalance(balance);
+        }
+      })
+      .catch(() => undefined);
+
+    return () => {
+      isMounted = false;
+      unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    let isMounted = true;
+    const unsubscribe = subscribeToPlayerXp(setPlayerXp);
+    void getPlayerXp()
+      .then((totalXp) => {
+        if (isMounted) {
+          setPlayerXp(totalXp);
         }
       })
       .catch(() => undefined);
@@ -463,6 +579,72 @@ export function WildPawMenu() {
     updateProfileName(savedName);
   };
 
+  const toggleOrbEquipment = async () => {
+    if (playerLevel.level < 5 || !inventoryLoaded) {
+      return;
+    }
+
+    const nextInventory = {
+      ...inventory,
+      equippedOrb: !inventory.equippedOrb,
+    };
+    try {
+      await savePlayerInventory(nextInventory);
+      setInventory(nextInventory);
+      setOrbMessage(
+        nextInventory.equippedOrb
+          ? "Orb equipped. It will protect you in your next game."
+          : "Orb unequipped.",
+      );
+    } catch {
+      setOrbMessage("Could not save your orb equipment. Please try again.");
+    }
+  };
+
+  const equipOrbSkin = async (orbSkinId: string) => {
+    if (
+      playerLevel.level < 5 ||
+      !inventoryLoaded ||
+      !inventory.orbSkins.includes(orbSkinId)
+    ) {
+      return;
+    }
+
+    const nextInventory = { ...inventory, equippedOrbSkin: orbSkinId };
+    try {
+      await savePlayerInventory(nextInventory);
+      setInventory(nextInventory);
+      setOrbMessage(`${getOrbSkin(orbSkinId).name} equipped.`);
+    } catch {
+      setOrbMessage("Could not save your orb skin. Please try again.");
+    }
+  };
+
+  const equipBuddy = async (buddyId: string) => {
+    if (
+      playerLevel.level < 10 ||
+      !inventoryLoaded ||
+      (buddyId !== "" && !inventory.buddies.includes(buddyId))
+    ) {
+      return;
+    }
+    const nextInventory = {
+      ...inventory,
+      equippedBuddy: inventory.equippedBuddy === buddyId ? "" : buddyId,
+    };
+    try {
+      await savePlayerInventory(nextInventory);
+      setInventory(nextInventory);
+      setBuddyMessage(
+        nextInventory.equippedBuddy
+          ? `${getBuddy(nextInventory.equippedBuddy)?.name ?? "Buddy"} equipped.`
+          : "Buddy unequipped.",
+      );
+    } catch {
+      setBuddyMessage("Could not save your buddy equipment. Please try again.");
+    }
+  };
+
   const selectSkin = (skinId: string) => {
     if (!inventory.skins.includes(`${hero.id}:${skinId}`)) {
       return;
@@ -484,6 +666,10 @@ export function WildPawMenu() {
     itemId: string,
     price: number,
   ) => {
+    if (kind === "buddy" && playerLevel.level < 10) {
+      setStoreMessage("The buddy system unlocks at player level 10.");
+      return;
+    }
     if (kind === "skin" && !inventory.heroes.includes(heroId)) {
       const requiredHero = heroes.find((entry) => entry.id === heroId);
       setStoreMessage(
@@ -492,11 +678,20 @@ export function WildPawMenu() {
       return;
     }
 
-    const inventoryId = kind === "hero" ? heroId : `${heroId}:${itemId}`;
+    const inventoryId =
+      kind === "hero" || kind === "buddy"
+        ? heroId
+        : kind === "orb"
+          ? itemId
+          : `${heroId}:${itemId}`;
     const owned =
       kind === "hero"
         ? inventory.heroes.includes(inventoryId)
-        : inventory.skins.includes(inventoryId);
+        : kind === "orb"
+          ? inventory.orbSkins.includes(inventoryId)
+          : kind === "buddy"
+            ? inventory.buddies.includes(inventoryId)
+            : inventory.skins.includes(inventoryId);
     if (owned || purchasingItem) {
       return;
     }
@@ -520,6 +715,17 @@ export function WildPawMenu() {
           kind === "hero" ? [...inventory.heroes, heroId] : inventory.heroes,
         skins:
           kind === "skin" ? [...inventory.skins, inventoryId] : inventory.skins,
+        equippedOrb: inventory.equippedOrb,
+        orbSkins:
+          kind === "orb"
+            ? [...inventory.orbSkins, inventoryId]
+            : inventory.orbSkins,
+        equippedOrbSkin: inventory.equippedOrbSkin,
+        buddies:
+          kind === "buddy"
+            ? [...inventory.buddies, inventoryId]
+            : inventory.buddies,
+        equippedBuddy: inventory.equippedBuddy,
       };
       await savePlayerInventory(nextInventory);
       setInventory(nextInventory);
@@ -552,6 +758,43 @@ export function WildPawMenu() {
           (item.skin.rarity ?? "common") === storeRarityFilter) &&
         (!storeOwnedOnly || inventory.skins.includes(item.inventoryId)),
     )
+    .sort((first, second) => {
+      if (storePriceSort === "low-to-high") {
+        return first.price.finalPrice - second.price.finalPrice;
+      }
+      if (storePriceSort === "high-to-low") {
+        return second.price.finalPrice - first.price.finalPrice;
+      }
+      return 0;
+    });
+  const storeOrbs = ORB_SKINS.filter(
+    (orb) =>
+      orb.id !== DEFAULT_ORB_SKIN_ID &&
+      (storeRarityFilter === "all" || orb.rarity === storeRarityFilter) &&
+      (!storeOwnedOnly || inventory.orbSkins.includes(orb.id)),
+  )
+    .map((orb) => ({
+      ...orb,
+      price: getOrbPricing(orb.id),
+    }))
+    .sort((first, second) => {
+      if (storePriceSort === "low-to-high") {
+        return first.price.finalPrice - second.price.finalPrice;
+      }
+      if (storePriceSort === "high-to-low") {
+        return second.price.finalPrice - first.price.finalPrice;
+      }
+      return 0;
+    });
+  const storeBuddies = BUDDIES.filter(
+    (buddy) =>
+      (storeRarityFilter === "all" || buddy.rarity === storeRarityFilter) &&
+      (!storeOwnedOnly || inventory.buddies.includes(buddy.id)),
+  )
+    .map((buddy) => ({
+      ...buddy,
+      price: getBuddyPricing(buddy.id, buddy.rarity),
+    }))
     .sort((first, second) => {
       if (storePriceSort === "low-to-high") {
         return first.price.finalPrice - second.price.finalPrice;
@@ -595,11 +838,26 @@ export function WildPawMenu() {
           (item) => `skin:${item.inventoryId}` === storeSelectedItemId,
         ) ?? storeSkins[0])
       : undefined;
+  const selectedStoreOrb =
+    storeTab === "orb"
+      ? (storeOrbs.find((orb) => `orb:${orb.id}` === storeSelectedItemId) ??
+        storeOrbs[0])
+      : undefined;
+  const selectedStoreBuddy =
+    storeTab === "buddy"
+      ? (storeBuddies.find(
+          (buddy) => `buddy:${buddy.id}` === storeSelectedItemId,
+        ) ?? storeBuddies[0])
+      : undefined;
   const resolvedStoreSelectedItemId = selectedStoreHero
     ? `hero:${selectedStoreHero.id}`
     : selectedStoreSkin
       ? `skin:${selectedStoreSkin.inventoryId}`
-      : "";
+      : selectedStoreOrb
+        ? `orb:${selectedStoreOrb.id}`
+        : selectedStoreBuddy
+          ? `buddy:${selectedStoreBuddy.id}`
+          : "";
 
   const startBattle = () => {
     router.push({
@@ -612,6 +870,13 @@ export function WildPawMenu() {
         playerName: profileName.trim() || "Player 1",
         profilePicture,
         profileBorder,
+        orbEquipped: String(inventory.equippedOrb && playerLevel.level >= 5),
+        orbSkinId: inventory.equippedOrbSkin,
+        buddyId:
+          playerLevel.level >= 10 &&
+          inventory.buddies.includes(inventory.equippedBuddy)
+            ? inventory.equippedBuddy
+            : "",
       },
     });
   };
@@ -760,6 +1025,15 @@ export function WildPawMenu() {
             playerName: multiplayerName.trim() || "Host",
             profilePicture,
             profileBorder,
+            orbEquipped: String(
+              inventory.equippedOrb && playerLevel.level >= 5,
+            ),
+            orbSkinId: inventory.equippedOrbSkin,
+            buddyId:
+              playerLevel.level >= 10 &&
+              inventory.buddies.includes(inventory.equippedBuddy)
+                ? inventory.equippedBuddy
+                : "",
           },
         });
       } catch {
@@ -801,6 +1075,13 @@ export function WildPawMenu() {
           playerName: multiplayerName.trim() || "Player",
           profilePicture,
           profileBorder,
+          orbEquipped: String(inventory.equippedOrb && playerLevel.level >= 5),
+          orbSkinId: inventory.equippedOrbSkin,
+          buddyId:
+            playerLevel.level >= 10 &&
+            inventory.buddies.includes(inventory.equippedBuddy)
+              ? inventory.equippedBuddy
+              : "",
         },
       });
     } catch {
@@ -1160,6 +1441,34 @@ export function WildPawMenu() {
             </View>
           </View>
 
+          <View
+            accessible
+            accessibilityLabel={`Level ${playerLevel.level}, ${playerLevel.xpIntoLevel} of ${playerLevel.xpForNextLevel} XP to next level`}
+            style={styles.profileLevelPanel}
+          >
+            <View style={styles.profileLevelHeading}>
+              <Text style={styles.profileLevelTitle}>PLAYER LEVEL</Text>
+              <Text style={styles.profileLevelValue}>
+                LVL {playerLevel.level}
+              </Text>
+            </View>
+            <View style={styles.profileLevelProgressTrack}>
+              <View
+                style={[
+                  styles.profileLevelProgressFill,
+                  { width: `${playerLevel.progress * 100}%` },
+                ]}
+              />
+            </View>
+            <Text style={styles.profileLevelXpText}>
+              {playerLevel.xpIntoLevel} / {playerLevel.xpForNextLevel} XP to
+              next level
+              <Text style={styles.profileLevelTotalXp}>
+                {`  ·  ${playerLevel.totalXp} XP total`}
+              </Text>
+            </Text>
+          </View>
+
           <View style={styles.profileTabs}>
             {(
               [
@@ -1274,6 +1583,127 @@ export function WildPawMenu() {
                 })}
               </View>
             )}
+          </View>
+        </View>
+      </View>
+    </View>
+  );
+
+  const renderSettingsView = () => (
+    <View style={styles.menuPage}>
+      <View style={styles.subScreenShell}>
+        <View style={styles.profileScreenCard}>
+          <View style={styles.profileScreenHeader}>
+            <View style={styles.profileScreenTitleGroup}>
+              <Text style={styles.profileScreenKicker}>PREFERENCES</Text>
+              <Text style={styles.profileScreenTitle}>Settings</Text>
+            </View>
+            <View style={styles.profileSavedBadge}>
+              <View style={styles.profileSavedDot} />
+              <Text style={styles.profileSavedText}>SAVED ON THIS DEVICE</Text>
+            </View>
+          </View>
+
+          <View style={styles.settingsOptionsPanel}>
+            <View style={styles.settingsOptionRow}>
+              <View style={styles.settingsOptionCopy}>
+                <Text style={styles.settingsOptionTitle}>Vibration</Text>
+                <Text style={styles.settingsOptionDescription}>
+                  Vibrate when your player takes damage during a match.
+                </Text>
+              </View>
+              <Switch
+                accessibilityLabel="Vibration on damage"
+                accessibilityHint="Turns damage vibration on or off"
+                value={vibrationEnabled}
+                onValueChange={toggleVibration}
+                trackColor={{ false: "#475569", true: "#16a34a" }}
+                thumbColor={vibrationEnabled ? "#dcfce7" : "#e2e8f0"}
+              />
+            </View>
+            <Text style={styles.settingsSavedHint}>
+              {vibrationEnabled
+                ? "Vibration is enabled"
+                : "Vibration is disabled"}
+            </Text>
+          </View>
+
+          <View style={styles.settingsOptionsPanel}>
+            <View style={styles.settingsVolumeHeading}>
+              <View style={styles.settingsOptionCopy}>
+                <Text style={styles.settingsOptionTitle}>
+                  Sound effects volume
+                </Text>
+                <Text style={styles.settingsOptionDescription}>
+                  Set shooting and orb sound volume.
+                </Text>
+              </View>
+              <Text style={styles.settingsVolumeValue}>
+                {Math.round(soundEffectsVolume * 100)}%
+              </Text>
+            </View>
+            <Slider
+              accessibilityLabel="Sound effects volume"
+              accessibilityValue={{
+                min: 0,
+                max: 100,
+                now: Math.round(soundEffectsVolume * 100),
+              }}
+              minimumValue={0}
+              maximumValue={1}
+              step={0.01}
+              value={soundEffectsVolume}
+              onValueChange={changeSoundEffectsVolume}
+              onSlidingComplete={(volume) =>
+                void saveSoundEffectsVolume(volume).catch(() => undefined)
+              }
+              minimumTrackTintColor="#4ade80"
+              maximumTrackTintColor="#334155"
+              thumbTintColor="#dcfce7"
+              style={styles.nativeVolumeSlider}
+            />
+            <View style={styles.settingsVolumeLabels}>
+              <Text style={styles.settingsVolumeEndpoint}>OFF</Text>
+              <Text style={styles.settingsVolumeEndpoint}>100%</Text>
+            </View>
+          </View>
+
+          <View style={styles.settingsOptionsPanel}>
+            <View style={styles.settingsVolumeHeading}>
+              <View style={styles.settingsOptionCopy}>
+                <Text style={styles.settingsOptionTitle}>Music volume</Text>
+                <Text style={styles.settingsOptionDescription}>
+                  Drag to adjust the music in menus and battles.
+                </Text>
+              </View>
+              <Text style={styles.settingsVolumeValue}>
+                {Math.round(musicVolume * 100)}%
+              </Text>
+            </View>
+            <Slider
+              accessibilityLabel="Music volume"
+              accessibilityValue={{
+                min: 0,
+                max: 100,
+                now: Math.round(musicVolume * 100),
+              }}
+              minimumValue={0}
+              maximumValue={1}
+              step={0.01}
+              value={musicVolume}
+              onValueChange={changeMusicVolume}
+              onSlidingComplete={(volume) =>
+                void saveMusicVolume(volume).catch(() => undefined)
+              }
+              minimumTrackTintColor="#4ade80"
+              maximumTrackTintColor="#334155"
+              thumbTintColor="#dcfce7"
+              style={styles.nativeVolumeSlider}
+            />
+            <View style={styles.settingsVolumeLabels}>
+              <Text style={styles.settingsVolumeEndpoint}>0%</Text>
+              <Text style={styles.settingsVolumeEndpoint}>100%</Text>
+            </View>
           </View>
         </View>
       </View>
@@ -1506,9 +1936,6 @@ export function WildPawMenu() {
                         <Text style={styles.storeItemMeta}>
                           {itemHero.name} · {itemHero.type}
                         </Text>
-                        <Text style={styles.storeItemDescription}>
-                          {skin.name} skin for {itemHero.name}.
-                        </Text>
                       </View>
                     )}
                     {storePreviewDetailsVisible && !isOwned && (
@@ -1561,6 +1988,278 @@ export function WildPawMenu() {
                                 : !ownsHero
                                   ? "Buy hero first"
                                   : "Buy skin"}
+                          </Text>
+                        </Pressable>
+                      </View>
+                    )}
+                  </View>
+                </View>
+              );
+            })()}
+
+          {inventoryLoaded &&
+            selectedStoreOrb &&
+            storeTab === "orb" &&
+            (() => {
+              const orb = selectedStoreOrb;
+              const isOwned = inventory.orbSkins.includes(orb.id);
+              const isPurchasing = purchasingItem === orb.id;
+              const cannotAfford = coinBalance < orb.price.finalPrice;
+              return (
+                <View
+                  style={[
+                    styles.storeSelectedPreview,
+                    viewportWidth < 700 && styles.storeSelectedPreviewCompact,
+                  ]}
+                >
+                  <View style={styles.storePreviewImageColumn}>
+                    <Image
+                      source={orb.orbImage}
+                      style={styles.storeOrbPreviewImage}
+                      contentFit="contain"
+                      pointerEvents="none"
+                      accessibilityLabel={`${orb.name} orb preview`}
+                    />
+                    <View
+                      pointerEvents="none"
+                      style={styles.storeOrbLaserInset}
+                    >
+                      <Text style={styles.storeOrbLaserLabel}>LASER</Text>
+                      <Image
+                        source={orb.laserImage}
+                        style={styles.storeOrbLaserImage}
+                        contentFit="contain"
+                        accessibilityLabel={`${orb.name} laser preview`}
+                      />
+                    </View>
+                    {isOwned && (
+                      <View style={styles.storeOwnedBadge}>
+                        <Text style={styles.storeOwnedBadgeText}>OWNED</Text>
+                      </View>
+                    )}
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={
+                        storePreviewDetailsVisible
+                          ? "Hide orb preview details"
+                          : "Show orb preview details"
+                      }
+                      accessibilityState={{
+                        expanded: storePreviewDetailsVisible,
+                      }}
+                      onPress={() =>
+                        setStorePreviewDetailsVisible((visible) => !visible)
+                      }
+                      style={styles.storePreviewToggle}
+                    >
+                      <Image
+                        source={
+                          storePreviewDetailsVisible
+                            ? previewMinimizeImage
+                            : previewExpandImage
+                        }
+                        style={styles.storePreviewToggleImage}
+                        contentFit="contain"
+                      />
+                    </Pressable>
+                    <Text style={styles.storePreviewRarityBadge}>
+                      <Text style={{ color: getOrbRarityColor(orb.rarity) }}>
+                        {orb.rarity.toUpperCase()}
+                      </Text>
+                    </Text>
+                    {storePreviewDetailsVisible && (
+                      <View
+                        style={[
+                          styles.storeSelectedDetails,
+                          isOwned
+                            ? styles.storeSelectedDetailsOwned
+                            : styles.storeSelectedDetailsAbovePurchase,
+                        ]}
+                      >
+                        <Text style={styles.storePreviewTitle}>{orb.name}</Text>
+                        <Text style={styles.storeItemMeta}>
+                          Orb companion skin
+                        </Text>
+                      </View>
+                    )}
+                    {storePreviewDetailsVisible && !isOwned && (
+                      <View style={styles.storePreviewPurchase}>
+                        <View style={styles.storePreviewPurchaseDetails}>
+                          {orb.price.discountPercent > 0 && (
+                            <View style={styles.storePriceRow}>
+                              <Text style={styles.storeOriginalPrice}>
+                                {orb.price.price} coins
+                              </Text>
+                              <Text style={styles.storeDiscount}>
+                                -{orb.price.discountPercent}%
+                              </Text>
+                            </View>
+                          )}
+                          <Text style={styles.storePreviewPrice}>
+                            {orb.price.finalPrice} coins
+                          </Text>
+                        </View>
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityState={{
+                            disabled: !!purchasingItem || cannotAfford,
+                          }}
+                          disabled={!!purchasingItem || cannotAfford}
+                          onPress={() =>
+                            void purchaseItem(
+                              "orb",
+                              "",
+                              orb.id,
+                              orb.price.finalPrice,
+                            )
+                          }
+                          style={[
+                            styles.storeBuyButton,
+                            styles.storePreviewBuyButton,
+                            cannotAfford && styles.storeBuyButtonDisabled,
+                          ]}
+                        >
+                          <Text style={styles.storeBuyText}>
+                            {isPurchasing
+                              ? "Buying…"
+                              : cannotAfford
+                                ? "Not enough coins"
+                                : "Buy orb"}
+                          </Text>
+                        </Pressable>
+                      </View>
+                    )}
+                  </View>
+                </View>
+              );
+            })()}
+
+          {inventoryLoaded &&
+            selectedStoreBuddy &&
+            storeTab === "buddy" &&
+            (() => {
+              const buddy = selectedStoreBuddy;
+              const isOwned = inventory.buddies.includes(buddy.id);
+              const isPurchasing = purchasingItem === buddy.id;
+              const isLocked = playerLevel.level < 10;
+              const cannotAfford = coinBalance < buddy.price.finalPrice;
+              return (
+                <View
+                  style={[
+                    styles.storeSelectedPreview,
+                    viewportWidth < 700 && styles.storeSelectedPreviewCompact,
+                  ]}
+                >
+                  <View style={styles.storePreviewImageColumn}>
+                    <Image
+                      source={buddy.source}
+                      style={styles.storeBuddyPreviewImage}
+                      contentFit="contain"
+                      accessibilityLabel={`${buddy.name} buddy preview`}
+                    />
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={
+                        storePreviewDetailsVisible
+                          ? "Hide buddy preview details"
+                          : "Show buddy preview details"
+                      }
+                      accessibilityState={{
+                        expanded: storePreviewDetailsVisible,
+                      }}
+                      onPress={() =>
+                        setStorePreviewDetailsVisible((visible) => !visible)
+                      }
+                      style={styles.storePreviewToggle}
+                    >
+                      <Image
+                        source={
+                          storePreviewDetailsVisible
+                            ? previewMinimizeImage
+                            : previewExpandImage
+                        }
+                        style={styles.storePreviewToggleImage}
+                        contentFit="contain"
+                      />
+                    </Pressable>
+                    {isOwned && (
+                      <View style={styles.storeOwnedBadge}>
+                        <Text style={styles.storeOwnedBadgeText}>OWNED</Text>
+                      </View>
+                    )}
+                    <Text style={styles.storePreviewRarityBadge}>
+                      <Text
+                        style={{ color: getBuddyRarityColor(buddy.rarity) }}
+                      >
+                        {buddy.rarity.toUpperCase()}
+                      </Text>
+                    </Text>
+                    {storePreviewDetailsVisible && (
+                      <View
+                        style={[
+                          styles.storeSelectedDetails,
+                          isOwned
+                            ? styles.storeSelectedDetailsOwned
+                            : styles.storeSelectedDetailsAbovePurchase,
+                        ]}
+                      >
+                        <Text style={styles.storePreviewTitle}>
+                          {buddy.name}
+                        </Text>
+                        <Text style={styles.storeItemMeta}>
+                          {getBuddyBonusSummary(buddy)}
+                        </Text>
+                      </View>
+                    )}
+                    {storePreviewDetailsVisible && !isOwned && (
+                      <View style={styles.storePreviewPurchase}>
+                        <View style={styles.storePreviewPurchaseDetails}>
+                          {buddy.price.discountPercent > 0 && (
+                            <View style={styles.storePriceRow}>
+                              <Text style={styles.storeOriginalPrice}>
+                                {buddy.price.price} coins
+                              </Text>
+                              <Text style={styles.storeDiscount}>
+                                -{buddy.price.discountPercent}%
+                              </Text>
+                            </View>
+                          )}
+                          <Text style={styles.storePreviewPrice}>
+                            {buddy.price.finalPrice} coins
+                          </Text>
+                        </View>
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityState={{
+                            disabled:
+                              isLocked || !!purchasingItem || cannotAfford,
+                          }}
+                          disabled={
+                            isLocked || !!purchasingItem || cannotAfford
+                          }
+                          onPress={() =>
+                            void purchaseItem(
+                              "buddy",
+                              buddy.id,
+                              buddy.id,
+                              buddy.price.finalPrice,
+                            )
+                          }
+                          style={[
+                            styles.storeBuyButton,
+                            styles.storePreviewBuyButton,
+                            (isLocked || cannotAfford) &&
+                              styles.storeBuyButtonDisabled,
+                          ]}
+                        >
+                          <Text style={styles.storeBuyText}>
+                            {isLocked
+                              ? "Unlocks at level 10"
+                              : isPurchasing
+                                ? "Buying…"
+                                : cannotAfford
+                                  ? "Not enough coins"
+                                  : "Buy buddy"}
                           </Text>
                         </Pressable>
                       </View>
@@ -1682,33 +2381,36 @@ export function WildPawMenu() {
                         )}
                       </ScrollView>
                     </View>
-                    <View style={styles.storeFilterDropdownRow}>
-                      <Text style={styles.storeFilterLabel}>SHOW</Text>
-                      <View style={styles.storeDropdownOptions}>
-                        <Pressable
-                          accessibilityRole="button"
-                          accessibilityState={{ selected: storeOwnedOnly }}
-                          onPress={() =>
-                            setStoreOwnedOnly((previous) => !previous)
-                          }
+                  </>
+                )}
+                {(storeTab === "skin" ||
+                  storeTab === "orb" ||
+                  storeTab === "buddy") && (
+                  <View style={styles.storeFilterDropdownRow}>
+                    <Text style={styles.storeFilterLabel}>SHOW</Text>
+                    <View style={styles.storeDropdownOptions}>
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityState={{ selected: storeOwnedOnly }}
+                        onPress={() =>
+                          setStoreOwnedOnly((previous) => !previous)
+                        }
+                        style={[
+                          styles.storeFilterChip,
+                          storeOwnedOnly && styles.storeFilterChipActive,
+                        ]}
+                      >
+                        <Text
                           style={[
-                            styles.storeFilterChip,
-                            storeOwnedOnly && styles.storeFilterChipActive,
+                            styles.storeFilterChipText,
+                            storeOwnedOnly && styles.storeFilterChipTextActive,
                           ]}
                         >
-                          <Text
-                            style={[
-                              styles.storeFilterChipText,
-                              storeOwnedOnly &&
-                                styles.storeFilterChipTextActive,
-                            ]}
-                          >
-                            {storeOwnedOnly ? "Owned only ✓" : "Owned only"}
-                          </Text>
-                        </Pressable>
-                      </View>
+                          {storeOwnedOnly ? "Owned only ✓" : "Owned only"}
+                        </Text>
+                      </Pressable>
                     </View>
-                  </>
+                  </View>
                 )}
               </View>
             )}
@@ -1813,12 +2515,22 @@ export function WildPawMenu() {
                             {(entry.rarity ?? "common").toUpperCase()}
                           </Text>
                           {!isOwned && (
-                            <Text
-                              numberOfLines={1}
-                              style={styles.storeCatalogPrice}
-                            >
-                              {heroPrice.finalPrice} coins
-                            </Text>
+                            <View style={styles.storeCatalogPriceRow}>
+                              <Text
+                                numberOfLines={1}
+                                style={styles.storeCatalogPrice}
+                              >
+                                {heroPrice.finalPrice} coins
+                              </Text>
+                              {heroPrice.discountPercent > 0 && (
+                                <Text
+                                  numberOfLines={1}
+                                  style={styles.storeCatalogOriginalPrice}
+                                >
+                                  {heroPrice.price}
+                                </Text>
+                              )}
+                            </View>
                           )}
                         </View>
                       </Pressable>
@@ -1842,13 +2554,13 @@ export function WildPawMenu() {
                   );
                 })
               )
-            ) : storeSkins.length === 0 ? (
+            ) : storeTab === "skin" && storeSkins.length === 0 ? (
               <Text style={styles.storeEmptyText}>
                 {storeOwnedOnly
                   ? "No owned skins match these filters."
                   : "No skins match this hero type."}
               </Text>
-            ) : (
+            ) : storeTab === "skin" ? (
               storeSkins.map(({ hero: entry, skin, inventoryId, price }) => {
                 const itemId = `skin:${inventoryId}`;
                 const isSelected = resolvedStoreSelectedItemId === itemId;
@@ -1894,12 +2606,22 @@ export function WildPawMenu() {
                           {(skin.rarity ?? "common").toUpperCase()}
                         </Text>
                         {!isOwned && (
-                          <Text
-                            numberOfLines={1}
-                            style={styles.storeCatalogPrice}
-                          >
-                            {price.finalPrice} coins
-                          </Text>
+                          <View style={styles.storeCatalogPriceRow}>
+                            <Text
+                              numberOfLines={1}
+                              style={styles.storeCatalogPrice}
+                            >
+                              {price.finalPrice} coins
+                            </Text>
+                            {price.discountPercent > 0 && (
+                              <Text
+                                numberOfLines={1}
+                                style={styles.storeCatalogOriginalPrice}
+                              >
+                                {price.price}
+                              </Text>
+                            )}
+                          </View>
                         )}
                       </View>
                     </Pressable>
@@ -1912,6 +2634,175 @@ export function WildPawMenu() {
                       </View>
                     )}
                     {price.discountPercent > 0 && !isOwned && (
+                      <View pointerEvents="none" style={styles.storeSaleBadge}>
+                        <Text style={styles.storeSaleBadgeText}>SALE</Text>
+                      </View>
+                    )}
+                  </View>
+                );
+              })
+            ) : storeTab === "buddy" && storeBuddies.length === 0 ? (
+              <Text style={styles.storeEmptyText}>
+                {storeOwnedOnly
+                  ? "No owned buddies match this rarity."
+                  : "No buddies match this rarity."}
+              </Text>
+            ) : storeTab === "buddy" ? (
+              storeBuddies.map((buddy) => {
+                const itemId = `buddy:${buddy.id}`;
+                const isSelected = resolvedStoreSelectedItemId === itemId;
+                const isOwned = inventory.buddies.includes(buddy.id);
+                return (
+                  <View
+                    key={buddy.id}
+                    style={[styles.storeCardWrapper, storeCardWidthStyle]}
+                  >
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={`Preview ${buddy.name}, ${buddy.rarity} rarity, ${isOwned ? "owned" : `${buddy.price.finalPrice} coins`}`}
+                      accessibilityState={{ selected: isSelected }}
+                      onPress={() => {
+                        setStoreSelectedItemId(itemId);
+                        setStoreMessage("");
+                      }}
+                      style={[
+                        styles.storeItemCard,
+                        isSelected && styles.storeItemCardSelected,
+                      ]}
+                    >
+                      <Image
+                        source={getRarityCardImage(buddy.rarity)}
+                        style={styles.storeCardBackground}
+                        contentFit="fill"
+                        pointerEvents="none"
+                      />
+                      <Image
+                        source={buddy.source}
+                        style={styles.storeBuddyCatalogImage}
+                        contentFit="contain"
+                        pointerEvents="none"
+                      />
+                      <View style={styles.storeCatalogLabel}>
+                        <Text numberOfLines={1} style={styles.storeCatalogName}>
+                          {buddy.name}
+                        </Text>
+                        <Text
+                          numberOfLines={1}
+                          style={[
+                            styles.storeCatalogRarity,
+                            { color: getBuddyRarityColor(buddy.rarity) },
+                          ]}
+                        >
+                          {buddy.rarity.toUpperCase()}
+                        </Text>
+                        {!isOwned && (
+                          <View style={styles.storeCatalogPriceRow}>
+                            <Text
+                              numberOfLines={1}
+                              style={styles.storeCatalogPrice}
+                            >
+                              {playerLevel.level < 10
+                                ? "LEVEL 10"
+                                : `${buddy.price.finalPrice} coins`}
+                            </Text>
+                          </View>
+                        )}
+                      </View>
+                    </Pressable>
+                    {isOwned && (
+                      <View
+                        pointerEvents="none"
+                        style={styles.storeOwnedListBadge}
+                      >
+                        <Text style={styles.storeOwnedBadgeText}>OWNED</Text>
+                      </View>
+                    )}
+                  </View>
+                );
+              })
+            ) : storeOrbs.length === 0 ? (
+              <Text style={styles.storeEmptyText}>
+                {storeOwnedOnly
+                  ? "No owned orb skins match these filters."
+                  : "No orb skins match this rarity."}
+              </Text>
+            ) : (
+              storeOrbs.map((orb) => {
+                const itemId = `orb:${orb.id}`;
+                const isSelected = resolvedStoreSelectedItemId === itemId;
+                const isOwned = inventory.orbSkins.includes(orb.id);
+                return (
+                  <View
+                    key={orb.id}
+                    style={[styles.storeCardWrapper, storeCardWidthStyle]}
+                  >
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={`Preview ${orb.name} orb skin, ${isOwned ? "owned" : `${orb.price.finalPrice} coins`}`}
+                      accessibilityState={{ selected: isSelected }}
+                      onPress={() => {
+                        setStoreSelectedItemId(itemId);
+                        setStoreMessage("");
+                      }}
+                      style={[
+                        styles.storeItemCard,
+                        isSelected && styles.storeItemCardSelected,
+                      ]}
+                    >
+                      <Image
+                        source={getRarityCardImage(orb.rarity)}
+                        style={styles.storeCardBackground}
+                        contentFit="fill"
+                        pointerEvents="none"
+                      />
+                      <Image
+                        source={orb.orbImage}
+                        style={styles.storeOrbCatalogImage}
+                        contentFit="contain"
+                        pointerEvents="none"
+                      />
+                      <View style={styles.storeCatalogLabel}>
+                        <Text numberOfLines={1} style={styles.storeCatalogName}>
+                          {orb.name}
+                        </Text>
+                        <Text
+                          numberOfLines={1}
+                          style={[
+                            styles.storeCatalogRarity,
+                            { color: getOrbRarityColor(orb.rarity) },
+                          ]}
+                        >
+                          {orb.rarity.toUpperCase()}
+                        </Text>
+                        {!isOwned && (
+                          <View style={styles.storeCatalogPriceRow}>
+                            <Text
+                              numberOfLines={1}
+                              style={styles.storeCatalogPrice}
+                            >
+                              {orb.price.finalPrice} coins
+                            </Text>
+                            {orb.price.discountPercent > 0 && (
+                              <Text
+                                numberOfLines={1}
+                                style={styles.storeCatalogOriginalPrice}
+                              >
+                                {orb.price.price}
+                              </Text>
+                            )}
+                          </View>
+                        )}
+                      </View>
+                    </Pressable>
+                    {isOwned && (
+                      <View
+                        pointerEvents="none"
+                        style={styles.storeOwnedListBadge}
+                      >
+                        <Text style={styles.storeOwnedBadgeText}>OWNED</Text>
+                      </View>
+                    )}
+                    {orb.price.discountPercent > 0 && !isOwned && (
                       <View pointerEvents="none" style={styles.storeSaleBadge}>
                         <Text style={styles.storeSaleBadgeText}>SALE</Text>
                       </View>
@@ -1933,6 +2824,16 @@ export function WildPawMenu() {
                   id: "skin",
                   label: "Skin",
                   image: storeSkinTabImage,
+                },
+                {
+                  id: "orb",
+                  label: "Orb",
+                  image: storeOrbTabImage,
+                },
+                {
+                  id: "buddy",
+                  label: "Buddy",
+                  image: storeBuddyTabImage,
                 },
               ] as const
             ).map((tab) => (
@@ -2066,6 +2967,46 @@ export function WildPawMenu() {
                   Skin
                 </Text>
               </Pressable>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Show orb companion"
+                accessibilityState={{ selected: selectionTab === "orb" }}
+                onPress={() => setSelectionTab("orb")}
+                style={[
+                  styles.selectionTab,
+                  selectionTab === "orb" && styles.selectionTabActive,
+                ]}
+              >
+                <Text style={styles.selectionTabIcon}>✦</Text>
+                <Text
+                  style={[
+                    styles.selectionTabText,
+                    selectionTab === "orb" && styles.selectionTabTextActive,
+                  ]}
+                >
+                  Orb
+                </Text>
+              </Pressable>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Show buddy companions"
+                accessibilityState={{ selected: selectionTab === "buddy" }}
+                onPress={() => setSelectionTab("buddy")}
+                style={[
+                  styles.selectionTab,
+                  selectionTab === "buddy" && styles.selectionTabActive,
+                ]}
+              >
+                <Text style={styles.selectionTabIcon}>🐾</Text>
+                <Text
+                  style={[
+                    styles.selectionTabText,
+                    selectionTab === "buddy" && styles.selectionTabTextActive,
+                  ]}
+                >
+                  Buddy
+                </Text>
+              </Pressable>
             </View>
             <ScrollView
               style={styles.selectionScroll}
@@ -2105,11 +3046,11 @@ export function WildPawMenu() {
                     </Pressable>
                   );
                 })
-              ) : ownedSkins.length === 0 ? (
+              ) : selectionTab === "skin" && ownedSkins.length === 0 ? (
                 <Text style={styles.storeEmptyText}>
                   No skins owned yet. Visit the store to find one.
                 </Text>
-              ) : (
+              ) : selectionTab === "skin" ? (
                 ownedSkins.map((skin) => {
                   const isSelected = selectedSkin.id === skin.id;
                   return (
@@ -2151,6 +3092,211 @@ export function WildPawMenu() {
                     </Pressable>
                   );
                 })
+              ) : selectionTab === "orb" ? (
+                <View style={styles.selectionOrbContent}>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={
+                      playerLevel.level < 5
+                        ? "Orb locked until level 5"
+                        : inventory.equippedOrb
+                          ? "Unequip orb"
+                          : "Equip orb"
+                    }
+                    accessibilityState={{
+                      disabled: playerLevel.level < 5 || !inventoryLoaded,
+                      selected: inventory.equippedOrb,
+                    }}
+                    disabled={playerLevel.level < 5 || !inventoryLoaded}
+                    onPress={() => void toggleOrbEquipment()}
+                    style={[
+                      styles.selectionCard,
+                      styles.selectionOrbCard,
+                      inventory.equippedOrb && styles.selectionCardSelected,
+                      (playerLevel.level < 5 || !inventoryLoaded) &&
+                        styles.selectionOrbCardLocked,
+                    ]}
+                  >
+                    <Image
+                      source={orbImage}
+                      style={styles.selectionOrbImage}
+                      contentFit="contain"
+                      accessibilityLabel="Orb companion"
+                    />
+                    <Text style={styles.selectionName}>Orb companion</Text>
+                    <Text
+                      style={[
+                        styles.skinEquipStatus,
+                        inventory.equippedOrb && styles.skinEquipStatusEquipped,
+                      ]}
+                    >
+                      {playerLevel.level < 5
+                        ? "UNLOCKS AT LEVEL 5"
+                        : inventory.equippedOrb
+                          ? "EQUIPPED · TAP TO UNEQUIP"
+                          : "UNLOCKED · TAP TO EQUIP"}
+                    </Text>
+                  </Pressable>
+                  <Text style={styles.selectionOrbSectionTitle}>
+                    OWNED ORB SKINS
+                  </Text>
+                  <View style={styles.selectionOrbSkinList}>
+                    {ORB_SKINS.filter((orb) =>
+                      inventory.orbSkins.includes(orb.id),
+                    ).map((orb) => {
+                      const isSelected = inventory.equippedOrbSkin === orb.id;
+                      return (
+                        <Pressable
+                          key={orb.id}
+                          accessibilityRole="button"
+                          accessibilityLabel={`${isSelected ? "Equipped" : "Equip"} ${orb.name}`}
+                          accessibilityState={{
+                            disabled: playerLevel.level < 5,
+                            selected: isSelected,
+                          }}
+                          disabled={playerLevel.level < 5}
+                          onPress={() => void equipOrbSkin(orb.id)}
+                          style={[
+                            styles.selectionOrbSkinCard,
+                            isSelected && styles.selectionCardSelected,
+                            playerLevel.level < 5 &&
+                              styles.selectionOrbCardLocked,
+                          ]}
+                        >
+                          <Image
+                            source={orb.orbImage}
+                            style={styles.selectionOrbSkinImage}
+                            contentFit="contain"
+                            accessibilityLabel={orb.name}
+                          />
+                          <Text
+                            numberOfLines={1}
+                            style={styles.selectionOrbSkinName}
+                          >
+                            {orb.name}
+                          </Text>
+                          <Text
+                            style={[
+                              styles.selectionOrbSkinRarity,
+                              { color: getOrbRarityColor(orb.rarity) },
+                            ]}
+                          >
+                            {orb.rarity.toUpperCase()}
+                          </Text>
+                          <Text
+                            style={[
+                              styles.skinEquipStatus,
+                              isSelected && styles.skinEquipStatusEquipped,
+                            ]}
+                          >
+                            {isSelected ? "EQUIPPED" : "EQUIP"}
+                          </Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                  <Text style={styles.selectionOrbDescription}>
+                    Automatically targets nearby enemies and fires a laser.
+                  </Text>
+                  {!!orbMessage && (
+                    <Text style={styles.orbStatusMessage}>{orbMessage}</Text>
+                  )}
+                </View>
+              ) : (
+                <View style={styles.selectionBuddyContent}>
+                  <Text style={styles.selectionOrbSectionTitle}>
+                    {playerLevel.level < 10
+                      ? "BUDDY SYSTEM · UNLOCKS AT LEVEL 10"
+                      : "YOUR BUDDIES · EQUIP ONE"}
+                  </Text>
+                  {playerLevel.level < 10 ? (
+                    <Text style={styles.selectionOrbDescription}>
+                      Reach player level 10 to unlock buddies and their
+                      permanent powers.
+                    </Text>
+                  ) : inventory.buddies.length === 0 ? (
+                    <View style={styles.selectionBuddyEmpty}>
+                      <Text style={styles.selectionOrbDescription}>
+                        No buddies owned yet. Visit the store to find a little
+                        companion.
+                      </Text>
+                      <Pressable
+                        accessibilityRole="button"
+                        onPress={() => {
+                          setStoreTab("buddy");
+                          setStoreSelectedItemId("");
+                          setStoreMessage("");
+                          setScreen("store");
+                        }}
+                        style={styles.storeBuyButton}
+                      >
+                        <Text style={styles.storeBuyText}>
+                          VISIT BUDDY STORE
+                        </Text>
+                      </Pressable>
+                    </View>
+                  ) : (
+                    <View style={styles.selectionBuddyGrid}>
+                      {inventory.buddies.map((buddyId) => {
+                        const buddy = getBuddy(buddyId);
+                        if (!buddy) return null;
+                        const isEquipped = inventory.equippedBuddy === buddy.id;
+                        return (
+                          <Pressable
+                            key={buddy.id}
+                            accessibilityRole="button"
+                            accessibilityLabel={`${isEquipped ? "Unequip" : "Equip"} ${buddy.name}; ${getBuddyBonusSummary(buddy)}`}
+                            accessibilityState={{ selected: isEquipped }}
+                            onPress={() => void equipBuddy(buddy.id)}
+                            style={[
+                              styles.selectionCard,
+                              styles.selectionBuddyCard,
+                              isEquipped && styles.selectionCardSelected,
+                            ]}
+                          >
+                            <Image
+                              source={buddy.source}
+                              style={styles.selectionBuddyImage}
+                              contentFit="contain"
+                              accessibilityLabel={buddy.name}
+                            />
+                            <Text
+                              numberOfLines={1}
+                              style={styles.selectionName}
+                            >
+                              {buddy.name}
+                            </Text>
+                            <Text
+                              style={[
+                                styles.selectionBuddyRarity,
+                                { color: getBuddyRarityColor(buddy.rarity) },
+                              ]}
+                            >
+                              {buddy.rarity.toUpperCase()}
+                            </Text>
+                            <Text
+                              style={[
+                                styles.skinEquipStatus,
+                                isEquipped && styles.skinEquipStatusEquipped,
+                              ]}
+                            >
+                              {isEquipped ? "EQUIPPED" : "EQUIP"}
+                            </Text>
+                            <Text
+                              numberOfLines={2}
+                              style={styles.selectionBuddyBonus}
+                            >
+                              {getBuddyBonusSummary(buddy)}
+                            </Text>
+                          </Pressable>
+                        );
+                      })}
+                    </View>
+                  )}
+                  {!!buddyMessage && (
+                    <Text style={styles.orbStatusMessage}>{buddyMessage}</Text>
+                  )}
+                </View>
               )}
             </ScrollView>
           </View>
@@ -2175,10 +3321,12 @@ export function WildPawMenu() {
             ? renderMultiplayerMenu()
             : screen === "profile"
               ? renderProfileView()
-              : screen === "store"
-                ? renderStoreView()
-                : renderHeroSelector()}
-      {screen !== "hero" && screen !== "store" && (
+              : screen === "settings"
+                ? renderSettingsView()
+                : screen === "store"
+                  ? renderStoreView()
+                  : renderHeroSelector()}
+      {screen !== "hero" && screen !== "store" && screen !== "settings" && (
         <View pointerEvents="none" style={styles.coinBalancePosition}>
           <CoinBalanceBadge balance={coinBalance} />
         </View>
@@ -2194,11 +3342,13 @@ export function WildPawMenu() {
             name={profileName}
             picture={profilePicture}
             border={profileBorder}
+            level={playerLevel.level}
             onPress={() => setScreen("profile")}
             onStorePress={() => {
               setStoreMessage("");
               setScreen("store");
             }}
+            onSettingsPress={() => setScreen("settings")}
           />
         </View>
       )}
@@ -2270,6 +3420,20 @@ const styles = StyleSheet.create({
   profileBadge: {
     alignItems: "center",
     gap: 3,
+  },
+  profileLevelBadge: {
+    overflow: "hidden",
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(255, 224, 160, 0.8)",
+    backgroundColor: "rgba(120, 83, 10, 0.72)",
+    color: "#fff3c4",
+    fontSize: 8,
+    fontWeight: "900",
+    letterSpacing: 0.6,
+    textAlign: "center",
   },
   profilePictureFrame: {
     width: 58,
@@ -2661,6 +3825,45 @@ const styles = StyleSheet.create({
   storeSelectedImage: {
     ...StyleSheet.absoluteFill,
   },
+  storeOrbPreviewImage: {
+    position: "absolute",
+    top: "5%",
+    left: "8%",
+    width: "84%",
+    height: "84%",
+  },
+  storeBuddyPreviewImage: {
+    position: "absolute",
+    top: "4%",
+    left: "18%",
+    width: "64%",
+    height: "64%",
+  },
+  storeOrbLaserInset: {
+    position: "absolute",
+    left: 10,
+    bottom: 102,
+    zIndex: 3,
+    width: 92,
+    height: 50,
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 4,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: "rgba(255, 224, 160, 0.78)",
+    backgroundColor: "rgba(3, 12, 9, 0.86)",
+  },
+  storeOrbLaserLabel: {
+    color: "#f0fdf4",
+    fontSize: 6,
+    fontWeight: "900",
+    letterSpacing: 0.8,
+  },
+  storeOrbLaserImage: {
+    width: "100%",
+    height: 30,
+  },
   storePreviewToggle: {
     position: "absolute",
     bottom: 10,
@@ -2861,6 +4064,16 @@ const styles = StyleSheet.create({
     width: "100%",
     height: "82%",
   },
+  storeOrbCatalogImage: {
+    width: "100%",
+    height: "82%",
+    padding: 8,
+  },
+  storeBuddyCatalogImage: {
+    width: "100%",
+    height: "82%",
+    padding: 4,
+  },
   storeCatalogLabel: {
     position: "absolute",
     left: 0,
@@ -2894,6 +4107,18 @@ const styles = StyleSheet.create({
     textShadowColor: "rgba(0, 0, 0, 0.9)",
     textShadowOffset: { width: 0, height: 1 },
     textShadowRadius: 2,
+  },
+  storeCatalogPriceRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 5,
+  },
+  storeCatalogOriginalPrice: {
+    color: "#94a3b8",
+    fontSize: 6,
+    fontWeight: "800",
+    textDecorationLine: "line-through",
   },
   storeItemMeta: {
     color: "#9bb7aa",
@@ -3065,6 +4290,53 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(9, 29, 24, 0.9)",
     marginBottom: 12,
   },
+  profileLevelPanel: {
+    gap: 5,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    marginTop: -4,
+    marginBottom: 10,
+    borderRadius: 13,
+    borderWidth: 1,
+    borderColor: "rgba(250, 204, 21, 0.28)",
+    backgroundColor: "rgba(40, 31, 11, 0.55)",
+  },
+  profileLevelHeading: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  profileLevelTitle: {
+    color: "#fde68a",
+    fontSize: 8,
+    fontWeight: "900",
+    letterSpacing: 1,
+  },
+  profileLevelValue: {
+    color: "#fff3c4",
+    fontSize: 11,
+    fontWeight: "900",
+  },
+  profileLevelProgressTrack: {
+    height: 6,
+    overflow: "hidden",
+    borderRadius: 999,
+    backgroundColor: "rgba(15, 23, 42, 0.9)",
+  },
+  profileLevelProgressFill: {
+    height: "100%",
+    borderRadius: 999,
+    backgroundColor: "#facc15",
+  },
+  profileLevelXpText: {
+    color: "#fef3c7",
+    fontSize: 8,
+    fontWeight: "800",
+  },
+  profileLevelTotalXp: {
+    color: "#cbd5e1",
+    fontWeight: "600",
+  },
   profileNameEditor: {
     flex: 1,
     minWidth: 0,
@@ -3128,6 +4400,97 @@ const styles = StyleSheet.create({
     borderColor: "rgba(255, 224, 160, 0.22)",
     backgroundColor: "rgba(4, 17, 13, 0.7)",
   },
+  settingsOptionsPanel: {
+    marginTop: 16,
+    padding: 14,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "rgba(255, 224, 160, 0.22)",
+    backgroundColor: "rgba(4, 17, 13, 0.7)",
+  },
+  settingsOptionRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  settingsVolumeHeading: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  settingsOptionCopy: {
+    flex: 1,
+    gap: 5,
+  },
+  settingsOptionTitle: {
+    color: "#f0fdf4",
+    fontSize: 15,
+    fontWeight: "900",
+  },
+  settingsOptionDescription: {
+    color: "#9bb7aa",
+    fontSize: 11,
+    fontWeight: "600",
+  },
+  settingsSavedHint: {
+    marginTop: 10,
+    color: "#86efac",
+    fontSize: 10,
+    fontWeight: "700",
+  },
+  settingsVolumeValue: {
+    minWidth: 42,
+    color: "#fef3c7",
+    fontSize: 13,
+    fontWeight: "900",
+    textAlign: "right",
+  },
+  settingsVolumeSliderTouchArea: {
+    height: 40,
+    justifyContent: "center",
+    marginTop: 8,
+    paddingHorizontal: 10,
+  },
+  nativeVolumeSlider: {
+    width: "100%",
+    height: 40,
+    marginTop: 8,
+  },
+  settingsVolumeTrack: {
+    height: 8,
+    justifyContent: "center",
+    borderRadius: 999,
+    backgroundColor: "#334155",
+  },
+  settingsVolumeTrackFill: {
+    height: 8,
+    borderRadius: 999,
+    backgroundColor: "#4ade80",
+  },
+  settingsVolumeThumb: {
+    position: "absolute",
+    width: 20,
+    height: 20,
+    marginLeft: -10,
+    borderRadius: 10,
+    borderWidth: 2,
+    borderColor: "#dcfce7",
+    backgroundColor: "#16a34a",
+    shadowColor: "#000",
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  settingsVolumeLabels: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    paddingHorizontal: 10,
+  },
+  settingsVolumeEndpoint: {
+    color: "#9bb7aa",
+    fontSize: 9,
+    fontWeight: "700",
+  },
   profileOptionGrid: {
     flexDirection: "row",
     flexWrap: "wrap",
@@ -3179,6 +4542,13 @@ const styles = StyleSheet.create({
     fontSize: 7,
     fontWeight: "900",
     letterSpacing: 0.6,
+  },
+  orbStatusMessage: {
+    width: "100%",
+    color: "#a7f3d0",
+    fontSize: 9,
+    fontWeight: "700",
+    textAlign: "center",
   },
   playSelectionHeader: {
     flexDirection: "row",
@@ -3506,8 +4876,8 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 8,
-    paddingVertical: 10,
+    gap: 5,
+    paddingVertical: 9,
     borderRadius: 12,
     backgroundColor: "#0b1d16",
     borderWidth: 1,
@@ -3518,11 +4888,11 @@ const styles = StyleSheet.create({
     borderColor: "#4ade80",
   },
   selectionTabIcon: {
-    fontSize: 17,
+    fontSize: 15,
   },
   selectionTabText: {
     color: "#9ab9a8",
-    fontSize: 14,
+    fontSize: 12,
     fontWeight: "800",
   },
   selectionTabTextActive: {
@@ -3548,6 +4918,116 @@ const styles = StyleSheet.create({
   },
   selectionCardSelected: {
     backgroundColor: "#1f4d3c",
+  },
+  selectionOrbContent: {
+    width: "100%",
+    alignItems: "center",
+    gap: 8,
+  },
+  selectionBuddyContent: {
+    width: "100%",
+    alignItems: "center",
+    gap: 8,
+  },
+  selectionBuddyEmpty: {
+    width: "100%",
+    alignItems: "center",
+    gap: 8,
+    paddingVertical: 8,
+  },
+  selectionBuddyGrid: {
+    width: "100%",
+    flexDirection: "row",
+    flexWrap: "wrap",
+    justifyContent: "center",
+    gap: 6,
+  },
+  selectionBuddyCard: {
+    width: "30%",
+    minHeight: 128,
+    paddingHorizontal: 5,
+    gap: 3,
+  },
+  selectionBuddyImage: {
+    width: 52,
+    height: 48,
+  },
+  selectionBuddyRarity: {
+    color: "#fcd34d",
+    fontSize: 8,
+    fontWeight: "900",
+    letterSpacing: 0.4,
+  },
+  selectionBuddyBonus: {
+    color: "#cbd5e1",
+    fontSize: 8,
+    textAlign: "center",
+  },
+  selectionOrbCard: {
+    width: "48%",
+    minHeight: 138,
+    gap: 5,
+    paddingHorizontal: 8,
+    borderColor: "#4ade80",
+  },
+  selectionOrbCardLocked: {
+    opacity: 0.68,
+    borderColor: "#315c4c",
+  },
+  selectionOrbSectionTitle: {
+    width: "100%",
+    marginTop: 4,
+    color: "#a7f3d0",
+    fontSize: 9,
+    fontWeight: "900",
+    letterSpacing: 0.8,
+    textAlign: "center",
+  },
+  selectionOrbSkinList: {
+    width: "100%",
+    flexDirection: "row",
+    flexWrap: "wrap",
+    justifyContent: "center",
+    gap: 6,
+  },
+  selectionOrbSkinCard: {
+    width: 82,
+    minHeight: 94,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 2,
+    padding: 5,
+    borderRadius: 10,
+    borderWidth: 1.5,
+    borderColor: "#315c4c",
+    backgroundColor: "#0d1d17",
+  },
+  selectionOrbSkinImage: {
+    width: 52,
+    height: 52,
+  },
+  selectionOrbSkinName: {
+    maxWidth: "100%",
+    color: "#ebfff4",
+    fontSize: 8,
+    fontWeight: "800",
+    textAlign: "center",
+  },
+  selectionOrbSkinRarity: {
+    fontSize: 7,
+    fontWeight: "900",
+    letterSpacing: 0.5,
+    textAlign: "center",
+  },
+  selectionOrbImage: {
+    width: 68,
+    height: 68,
+  },
+  selectionOrbDescription: {
+    color: "#a7f3d0",
+    fontSize: 10,
+    fontWeight: "600",
+    textAlign: "center",
   },
   selectionArtwork: {
     width: 48,

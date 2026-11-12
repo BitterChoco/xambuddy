@@ -1,12 +1,105 @@
+import { initializeRemoteBuddyCatalog } from "@/constants/buddy-catalog";
+import { initializeRemoteGameCatalogs } from "@/constants/game-catalog";
+import { initializeRemoteGameConfiguration } from "@/constants/game-configuration";
+import { initializeDefaultPlayerInventory } from "@/constants/player-inventory";
+import {
+  getMusicVolume,
+  subscribeToMusicVolume,
+} from "@/constants/player-settings";
+import { initializeRemoteStorePricing } from "@/constants/store-pricing";
 import "@/global.css";
-import { Stack } from "expo-router";
+import {
+  createInitialAssetLoadingState,
+  getRemoteAssetSource,
+  loadRemoteAssets,
+  type AssetLoadingState,
+} from "@/services/remote-assets";
+import { createAudioPlayer, setAudioModeAsync } from "expo-audio";
+import { Image } from "expo-image";
+import { Stack, usePathname } from "expo-router";
 import * as ScreenOrientation from "expo-screen-orientation";
+import * as SplashScreen from "expo-splash-screen";
 import { StatusBar } from "expo-status-bar";
-import { useEffect } from "react";
-import { Platform } from "react-native";
+import { useEffect, useRef, useState } from "react";
+import { Platform, Pressable, Text, View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 
+const loadingScreenImage = require("@/assets/images/loading_screen.jpg");
+const loadingMusic = require("@/assets/sound/turning_pages-lantern-in-the-glade-600973.mp3");
+const menuMusic = getRemoteAssetSource(
+  "game/music/paulyudin-game-game-music-573991.mp3",
+);
+const battleMusic = getRemoteAssetSource(
+  "game/music/atlasaudio-video-game-617620.mp3",
+);
+
+if (Platform.OS !== "web") {
+  void SplashScreen.preventAutoHideAsync().catch(() => undefined);
+}
+
 export default function RootLayout() {
+  const pathname = usePathname();
+  const musicPlayerRef = useRef<ReturnType<typeof createAudioPlayer> | null>(
+    null,
+  );
+  const [isAppLayoutReady, setIsAppLayoutReady] = useState(false);
+  const [isLoadingScreenVisible, setIsLoadingScreenVisible] = useState(true);
+  const [assetLoadingState, setAssetLoadingState] = useState<AssetLoadingState>(
+    createInitialAssetLoadingState,
+  );
+  const [assetLoadAttempt, setAssetLoadAttempt] = useState(0);
+  const [musicVolume, setMusicVolume] = useState(0.5);
+  const [isAudioModeReady, setIsAudioModeReady] = useState(false);
+  const activeTrackRef = useRef<string | number | null>(null);
+  const musicVolumeRef = useRef(musicVolume);
+
+  useEffect(() => {
+    let isMounted = true;
+    void (async () => {
+      try {
+        await loadRemoteAssets((state) => {
+          if (isMounted && !state.isComplete) setAssetLoadingState(state);
+        });
+        if (!isMounted) return;
+        setAssetLoadingState((state) => ({
+          ...state,
+          progress: 99,
+          detail: "Loading game catalogs…",
+          isComplete: false,
+        }));
+        await Promise.all([
+          initializeRemoteGameCatalogs(),
+          initializeRemoteBuddyCatalog(),
+          initializeRemoteGameConfiguration(),
+          initializeRemoteStorePricing(),
+        ]);
+        initializeDefaultPlayerInventory();
+        if (!isMounted) return;
+        setAssetLoadingState((state) => ({
+          ...state,
+          progress: 100,
+          detail: "All game assets and catalogs are ready.",
+          isComplete: true,
+        }));
+      } catch (error: unknown) {
+        if (!isMounted) return;
+        setAssetLoadingState((current) => ({
+          ...current,
+          detail: "Asset download failed.",
+          error:
+            error instanceof Error
+              ? error.message
+              : "Unable to download game assets.",
+          isComplete: false,
+        }));
+      }
+    })();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [assetLoadAttempt]);
+
   useEffect(() => {
     if (Platform.OS !== "web") {
       void ScreenOrientation.lockAsync(
@@ -15,10 +108,228 @@ export default function RootLayout() {
     }
   }, []);
 
+  useEffect(() => {
+    let isMounted = true;
+    void setAudioModeAsync({
+      playsInSilentMode: true,
+      interruptionMode: "mixWithOthers",
+    })
+      .catch(() => undefined)
+      .then(() => {
+        if (!isMounted) return;
+        const player = createAudioPlayer(loadingMusic);
+        player.loop = true;
+        player.volume = musicVolumeRef.current;
+        musicPlayerRef.current = player;
+        activeTrackRef.current = loadingMusic;
+        player.play();
+        setIsAudioModeReady(true);
+      });
+
+    return () => {
+      isMounted = false;
+      musicPlayerRef.current?.pause();
+      musicPlayerRef.current?.remove();
+      musicPlayerRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    let isMounted = true;
+    const unsubscribe = subscribeToMusicVolume(setMusicVolume);
+    void getMusicVolume().then((volume) => {
+      if (isMounted) setMusicVolume(volume);
+    });
+    return () => {
+      isMounted = false;
+      unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    musicVolumeRef.current = musicVolume;
+    const player = musicPlayerRef.current;
+    if (player) player.volume = musicVolume;
+  }, [musicVolume]);
+
+  useEffect(() => {
+    if (!isAudioModeReady) return;
+    const player = musicPlayerRef.current;
+    if (!player) return;
+
+    const nextTrack = isLoadingScreenVisible
+      ? loadingMusic
+      : pathname === "/game"
+        ? battleMusic
+        : menuMusic;
+    const nextTrackId =
+      typeof nextTrack === "number" ? nextTrack : nextTrack.uri;
+    if (activeTrackRef.current === nextTrackId) return;
+
+    if (activeTrackRef.current !== null) player.pause();
+    player.replace(nextTrack);
+    player.loop = true;
+    player.volume = musicVolumeRef.current;
+    player.play();
+    activeTrackRef.current = nextTrackId;
+  }, [isAudioModeReady, isLoadingScreenVisible, pathname]);
+
+  useEffect(() => {
+    if (!isAppLayoutReady) return;
+
+    if (Platform.OS !== "web") {
+      void SplashScreen.hideAsync().catch(() => undefined);
+    }
+    if (!assetLoadingState.isComplete) return;
+
+    const timeout = setTimeout(() => setIsLoadingScreenVisible(false), 900);
+    return () => clearTimeout(timeout);
+  }, [assetLoadingState.isComplete, isAppLayoutReady]);
+
+  const retryAssetDownload = () => {
+    setAssetLoadingState(createInitialAssetLoadingState());
+    setAssetLoadAttempt((attempt) => attempt + 1);
+  };
+
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
-      <StatusBar hidden />
-      <Stack screenOptions={{ headerShown: false }} />
+      <View style={{ flex: 1 }} onLayout={() => setIsAppLayoutReady(true)}>
+        <StatusBar hidden />
+        {assetLoadingState.isComplete && (
+          <Stack screenOptions={{ headerShown: false }} />
+        )}
+        {isLoadingScreenVisible && (
+          <View
+            style={{
+              position: "absolute",
+              top: 0,
+              right: 0,
+              bottom: 0,
+              left: 0,
+              width: "100%",
+              height: "100%",
+              backgroundColor: "#06150f",
+            }}
+          >
+            <Image
+              source={loadingScreenImage}
+              contentFit="cover"
+              style={{
+                position: "absolute",
+                top: 0,
+                right: 0,
+                bottom: 0,
+                left: 0,
+                width: "100%",
+                height: "100%",
+              }}
+              accessibilityLabel="Wild Paw loading screen"
+            />
+            <View
+              style={{
+                position: "absolute",
+                left: 24,
+                right: 24,
+                bottom: 20,
+              }}
+            >
+              <Text
+                style={{
+                  color: "#fff",
+                  fontSize: 20,
+                  fontWeight: "800",
+                  textShadowColor: "rgba(0,0,0,0.95)",
+                  textShadowOffset: { width: 1, height: 1 },
+                  textShadowRadius: 3,
+                }}
+              >
+                Preparing Wild Paw
+              </Text>
+              <Text
+                numberOfLines={2}
+                style={{
+                  color: "#fff",
+                  marginTop: 6,
+                  fontSize: 13,
+                  textShadowColor: "rgba(0,0,0,0.95)",
+                  textShadowOffset: { width: 1, height: 1 },
+                  textShadowRadius: 3,
+                }}
+              >
+                {assetLoadingState.error ?? assetLoadingState.detail}
+              </Text>
+              <View
+                style={{
+                  height: 9,
+                  overflow: "hidden",
+                  marginTop: 13,
+                  borderRadius: 8,
+                  backgroundColor: "rgba(255,255,255,0.18)",
+                }}
+              >
+                <View
+                  style={{
+                    width: `${assetLoadingState.progress}%`,
+                    height: "100%",
+                    borderRadius: 8,
+                    backgroundColor: "#34d399",
+                  }}
+                />
+              </View>
+              <View
+                style={{
+                  flexDirection: "row",
+                  justifyContent: "space-between",
+                  marginTop: 7,
+                }}
+              >
+                <Text
+                  style={{
+                    color: "#fff",
+                    fontSize: 12,
+                    textShadowColor: "rgba(0,0,0,0.95)",
+                    textShadowOffset: { width: 1, height: 1 },
+                    textShadowRadius: 3,
+                  }}
+                >
+                  {assetLoadingState.totalFiles > 0
+                    ? `${assetLoadingState.completedFiles}/${assetLoadingState.totalFiles} files`
+                    : "Release assets"}
+                </Text>
+                <Text
+                  style={{
+                    color: "#fff",
+                    fontSize: 12,
+                    fontWeight: "700",
+                    textShadowColor: "rgba(0,0,0,0.95)",
+                    textShadowOffset: { width: 1, height: 1 },
+                    textShadowRadius: 3,
+                  }}
+                >
+                  {assetLoadingState.progress}%
+                </Text>
+              </View>
+              {assetLoadingState.error && (
+                <Pressable
+                  onPress={retryAssetDownload}
+                  style={{
+                    alignSelf: "flex-start",
+                    marginTop: 12,
+                    paddingHorizontal: 15,
+                    paddingVertical: 8,
+                    borderRadius: 9,
+                    backgroundColor: "#059669",
+                  }}
+                >
+                  <Text style={{ color: "white", fontWeight: "700" }}>
+                    Retry
+                  </Text>
+                </Pressable>
+              )}
+            </View>
+          </View>
+        )}
+      </View>
     </GestureHandlerRootView>
   );
 }

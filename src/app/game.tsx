@@ -16,6 +16,9 @@ export default function GameScreen() {
     playerName,
     profilePicture,
     profileBorder,
+    orbEquipped,
+    orbSkinId,
+    buddyId,
   } = useLocalSearchParams<{
     hero?: string;
     skinId?: string;
@@ -28,6 +31,9 @@ export default function GameScreen() {
     playerName?: string;
     profilePicture?: string;
     profileBorder?: string;
+    orbEquipped?: string;
+    orbSkinId?: string;
+    buddyId?: string;
   }>();
 
   return (
@@ -50,6 +56,9 @@ export default function GameScreen() {
         playerName={playerName}
         profilePicture={profilePicture}
         profileBorder={profileBorder}
+        orbEquipped={orbEquipped === "true"}
+        orbSkinId={orbSkinId}
+        buddyId={buddyId}
       />
     </>
   );

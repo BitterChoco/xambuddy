@@ -122,6 +122,10 @@ wss.on("connection", (socket) => {
             typeof message.profileBorder === "string"
               ? message.profileBorder
               : "none",
+          orbEquipped: message.orbEquipped === true,
+          orbSkinId:
+            typeof message.orbSkinId === "string" ? message.orbSkinId : "orb_1",
+          buddyId: typeof message.buddyId === "string" ? message.buddyId : "",
           ready: false,
         };
 
@@ -138,6 +142,9 @@ wss.on("connection", (socket) => {
             skinColor: player.skinColor,
             profilePicture: player.profilePicture,
             profileBorder: player.profileBorder,
+            orbEquipped: player.orbEquipped,
+            orbSkinId: player.orbSkinId,
+            buddyId: player.buddyId,
           };
           room.players = [
             {
@@ -148,6 +155,9 @@ wss.on("connection", (socket) => {
               skinColor: player.skinColor,
               profilePicture: player.profilePicture,
               profileBorder: player.profileBorder,
+              orbEquipped: player.orbEquipped,
+              orbSkinId: player.orbSkinId,
+              buddyId: player.buddyId,
               ready: true,
             },
             ...room.players
@@ -193,6 +203,9 @@ wss.on("connection", (socket) => {
           skinColor: player.skinColor,
           profilePicture: player.profilePicture,
           profileBorder: player.profileBorder,
+          orbEquipped: player.orbEquipped,
+          orbSkinId: player.orbSkinId,
+          buddyId: player.buddyId,
           ready: false,
         });
         socket.roomId = room.id;

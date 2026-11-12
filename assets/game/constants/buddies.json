@@ -1,0 +1,116 @@
+{
+  "items": [
+    {
+      "id": "bunny",
+      "name": "Bunny",
+      "rarity": "common",
+      "image": "buddy_bunny_1.png",
+      "bonuses": { "moveSpeed": 5 }
+    },
+    {
+      "id": "bear-cub",
+      "name": "Bear Cub",
+      "rarity": "rare",
+      "image": "buddy_bear_1.png",
+      "bonuses": { "defense": 5, "maxHealth": 5 }
+    },
+    {
+      "id": "wolf-cub",
+      "name": "Wolf Cub",
+      "rarity": "epic",
+      "image": "buddy_wolf_1.png",
+      "bonuses": { "attack": 5, "xpGain": 10 }
+    },
+    {
+      "id": "kitten",
+      "name": "Kitten",
+      "rarity": "uncommon",
+      "image": "buddy_kitten.png",
+      "bonuses": { "criticalChance": 5, "attackSpeed": 5 }
+    },
+    {
+      "id": "puppy",
+      "name": "Puppy",
+      "rarity": "common",
+      "image": "buddy_puppy.png",
+      "bonuses": { "moveSpeed": 2, "attack": 3 }
+    },
+    {
+      "id": "fox-kit",
+      "name": "Fox Kit",
+      "rarity": "rare",
+      "image": "buddy_fox.png",
+      "bonuses": { "criticalChance": 5, "attackSpeed": 5 }
+    },
+    {
+      "id": "raccoon",
+      "name": "Raccoon",
+      "rarity": "uncommon",
+      "image": "buddy_racoon.png",
+      "bonuses": { "coinGain": 10 }
+    },
+    {
+      "id": "squirrel",
+      "name": "Squirrel",
+      "rarity": "common",
+      "image": "buddy_squirrel.png",
+      "bonuses": { "xpGain": 10 }
+    },
+    {
+      "id": "hedgehog",
+      "name": "Hedgehog",
+      "rarity": "uncommon",
+      "image": "buddy_default.png",
+      "bonuses": { "healingReceived": 15 }
+    },
+    {
+      "id": "otter-pup",
+      "name": "Otter Pup",
+      "rarity": "common",
+      "image": "buddy_default.png",
+      "bonuses": { "moveSpeed": 5 }
+    },
+    {
+      "id": "baby-tiger",
+      "name": "Baby Tiger",
+      "rarity": "legendary",
+      "image": "buddy_default.png",
+      "bonuses": { "attack": 8, "maxHealth": 5 }
+    },
+    {
+      "id": "baby-lion",
+      "name": "Baby Lion",
+      "rarity": "epic",
+      "image": "buddy_default.png",
+      "bonuses": { "attack": 5, "maxHealth": 5 }
+    },
+    {
+      "id": "owl-chick",
+      "name": "Owl Chick",
+      "rarity": "epic",
+      "image": "buddy_default.png",
+      "bonuses": { "dashCooldownReduction": 5, "dodgeChance": 5 }
+    },
+    {
+      "id": "deer-fawn",
+      "name": "Deer Fawn",
+      "rarity": "rare",
+      "image": "buddy_default.png",
+      "bonuses": { "dodgeChance": 5, "moveSpeed": 5 }
+    },
+    {
+      "id": "panda-cub",
+      "name": "Panda Cub",
+      "rarity": "legendary",
+      "image": "buddy_default.png",
+      "bonuses": { "defense": 5, "maxHealth": 5 }
+    },
+    {
+      "id": "piglet",
+      "name": "Piglet",
+      "rarity": "uncommon",
+      "image": "buddy_default.png",
+      "bonuses": { "healingReceived": 15 }
+    }
+  ]
+}

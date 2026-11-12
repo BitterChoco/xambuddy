@@ -1,13 +1,31 @@
+import { readRemoteAssetJson } from "@/services/remote-assets";
+
 type PriceRule = {
   price: number;
   discountPercent: number;
 };
 
-const pricing = require("./store-pricing.json") as {
-  defaults: { hero: PriceRule; skin: PriceRule };
+type StorePricing = {
+  defaults: {
+    hero: PriceRule;
+    skin: PriceRule;
+    orb?: PriceRule;
+    buddy?: PriceRule;
+  };
   heroes: Record<string, PriceRule>;
   skins: Record<string, Record<string, PriceRule>>;
+  orbs?: Record<string, PriceRule>;
+  buddies?: Record<string, PriceRule>;
+  buddyItems?: Record<string, PriceRule>;
 };
+
+let pricing: StorePricing;
+
+export async function initializeRemoteStorePricing() {
+  pricing = await readRemoteAssetJson<StorePricing>(
+    "game/constants/store-pricing.json",
+  );
+}
 
 function sanitizeRule(rule: PriceRule | undefined, fallback: PriceRule) {
   const price = Number.isFinite(rule?.price)
@@ -36,4 +54,18 @@ export function getHeroPricing(heroId: string) {
 
 export function getSkinPricing(heroId: string, skinId: string) {
   return sanitizeRule(pricing.skins[heroId]?.[skinId], pricing.defaults.skin);
+}
+
+export function getOrbPricing(orbId: string) {
+  return sanitizeRule(
+    pricing.orbs?.[orbId],
+    pricing.defaults.orb ?? { price: 400, discountPercent: 0 },
+  );
+}
+
+export function getBuddyPricing(buddyId: string, rarity: string) {
+  return sanitizeRule(
+    pricing.buddyItems?.[buddyId] ?? pricing.buddies?.[rarity],
+    pricing.defaults.buddy ?? { price: 250, discountPercent: 0 },
+  );
 }

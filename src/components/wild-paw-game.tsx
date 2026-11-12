@@ -1,7 +1,13 @@
 import { ProfileBorderOverlay } from "@/components/ui/profile-border-overlay";
-import coinRewards from "@/constants/coin-rewards.json";
+import { getBuddy, getBuddyBonus } from "@/constants/buddy-catalog";
 import { awardCoins } from "@/constants/coin-wallet";
-import dropConfig from "@/constants/drop-config.json";
+import {
+  coinRewards,
+  dropConfig,
+  type DropKind,
+} from "@/constants/game-configuration";
+import { DEFAULT_ORB_SKIN_ID, getOrbSkin } from "@/constants/orb-catalog";
+import { awardPlayerXp } from "@/constants/player-experience";
 import {
   DEFAULT_HERO_ID,
   DEFAULT_PROFILE_BORDER,
@@ -14,11 +20,19 @@ import {
   type ProfilePictureId,
 } from "@/constants/player-profile";
 import {
+  getSoundEffectsVolume,
+  getVibrationEnabled,
+  subscribeToSoundEffectsVolume,
+} from "@/constants/player-settings";
+import {
   createMultiplayerSocket,
   startLocalHostServer,
   stopLocalHostServer,
 } from "@/services/local-multiplayer-network";
 import type { MultiplayerSocket } from "@/services/local-multiplayer.types";
+import { getRemoteAssetSource } from "@/services/remote-assets";
+import { createAudioPlayer } from "expo-audio";
+import * as Haptics from "expo-haptics";
 import { Image } from "expo-image";
 import { router } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -60,6 +74,7 @@ type Enemy = {
 
 type Bullet = {
   id: number;
+  playerId: "host" | "join";
   x: number;
   y: number;
   radius: number;
@@ -71,6 +86,7 @@ type Bullet = {
 
 type GrenadeProjectile = {
   id: number;
+  playerId?: "host" | "join";
   x: number;
   y: number;
   vx: number;
@@ -80,13 +96,12 @@ type GrenadeProjectile = {
 
 type GrenadeExplosion = {
   id: number;
+  playerId?: "host" | "join";
   x: number;
   y: number;
   radius: number;
   life: number;
 };
-
-type DropKind = keyof typeof dropConfig;
 
 type ConsumableDrop = {
   id: number;
@@ -111,6 +126,7 @@ type DamageNumber = {
     | "speedPickup"
     | "rapidFirePickup"
     | "highDamagePickup";
+  playerId?: "host" | "join";
 };
 
 type PlayerState = {
@@ -131,6 +147,11 @@ type PlayerState = {
   rapidFireTimer: number;
   highDamageTimer: number;
   facing: Vector;
+  orbEquipped: boolean;
+  orbSkinId: string;
+  buddyId: string;
+  orbSide: number;
+  orbFireCooldown: number;
   grenades: number;
   heals: number;
   dashCooldown: number;
@@ -138,6 +159,17 @@ type PlayerState = {
   pendingDamage: number;
   damageTimer: number;
   isDead: boolean;
+};
+
+type OrbBeam = {
+  id: number;
+  playerId: PlayerState["id"];
+  orbSkinId: string;
+  startX: number;
+  startY: number;
+  endX: number;
+  endY: number;
+  life: number;
 };
 
 type PlayerInput = {
@@ -167,13 +199,16 @@ type GameState = {
   } | null;
   enemies: Enemy[];
   bullets: Bullet[];
+  orbBeams: OrbBeam[];
   itemDrops: ConsumableDrop[];
   grenadeProjectiles: GrenadeProjectile[];
   grenadeExplosions: GrenadeExplosion[];
   damageNumbers: DamageNumber[];
   score: number;
   wave: number;
+  arenaBackgroundWave: number;
   waveCountdown: number;
+  warpTransitionTimer: number;
   enemiesToSpawn: number;
   isRunning: boolean;
   isPaused: boolean;
@@ -218,22 +253,72 @@ const REVIVE_DURATION = 5;
 const REVIVE_RANGE = 58;
 const REVIVE_HEALTH = 50;
 const GHOST_SIZE = 34;
-const heartImage = require("@/assets/game/icons/health_1.png");
-const bootsFastImage = require("@/assets/game/icons/boots_fast_1.png");
-const bulletImage = require("@/assets/game/icons/bullet_1.png");
-const dashImage = require("@/assets/game/icons/dash_1.png");
-const ghostImage = require("@/assets/game/icons/ghost_1.png");
-const coinImage = require("@/assets/game/icons/coin_1.png");
-const trophyImage = require("@/assets/game/icons/trophy_1.png");
-const homeIcon = require("@/assets/game/icons/home_1.png");
-const playIcon = require("@/assets/game/icons/play_1.png");
-const pauseIcon = require("@/assets/game/icons/pause_1.png");
+const ORB_ATTACK_RANGE = 250;
+const ORB_ATTACK_COOLDOWN = 0.62;
+const ORB_ATTACK_DAMAGE = 10;
+const ORB_BEAM_DURATION = 0.16;
+const heartImage = getRemoteAssetSource("game/icons/health_1.png");
+const bootsFastImage = getRemoteAssetSource("game/icons/boots_fast_1.png");
+const bulletImage = getRemoteAssetSource("game/icons/bullet_1.png");
+const dashImage = getRemoteAssetSource("game/icons/dash_1.png");
+const ghostImage = getRemoteAssetSource("game/icons/ghost_1.png");
+const coinImage = getRemoteAssetSource("game/icons/coin_1.png");
+const trophyImage = getRemoteAssetSource("game/icons/trophy_1.png");
+const homeIcon = getRemoteAssetSource("game/icons/home_1.png");
+const playIcon = getRemoteAssetSource("game/icons/play_1.png");
+const pauseIcon = getRemoteAssetSource("game/icons/pause_1.png");
+const orbLaserSound = getRemoteAssetSource(
+  "game/music/freesound_community-pulse_sound_try1-89547.mp3",
+);
+const playerShotSound = getRemoteAssetSource(
+  "game/music/yodguard-short-energy-beam-shot-3-482517.mp3",
+);
+const grenadeExplosionSound = getRemoteAssetSource(
+  "game/music/dragon-studio-explosion-sound-effect-425455.mp3",
+);
 
 function getWaveEnemyCount(wave: number) {
   return 4 + wave;
 }
 
-const arenaBackground = require("@/assets/game/arena/arena_1.png");
+function getEnemiesRemainingInWave(game: GameState) {
+  const pendingBoss =
+    game.wave > 1 && game.wave % 3 === 0 && game.bossSpawnedAtWave !== game.wave
+      ? 1
+      : 0;
+  return game.enemies.length + game.enemiesToSpawn + pendingBoss;
+}
+
+function replaySoundEffect(
+  player: ReturnType<typeof createAudioPlayer> | null,
+) {
+  if (!player) return;
+  void player
+    .seekTo(0)
+    .then(() => player.play())
+    .catch(() => undefined);
+}
+
+const arenaBackgrounds = [
+  getRemoteAssetSource("game/arena/arena_1.png"),
+  getRemoteAssetSource("game/arena/arena_2.png"),
+  getRemoteAssetSource("game/arena/arena_3.png"),
+  getRemoteAssetSource("game/arena/arena_4.jpg"),
+];
+const WAVES_PER_ARENA = 5;
+const WARP_TRANSITION_DURATION = 5;
+
+function getWarpFadeOpacity(remainingSeconds: number) {
+  const progress = clamp(1 - remainingSeconds / WARP_TRANSITION_DURATION, 0, 1);
+  return progress <= 0.5 ? progress * 2 : (1 - progress) * 2;
+}
+
+function getArenaBackground(wave: number) {
+  const arenaIndex =
+    Math.floor(Math.max(0, wave - 1) / WAVES_PER_ARENA) %
+    arenaBackgrounds.length;
+  return arenaBackgrounds[arenaIndex];
+}
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
@@ -241,16 +326,29 @@ function clamp(value: number, min: number, max: number) {
 
 function getEffectivePlayerSpeed(player: PlayerState) {
   return (
-    player.speed * (player.speedBoostTimer > 0 ? SPEED_BOOST_MULTIPLIER : 1)
+    player.speed *
+    (1 + getBuddyBonus(player.buddyId, "moveSpeed") / 100) *
+    (player.speedBoostTimer > 0 ? SPEED_BOOST_MULTIPLIER : 1)
   );
 }
 
 function getEffectiveFireCooldown(player: PlayerState) {
-  return player.rapidFireTimer > 0 ? RAPID_FIRE_COOLDOWN : NORMAL_FIRE_COOLDOWN;
+  const baseCooldown =
+    player.rapidFireTimer > 0 ? RAPID_FIRE_COOLDOWN : NORMAL_FIRE_COOLDOWN;
+  return (
+    baseCooldown / (1 + getBuddyBonus(player.buddyId, "attackSpeed") / 100)
+  );
 }
 
 function getEffectiveBulletDamage(player: PlayerState) {
-  return 20 * (player.highDamageTimer > 0 ? HIGH_DAMAGE_MULTIPLIER : 1);
+  const attackDamage =
+    20 *
+    (1 + getBuddyBonus(player.buddyId, "attack") / 100) *
+    (player.highDamageTimer > 0 ? HIGH_DAMAGE_MULTIPLIER : 1);
+  const criticalChance = getBuddyBonus(player.buddyId, "criticalChance");
+  return Math.round(
+    attackDamage * (Math.random() * 100 < criticalChance ? 1.5 : 1),
+  );
 }
 
 function normalize(vector: Vector): Vector {
@@ -326,8 +424,12 @@ function advanceItemDrops(
     if (touchingPlayer && drop.kind === "heart") {
       const heartConfig = dropConfig.heart;
       if (nextPlayer.health < player.maxHealth) {
+        const buddyHealAmount = Math.round(
+          heartConfig.healAmount *
+            (1 + getBuddyBonus(player.buddyId, "healingReceived") / 100),
+        );
         const healedAmount = Math.min(
-          heartConfig.healAmount,
+          buddyHealAmount,
           player.maxHealth - nextPlayer.health,
         );
         nextPlayer.health += healedAmount;
@@ -522,6 +624,7 @@ function advanceGrenadeProjectiles(
 
     explosions.push({
       id: projectile.id,
+      playerId: projectile.playerId,
       x: nextProjectile.x,
       y: nextProjectile.y,
       radius: GRENADE_BLAST_RADIUS,
@@ -616,7 +719,13 @@ function createPlayer(
   name = id === "host" ? "Player 1" : "Player 2",
   skinColor = "#7dd3fc",
   skinId = "",
+  orbEquipped = false,
+  orbSkinId = DEFAULT_ORB_SKIN_ID,
+  buddyId = "",
 ): PlayerState {
+  const maxHealth = Math.round(
+    MAX_HEALTH * (1 + getBuddyBonus(buddyId, "maxHealth") / 100),
+  );
   return {
     id,
     name,
@@ -626,13 +735,18 @@ function createPlayer(
     x,
     y,
     radius: PLAYER_RADIUS,
-    health: MAX_HEALTH,
-    maxHealth: MAX_HEALTH,
+    health: maxHealth,
+    maxHealth,
     speed: PLAYER_SPEED,
     speedBoostTimer: 0,
     rapidFireTimer: 0,
     highDamageTimer: 0,
     facing: { x: 1, y: 0 },
+    orbEquipped,
+    orbSkinId,
+    buddyId: getBuddy(buddyId)?.id ?? "",
+    orbSide: 1,
+    orbFireCooldown: 0,
     grenades: 3,
     heals: 2,
     dashCooldown: 0,
@@ -643,10 +757,141 @@ function createPlayer(
   };
 }
 
+function getOrbSideTarget(player: PlayerState) {
+  if (player.facing.x < -0.12) return 1;
+  if (player.facing.x > 0.12) return -1;
+  return Math.sign(player.orbSide) || 1;
+}
+
+function getOrbSideAfterDelta(player: PlayerState, delta: number) {
+  const targetSide = getOrbSideTarget(player);
+  const smoothing = 1 - Math.exp(-delta * 1.8);
+  return player.orbSide + (targetSide - player.orbSide) * smoothing;
+}
+
+function getOrbPosition(player: PlayerState, animationTime = 0) {
+  const horizontalFloat = Math.sin(animationTime * 0.65) * 7;
+  const verticalFloat = Math.sin(animationTime * 1.15) * 4;
+
+  return {
+    x: player.x + player.orbSide * (27 + horizontalFloat),
+    y: player.y - player.radius - 25 + verticalFloat,
+  };
+}
+
+function getBuddyPosition(player: PlayerState, animationTime = 0) {
+  const stepDuration = 1.8;
+  const step = Math.floor(animationTime / stepDuration);
+  const stepProgress = (animationTime / stepDuration) % 1;
+  const easedProgress = stepProgress * stepProgress * (3 - 2 * stepProgress);
+  const seedOffset = player.id === "join" ? 997 : 101;
+  const waypoint = (index: number) => {
+    const seed = Math.sin((index + seedOffset) * 127.1) * 43758.5453;
+    const random = seed - Math.floor(seed);
+    const angle = random * Math.PI * 2;
+    const radius = 18 + random * 14;
+    return {
+      x: Math.cos(angle) * radius,
+      y: 12 + Math.sin(angle) * radius * 0.55,
+    };
+  };
+  const current = waypoint(step);
+  const next = waypoint(step + 1);
+  return {
+    x: player.x + current.x + (next.x - current.x) * easedProgress,
+    y: player.y + current.y + (next.y - current.y) * easedProgress,
+  };
+}
+
+function fireOrbAtNearestEnemy(
+  player: PlayerState,
+  enemies: Enemy[],
+  damageNumbers: DamageNumber[],
+  itemDrops: ConsumableDrop[],
+) {
+  if (!player.orbEquipped || player.isDead || player.orbFireCooldown > 0) {
+    return {
+      player,
+      enemies,
+      score: 0,
+      message: "",
+      beam: null as OrbBeam | null,
+    };
+  }
+
+  const orbPosition = getOrbPosition(player);
+  const target = enemies
+    .filter(
+      (enemy) =>
+        enemy.health > 0 &&
+        Math.hypot(enemy.x - orbPosition.x, enemy.y - orbPosition.y) <=
+          ORB_ATTACK_RANGE,
+    )
+    .sort(
+      (first, second) =>
+        Math.hypot(first.x - orbPosition.x, first.y - orbPosition.y) -
+        Math.hypot(second.x - orbPosition.x, second.y - orbPosition.y),
+    )[0];
+
+  if (!target) {
+    return {
+      player,
+      enemies,
+      score: 0,
+      message: "",
+      beam: null as OrbBeam | null,
+    };
+  }
+
+  const criticalHit =
+    Math.random() * 100 < getBuddyBonus(player.buddyId, "criticalChance");
+  const damage = Math.round(
+    ORB_ATTACK_DAMAGE *
+      (1 + getBuddyBonus(player.buddyId, "attack") / 100) *
+      (criticalHit ? 1.5 : 1),
+  );
+  target.health -= damage;
+  damageNumbers.push({
+    id: Date.now() + Math.random(),
+    x: target.x,
+    y: target.y - target.radius - 12,
+    amount: damage,
+    life: 0.75,
+    target: "enemy",
+  });
+
+  const defeated = target.health <= 0;
+  if (defeated) {
+    itemDrops.push(...makeEnemyDrops(target, itemDrops));
+  }
+
+  return {
+    player: { ...player, orbFireCooldown: ORB_ATTACK_COOLDOWN },
+    enemies: defeated
+      ? enemies.filter((enemy) => enemy.id !== target.id)
+      : enemies,
+    score: defeated ? (target.isBoss ? 50 : 10) : 0,
+    message: defeated ? (target.isBoss ? "Boss defeated!" : "Plant down!") : "",
+    beam: {
+      id: Date.now() + Math.random(),
+      playerId: player.id,
+      orbSkinId: player.orbSkinId,
+      startX: orbPosition.x,
+      startY: orbPosition.y,
+      endX: target.x,
+      endY: target.y,
+      life: ORB_BEAM_DURATION,
+    } satisfies OrbBeam,
+  };
+}
+
 function createInitialGame(
   selectedHero: string,
   selectedSkinColor = "#7dd3fc",
   selectedSkinId = "",
+  orbEquipped = false,
+  orbSkinId = DEFAULT_ORB_SKIN_ID,
+  buddyId = "",
 ): GameState {
   return {
     player: createPlayer(
@@ -657,12 +902,16 @@ function createInitialGame(
       undefined,
       selectedSkinColor,
       selectedSkinId,
+      orbEquipped,
+      orbSkinId,
+      buddyId,
     ),
     joinPlayer: null,
     reviveState: null,
     grenadeAimPreview: null,
     enemies: [],
     bullets: [],
+    orbBeams: [],
     itemDrops: [],
     grenadeProjectiles: [],
     grenadeExplosions: [],
@@ -671,7 +920,9 @@ function createInitialGame(
     playerDamageTimer: 0.45,
     score: 0,
     wave: 1,
+    arenaBackgroundWave: 1,
     waveCountdown: WAVE_BREAK_DURATION,
+    warpTransitionTimer: 0,
     enemiesToSpawn: getWaveEnemyCount(1),
     isRunning: true,
     isPaused: false,
@@ -705,6 +956,9 @@ function applyPlayerAction(
 
   if (action === "dash" && player.dashCooldown <= 0) {
     const dashDirection = normalize(direction);
+    const dashCooldownDuration =
+      DASH_COOLDOWN *
+      (1 - getBuddyBonus(player.buddyId, "dashCooldownReduction") / 100);
     const updatedPlayer = {
       ...player,
       x: clamp(
@@ -718,18 +972,21 @@ function applyPlayerAction(
         ARENA_HEIGHT - player.radius,
       ),
       facing: dashDirection,
-      dashCooldown: DASH_COOLDOWN,
+      dashCooldown: dashCooldownDuration,
     };
     return {
       ...state,
       player: isHost ? updatedPlayer : state.player,
       joinPlayer: isHost ? state.joinPlayer : updatedPlayer,
-      dashCooldown: isHost ? DASH_COOLDOWN : state.dashCooldown,
+      dashCooldown: isHost ? dashCooldownDuration : state.dashCooldown,
     };
   }
 
   if (action === "heal" && heals > 0 && player.health < player.maxHealth) {
-    const healedAmount = Math.min(35, player.maxHealth - player.health);
+    const healPower = Math.round(
+      35 * (1 + getBuddyBonus(player.buddyId, "healingReceived") / 100),
+    );
+    const healedAmount = Math.min(healPower, player.maxHealth - player.health);
     const updatedPlayer = {
       ...player,
       heals: heals - 1,
@@ -767,6 +1024,7 @@ function applyPlayerAction(
         ...state.grenadeProjectiles,
         {
           id: Date.now() + Math.random(),
+          playerId: player.id,
           x: player.x + grenadeDirection.x * (player.radius + 10),
           y: player.y + grenadeDirection.y * (player.radius + 10),
           vx: grenadeDirection.x,
@@ -799,6 +1057,9 @@ export function WildPawGame({
   playerName,
   profilePicture,
   profileBorder,
+  orbEquipped = false,
+  orbSkinId = DEFAULT_ORB_SKIN_ID,
+  buddyId = "",
 }: {
   selectedHero?: string;
   selectedSkinColor?: string;
@@ -811,6 +1072,9 @@ export function WildPawGame({
   playerName?: string;
   profilePicture?: string;
   profileBorder?: string;
+  orbEquipped?: boolean;
+  orbSkinId?: string;
+  buddyId?: string;
 }) {
   const localProfilePicture = isProfilePictureId(profilePicture)
     ? profilePicture
@@ -821,6 +1085,9 @@ export function WildPawGame({
       multiplayerRole === "join" ? DEFAULT_HERO_ID : selectedHero,
       multiplayerRole === "join" ? "#7dd3fc" : selectedSkinColor,
       multiplayerRole === "join" ? "" : selectedSkinId,
+      multiplayerRole === "join" ? false : orbEquipped,
+      multiplayerRole === "join" ? DEFAULT_ORB_SKIN_ID : orbSkinId,
+      multiplayerRole === "join" ? "" : buddyId,
     );
     if (multiplayerRole !== "join") {
       initial.player.name = playerName ?? initial.player.name;
@@ -839,6 +1106,9 @@ export function WildPawGame({
         playerName ?? "Player 2",
         selectedSkinColor,
         selectedSkinId,
+        orbEquipped,
+        orbSkinId,
+        buddyId,
       );
     }
     return initial;
@@ -846,6 +1116,7 @@ export function WildPawGame({
   const [joystick, setJoystick] = useState({ x: 0, y: 0, active: false });
   const [aimDirection, setAimDirection] = useState<Vector>({ x: 1, y: 0 });
   const [earnedCoins, setEarnedCoins] = useState(0);
+  const [earnedXp, setEarnedXp] = useState(0);
   const [isFireHeld, setIsFireHeld] = useState(false);
   const [ghostAnimationTime, setGhostAnimationTime] = useState(0);
   const [selectedWeapon, setSelectedWeapon] = useState<"gun" | "grenade">(
@@ -875,6 +1146,8 @@ export function WildPawGame({
       hero?: string;
       profilePicture?: string;
       profileBorder?: string;
+      orbSkinId?: string;
+      buddyId?: string;
     }[]
   >([]);
   const multiplayerReadinessRef = useRef(multiplayerReadiness);
@@ -934,7 +1207,13 @@ export function WildPawGame({
         : false;
   const localPlayer =
     (localPlayerId === "join" ? game.joinPlayer : game.player) ?? game.player;
+  const vibrationEnabledRef = useRef(true);
+  const vibrationPreferenceLoadedRef = useRef(false);
+  const lastDamageEventIdRef = useRef<number | null>(null);
   const hasDownedPlayer = game.player.isDead || !!game.joinPlayer?.isDead;
+  const hasEquippedOrb =
+    (game.player.orbEquipped && !game.player.isDead) ||
+    (!!game.joinPlayer?.orbEquipped && !game.joinPlayer.isDead);
   const hostAimDirection =
     localPlayerId === "host" ? aimDirection : game.player.facing;
   const joinAimDirection =
@@ -954,7 +1233,171 @@ export function WildPawGame({
       : null;
 
   useEffect(() => {
-    if (!hasDownedPlayer) {
+    let isMounted = true;
+    void getVibrationEnabled().then((enabled) => {
+      if (isMounted) {
+        vibrationEnabledRef.current = enabled;
+        vibrationPreferenceLoadedRef.current = true;
+      }
+    });
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    const playerShotPlayer = createAudioPlayer(playerShotSound);
+    const orbLaserPlayer = createAudioPlayer(orbLaserSound);
+    const grenadeExplosionPlayer = createAudioPlayer(grenadeExplosionSound);
+    playerShotPlayer.volume = soundEffectsVolumeRef.current;
+    orbLaserPlayer.volume = soundEffectsVolumeRef.current * 0.7;
+    grenadeExplosionPlayer.volume = soundEffectsVolumeRef.current;
+    playerShotPlayerRef.current = playerShotPlayer;
+    orbLaserPlayerRef.current = orbLaserPlayer;
+    grenadeExplosionPlayerRef.current = grenadeExplosionPlayer;
+
+    return () => {
+      playerShotPlayer.pause();
+      playerShotPlayer.remove();
+      orbLaserPlayer.pause();
+      orbLaserPlayer.remove();
+      grenadeExplosionPlayer.pause();
+      grenadeExplosionPlayer.remove();
+      playerShotPlayerRef.current = null;
+      orbLaserPlayerRef.current = null;
+      grenadeExplosionPlayerRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    let isMounted = true;
+    const unsubscribe = subscribeToSoundEffectsVolume((volume) => {
+      soundEffectsVolumeRef.current = volume;
+      if (playerShotPlayerRef.current)
+        playerShotPlayerRef.current.volume = volume;
+      if (orbLaserPlayerRef.current) {
+        orbLaserPlayerRef.current.volume = volume * 0.7;
+      }
+      if (grenadeExplosionPlayerRef.current) {
+        grenadeExplosionPlayerRef.current.volume = volume;
+      }
+    });
+    void getSoundEffectsVolume().then((volume) => {
+      if (isMounted) {
+        soundEffectsVolumeRef.current = volume;
+        soundEffectsLoadedRef.current = true;
+        if (playerShotPlayerRef.current) {
+          playerShotPlayerRef.current.volume = volume;
+        }
+        if (orbLaserPlayerRef.current) {
+          orbLaserPlayerRef.current.volume = volume * 0.7;
+        }
+        if (grenadeExplosionPlayerRef.current) {
+          grenadeExplosionPlayerRef.current.volume = volume;
+        }
+      }
+    });
+    return () => {
+      isMounted = false;
+      unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    const bullets = game.bullets;
+    const currentIds = new Set(bullets.map((bullet) => bullet.id));
+    if (knownBulletIdsRef.current === null) {
+      knownBulletIdsRef.current = currentIds;
+      return;
+    }
+
+    const firedByLocalPlayer = bullets.some(
+      (bullet) =>
+        !knownBulletIdsRef.current?.has(bullet.id) &&
+        bullet.playerId === localPlayerId,
+    );
+    knownBulletIdsRef.current = currentIds;
+    if (
+      firedByLocalPlayer &&
+      soundEffectsLoadedRef.current &&
+      soundEffectsVolumeRef.current > 0
+    ) {
+      replaySoundEffect(playerShotPlayerRef.current);
+    }
+  }, [game.bullets, localPlayerId]);
+
+  useEffect(() => {
+    const beams = game.orbBeams;
+    const currentIds = new Set(beams.map((beam) => beam.id));
+    if (knownOrbBeamIdsRef.current === null) {
+      knownOrbBeamIdsRef.current = currentIds;
+      return;
+    }
+
+    const firedByLocalOrb = beams.some(
+      (beam) =>
+        !knownOrbBeamIdsRef.current?.has(beam.id) &&
+        beam.playerId === localPlayerId,
+    );
+    knownOrbBeamIdsRef.current = currentIds;
+    if (
+      firedByLocalOrb &&
+      soundEffectsLoadedRef.current &&
+      soundEffectsVolumeRef.current > 0
+    ) {
+      replaySoundEffect(orbLaserPlayerRef.current);
+    }
+  }, [game.orbBeams, localPlayerId]);
+
+  useEffect(() => {
+    const explosions = game.grenadeExplosions;
+    const currentIds = new Set(explosions.map((explosion) => explosion.id));
+    if (knownGrenadeExplosionIdsRef.current === null) {
+      knownGrenadeExplosionIdsRef.current = currentIds;
+      return;
+    }
+
+    const explodedByLocalPlayer = explosions.some(
+      (explosion) =>
+        !knownGrenadeExplosionIdsRef.current?.has(explosion.id) &&
+        explosion.playerId === localPlayerId,
+    );
+    knownGrenadeExplosionIdsRef.current = currentIds;
+    if (
+      explodedByLocalPlayer &&
+      soundEffectsLoadedRef.current &&
+      soundEffectsVolumeRef.current > 0
+    ) {
+      replaySoundEffect(grenadeExplosionPlayerRef.current);
+    }
+  }, [game.grenadeExplosions, localPlayerId]);
+
+  useEffect(() => {
+    const localDamageEvent = [...game.damageNumbers]
+      .reverse()
+      .find(
+        (damageNumber) =>
+          damageNumber.target === "player" &&
+          damageNumber.playerId === localPlayerId,
+      );
+
+    if (
+      !localDamageEvent ||
+      localDamageEvent.id === lastDamageEventIdRef.current
+    ) {
+      return;
+    }
+
+    lastDamageEventIdRef.current = localDamageEvent.id;
+    if (vibrationPreferenceLoadedRef.current && vibrationEnabledRef.current) {
+      void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(
+        () => undefined,
+      );
+    }
+  }, [game.damageNumbers, localPlayerId]);
+
+  useEffect(() => {
+    if (!hasDownedPlayer && !hasEquippedOrb && !localPlayer.buddyId) {
       return;
     }
 
@@ -970,7 +1413,7 @@ export function WildPawGame({
 
     animationFrame = requestAnimationFrame(animateGhost);
     return () => cancelAnimationFrame(animationFrame);
-  }, [hasDownedPlayer]);
+  }, [hasDownedPlayer, hasEquippedOrb, localPlayer.buddyId]);
 
   useEffect(() => {
     if (Platform.OS !== "android" || !game.isRunning) {
@@ -1081,8 +1524,23 @@ export function WildPawGame({
     reviveTargetId: null,
   });
   const coinsAwardedRef = useRef(false);
+  const xpAwardedRef = useRef(false);
   const multiplayerSocketRef = useRef<MultiplayerSocket | null>(null);
   const gameRef = useRef(game);
+  const soundEffectsVolumeRef = useRef(0.75);
+  const soundEffectsLoadedRef = useRef(false);
+  const knownBulletIdsRef = useRef<Set<number> | null>(null);
+  const knownOrbBeamIdsRef = useRef<Set<number> | null>(null);
+  const knownGrenadeExplosionIdsRef = useRef<Set<number> | null>(null);
+  const playerShotPlayerRef = useRef<ReturnType<
+    typeof createAudioPlayer
+  > | null>(null);
+  const orbLaserPlayerRef = useRef<ReturnType<typeof createAudioPlayer> | null>(
+    null,
+  );
+  const grenadeExplosionPlayerRef = useRef<ReturnType<
+    typeof createAudioPlayer
+  > | null>(null);
   const grenadePreview = game.grenadeAimPreview;
   const grenadePreviewPlayer = grenadePreview
     ? grenadePreview.playerId === "join"
@@ -1178,12 +1636,17 @@ export function WildPawGame({
 
   const resetGameLocally = useCallback(() => {
     coinsAwardedRef.current = false;
+    xpAwardedRef.current = false;
     setEarnedCoins(0);
+    setEarnedXp(0);
     setGame((previous) => {
       const restarted = createInitialGame(
         selectedHero,
         selectedSkinColor,
         selectedSkinId,
+        orbEquipped,
+        orbSkinId,
+        buddyId,
       );
       restarted.player.name = playerName ?? restarted.player.name;
       if (isLocalMultiplayer && previous.joinPlayer) {
@@ -1195,6 +1658,9 @@ export function WildPawGame({
           previous.joinPlayer.name,
           previous.joinPlayer.skinColor,
           previous.joinPlayer.skinId,
+          previous.joinPlayer.orbEquipped,
+          previous.joinPlayer.orbSkinId,
+          previous.joinPlayer.buddyId,
         );
       }
       return restarted;
@@ -1215,6 +1681,9 @@ export function WildPawGame({
     selectedHero,
     selectedSkinColor,
     selectedSkinId,
+    orbEquipped,
+    orbSkinId,
+    buddyId,
   ]);
 
   useEffect(() => {
@@ -1248,6 +1717,9 @@ export function WildPawGame({
           skinColor: selectedSkinColor,
           profilePicture: localProfilePicture,
           profileBorder: localProfileBorder,
+          orbEquipped,
+          orbSkinId,
+          buddyId,
           name:
             playerName ??
             (multiplayerRole === "host" ? "Player 1" : "Player 2"),
@@ -1279,6 +1751,9 @@ export function WildPawGame({
               name?: string;
               profilePicture?: string;
               profileBorder?: string;
+              orbEquipped?: boolean;
+              orbSkinId?: string;
+              buddyId?: string;
             }[];
             gameState?: GameState | null;
           };
@@ -1342,6 +1817,14 @@ export function WildPawGame({
                           remotePlayer.skinColor ??
                           nextState.joinPlayer.skinColor,
                         name: remotePlayer.name ?? nextState.joinPlayer.name,
+                        orbEquipped:
+                          remotePlayer.orbEquipped ??
+                          nextState.joinPlayer.orbEquipped,
+                        orbSkinId:
+                          remotePlayer.orbSkinId ??
+                          nextState.joinPlayer.orbSkinId,
+                        buddyId:
+                          remotePlayer.buddyId ?? nextState.joinPlayer.buddyId,
                       }
                     : createPlayer(
                         "join",
@@ -1351,6 +1834,9 @@ export function WildPawGame({
                         remotePlayer.name ?? "Player 2",
                         remotePlayer.skinColor ?? "#f9a8d4",
                         remotePlayer.skinId ?? "",
+                        remotePlayer.orbEquipped ?? false,
+                        remotePlayer.orbSkinId ?? DEFAULT_ORB_SKIN_ID,
+                        remotePlayer.buddyId ?? "",
                       ),
                 };
               }
@@ -1365,6 +1851,11 @@ export function WildPawGame({
                       hostPlayer.skinColor ?? nextState.player.skinColor,
                     name:
                       playerName ?? hostPlayer.name ?? nextState.player.name,
+                    orbEquipped:
+                      hostPlayer.orbEquipped ?? nextState.player.orbEquipped,
+                    orbSkinId:
+                      hostPlayer.orbSkinId ?? nextState.player.orbSkinId,
+                    buddyId: hostPlayer.buddyId ?? nextState.player.buddyId,
                   },
                 };
               }
@@ -1379,6 +1870,9 @@ export function WildPawGame({
                       skinColor:
                         hostPlayer.skinColor ?? nextState.player.skinColor,
                       name: hostPlayer.name ?? nextState.player.name,
+                      orbSkinId:
+                        hostPlayer.orbSkinId ?? nextState.player.orbSkinId,
+                      buddyId: hostPlayer.buddyId ?? nextState.player.buddyId,
                     },
                   };
                 }
@@ -1394,6 +1888,9 @@ export function WildPawGame({
                       playerName ?? "Player 2",
                       selectedSkinColor,
                       selectedSkinId,
+                      orbEquipped,
+                      orbSkinId,
+                      buddyId,
                     ),
                 };
               }
@@ -1510,6 +2007,9 @@ export function WildPawGame({
     selectedHero,
     selectedSkinColor,
     selectedSkinId,
+    orbEquipped,
+    orbSkinId,
+    buddyId,
     skipWaveCooldown,
     resetGameLocally,
   ]);
@@ -1619,7 +2119,10 @@ export function WildPawGame({
 
     coinsAwardedRef.current = true;
     const pointsPerCoin = Math.max(1, coinRewards.pointsPerCoin);
-    const reward = Math.floor(game.score / pointsPerCoin);
+    const reward = Math.floor(
+      (game.score / pointsPerCoin) *
+        (1 + getBuddyBonus(localPlayer.buddyId, "coinGain") / 100),
+    );
     if (reward <= 0) {
       return;
     }
@@ -1633,6 +2136,39 @@ export function WildPawGame({
     game.score,
     isLocalMultiplayer,
     multiplayerRole,
+    localPlayer.buddyId,
+  ]);
+
+  useEffect(() => {
+    if (
+      isMultiplayerLobby ||
+      game.isRunning ||
+      game.isPaused ||
+      xpAwardedRef.current
+    ) {
+      return;
+    }
+
+    xpAwardedRef.current = true;
+    const reward = Math.max(
+      0,
+      Math.floor(
+        game.score * (1 + getBuddyBonus(localPlayer.buddyId, "xpGain") / 100),
+      ),
+    );
+    if (reward === 0) {
+      return;
+    }
+
+    void awardPlayerXp(reward)
+      .then(() => setEarnedXp(reward))
+      .catch(() => setEarnedXp(0));
+  }, [
+    game.isPaused,
+    game.isRunning,
+    game.score,
+    isMultiplayerLobby,
+    localPlayer.buddyId,
   ]);
 
   const togglePause = useCallback(() => {
@@ -1807,7 +2343,16 @@ export function WildPawGame({
           }
 
           const movement = normalize(movementRef.current);
-          if (movement.x === 0 && movement.y === 0) {
+          const facing = normalize(aimRef.current);
+          const targetOrbSide =
+            facing.x < -0.12 ? 1 : facing.x > 0.12 ? -1 : player.orbSide;
+          if (
+            movementRef.current.x === 0 &&
+            movementRef.current.y === 0 &&
+            Math.hypot(facing.x - player.facing.x, facing.y - player.facing.y) <
+              0.01 &&
+            Math.abs(targetOrbSide - player.orbSide) < 0.01
+          ) {
             return previous;
           }
 
@@ -1819,6 +2364,7 @@ export function WildPawGame({
               speedBoostTimer: Math.max(0, player.speedBoostTimer - delta),
               rapidFireTimer: Math.max(0, player.rapidFireTimer - delta),
               highDamageTimer: Math.max(0, player.highDamageTimer - delta),
+              orbFireCooldown: Math.max(0, player.orbFireCooldown - delta),
               x: clamp(
                 player.x + movement.x * effectiveSpeed * delta,
                 player.radius,
@@ -1829,7 +2375,8 @@ export function WildPawGame({
                 player.radius,
                 ARENA_HEIGHT - player.radius,
               ),
-              facing: normalize(aimRef.current),
+              facing,
+              orbSide: getOrbSideAfterDelta({ ...player, facing }, delta),
             },
           };
         });
@@ -1851,6 +2398,7 @@ export function WildPawGame({
           speedBoostTimer: Math.max(0, previous.player.speedBoostTimer - delta),
           rapidFireTimer: Math.max(0, previous.player.rapidFireTimer - delta),
           highDamageTimer: Math.max(0, previous.player.highDamageTimer - delta),
+          orbFireCooldown: Math.max(0, previous.player.orbFireCooldown - delta),
         };
         let joinPlayer = previous.joinPlayer
           ? {
@@ -1866,6 +2414,10 @@ export function WildPawGame({
               highDamageTimer: Math.max(
                 0,
                 previous.joinPlayer.highDamageTimer - delta,
+              ),
+              orbFireCooldown: Math.max(
+                0,
+                previous.joinPlayer.orbFireCooldown - delta,
               ),
             }
           : null;
@@ -1886,6 +2438,7 @@ export function WildPawGame({
             ARENA_HEIGHT - player.radius,
           );
           player.facing = normalize(aimRef.current);
+          player.orbSide = getOrbSideAfterDelta(player, delta);
         }
         if (joinPlayer && !joinPlayer.isDead && !joinIsReviving) {
           const guestMove = normalize(remoteInputRef.current.movement);
@@ -1901,6 +2454,7 @@ export function WildPawGame({
             ARENA_HEIGHT - joinPlayer.radius,
           );
           joinPlayer.facing = normalize(remoteInputRef.current.aim);
+          joinPlayer.orbSide = getOrbSideAfterDelta(joinPlayer, delta);
         }
 
         const grenadeAimPreview =
@@ -1924,7 +2478,19 @@ export function WildPawGame({
               : null;
 
         if (previous.waveCountdown > 0) {
-          const waveCountdown = Math.max(0, previous.waveCountdown - delta);
+          const warpTransitionTimer = Math.max(
+            0,
+            previous.warpTransitionTimer - delta,
+          );
+          const arenaBackgroundWave =
+            previous.warpTransitionTimer > WARP_TRANSITION_DURATION / 2 &&
+            warpTransitionTimer <= WARP_TRANSITION_DURATION / 2
+              ? previous.wave
+              : previous.arenaBackgroundWave;
+          const waveCountdown =
+            previous.warpTransitionTimer > 0
+              ? previous.waveCountdown
+              : Math.max(0, previous.waveCountdown - delta);
           let bullets = previous.bullets
             .map((bullet) => ({
               ...bullet,
@@ -1952,6 +2518,7 @@ export function WildPawGame({
               ...bullets,
               {
                 id: Date.now() + Math.random(),
+                playerId: player.id,
                 x: player.x + direction.x * (player.radius + 10),
                 y: player.y + direction.y * (player.radius + 10),
                 radius: 5,
@@ -1980,6 +2547,7 @@ export function WildPawGame({
                 ...bullets,
                 {
                   id: Date.now() + Math.random(),
+                  playerId: joinPlayer.id,
                   x: joinPlayer.x + direction.x * (joinPlayer.radius + 10),
                   y: joinPlayer.y + direction.y * (joinPlayer.radius + 10),
                   radius: 5,
@@ -2035,6 +2603,9 @@ export function WildPawGame({
 
           return {
             ...previous,
+            orbBeams: previous.orbBeams
+              .map((beam) => ({ ...beam, life: beam.life - delta }))
+              .filter((beam) => beam.life > 0),
             grenadeAimPreview,
             player: {
               ...player,
@@ -2049,15 +2620,19 @@ export function WildPawGame({
             grenadeProjectiles: grenadeUpdate.projectiles,
             grenadeExplosions,
             damageNumbers,
+            arenaBackgroundWave,
             waveCountdown,
+            warpTransitionTimer,
             fireCooldown,
             dashCooldown: Math.max(0, player.dashCooldown - delta),
             pendingPlayerDamage: 0,
             playerDamageTimer: Math.max(0, previous.playerDamageTimer - delta),
             message:
-              waveCountdown > 0
-                ? `Wave ${previous.wave} starts in ${Math.ceil(waveCountdown)}`
-                : `Wave ${previous.wave} started!`,
+              previous.warpTransitionTimer > 0
+                ? `Warping to another location · ${Math.ceil(warpTransitionTimer)}`
+                : waveCountdown > 0
+                  ? `Wave ${previous.wave} starts in ${Math.ceil(waveCountdown)}`
+                  : `Wave ${previous.wave} started!`,
           };
         }
 
@@ -2115,6 +2690,7 @@ export function WildPawGame({
             ...bullets,
             {
               id: Date.now() + Math.random(),
+              playerId: player.id,
               x: player.x + direction.x * (player.radius + 10),
               y: player.y + direction.y * (player.radius + 10),
               radius: 5,
@@ -2143,6 +2719,7 @@ export function WildPawGame({
               ...bullets,
               {
                 id: Date.now() + Math.random(),
+                playerId: joinPlayer.id,
                 x: joinPlayer.x + direction.x * (joinPlayer.radius + 10),
                 y: joinPlayer.y + direction.y * (joinPlayer.radius + 10),
                 radius: 5,
@@ -2165,6 +2742,10 @@ export function WildPawGame({
         let spawnCooldown = previous.spawnCooldown - delta;
         let wave = previous.wave;
         let waveCountdown = previous.waveCountdown;
+        let warpTransitionTimer = Math.max(
+          0,
+          previous.warpTransitionTimer - delta,
+        );
         let enemiesToSpawn = previous.enemiesToSpawn;
         let bossSpawnedAtWave = previous.bossSpawnedAtWave;
         let message = previous.message;
@@ -2177,6 +2758,9 @@ export function WildPawGame({
             life: damageNumber.life - delta,
           }))
           .filter((damageNumber) => damageNumber.life > 0);
+        let orbBeams = previous.orbBeams
+          .map((beam) => ({ ...beam, life: beam.life - delta }))
+          .filter((beam) => beam.life > 0);
         let itemDrops = [...previous.itemDrops];
         let grenadeExplosions = previous.grenadeExplosions
           .map((explosion) => ({ ...explosion, life: explosion.life - delta }))
@@ -2245,6 +2829,32 @@ export function WildPawGame({
         damageNumbers.push(...grenadeUpdate.damageNumbers);
         score += grenadeUpdate.score;
 
+        const hostOrbAttack = fireOrbAtNearestEnemy(
+          player,
+          enemies,
+          damageNumbers,
+          itemDrops,
+        );
+        player = hostOrbAttack.player;
+        enemies = hostOrbAttack.enemies;
+        score += hostOrbAttack.score;
+        if (hostOrbAttack.message) message = hostOrbAttack.message;
+        if (hostOrbAttack.beam) orbBeams.push(hostOrbAttack.beam);
+
+        if (joinPlayer) {
+          const guestOrbAttack = fireOrbAtNearestEnemy(
+            joinPlayer,
+            enemies,
+            damageNumbers,
+            itemDrops,
+          );
+          joinPlayer = guestOrbAttack.player;
+          enemies = guestOrbAttack.enemies;
+          score += guestOrbAttack.score;
+          if (guestOrbAttack.message) message = guestOrbAttack.message;
+          if (guestOrbAttack.beam) orbBeams.push(guestOrbAttack.beam);
+        }
+
         if (wave > 1 && wave % 3 === 0 && bossSpawnedAtWave !== wave) {
           const bossEnemy = makeEnemy(wave, Date.now() + Math.random());
           const bossBoost = bossEnemy.isBoss ? 1.5 : 1;
@@ -2291,7 +2901,15 @@ export function WildPawGame({
             const dy = currentPlayer.y - enemy.y;
             const hitRange = currentPlayer.radius + enemy.radius + 4;
             if (dx * dx + dy * dy < hitRange * hitRange) {
-              damageTaken += enemy.damage * delta;
+              if (
+                Math.random() * 100 >=
+                getBuddyBonus(currentPlayer.buddyId, "dodgeChance")
+              ) {
+                damageTaken +=
+                  enemy.damage *
+                  (1 - getBuddyBonus(currentPlayer.buddyId, "defense") / 100) *
+                  delta;
+              }
             }
           }
           let health = clamp(
@@ -2316,6 +2934,7 @@ export function WildPawGame({
               amount: Math.max(1, Math.round(pendingDamage)),
               life: 0.8,
               target: "player",
+              playerId: currentPlayer.id,
             });
             pendingDamage = 0;
             damageTimer = 0.45;
@@ -2398,7 +3017,14 @@ export function WildPawGame({
             if (progress >= REVIVE_DURATION) {
               const revivedPlayer = {
                 ...target,
-                health: REVIVE_HEALTH,
+                health: Math.min(
+                  target.maxHealth,
+                  Math.round(
+                    REVIVE_HEALTH *
+                      (1 +
+                        getBuddyBonus(target.buddyId, "healingReceived") / 100),
+                  ),
+                ),
                 isDead: false,
                 pendingDamage: 0,
                 damageTimer: 0.45,
@@ -2429,12 +3055,16 @@ export function WildPawGame({
         if (enemies.length === 0 && enemiesToSpawn === 0) {
           wave += 1;
           waveCountdown = WAVE_BREAK_DURATION;
+          const isNewArena = (wave - 1) % WAVES_PER_ARENA === 0;
+          warpTransitionTimer = isNewArena ? WARP_TRANSITION_DURATION : 0;
           enemiesToSpawn = getWaveEnemyCount(wave);
           bullets = [];
           spawnCooldown = 0;
           bossHealth = 0;
           bossHealthMax = 0;
-          message = `Wave ${wave - 1} cleared! Prepare for wave ${wave}`;
+          message = isNewArena
+            ? "Warping to another location"
+            : `Wave ${wave - 1} cleared! Prepare for wave ${wave}`;
         }
 
         const nextState: GameState = {
@@ -2445,6 +3075,7 @@ export function WildPawGame({
           reviveState,
           enemies,
           bullets,
+          orbBeams,
           itemDrops,
           grenades: player.grenades,
           heals: player.heals,
@@ -2456,6 +3087,7 @@ export function WildPawGame({
           score,
           wave,
           waveCountdown,
+          warpTransitionTimer,
           enemiesToSpawn,
           isRunning: !player.isDead || (!!joinPlayer && !joinPlayer.isDead),
           message:
@@ -2722,7 +3354,7 @@ export function WildPawGame({
       <SafeAreaView style={styles.safeArea} edges={[]}>
         <View style={styles.container}>
           <Image
-            source={arenaBackground}
+            source={arenaBackgrounds[0]}
             style={styles.arenaBackground}
             contentFit="cover"
             pointerEvents="none"
@@ -2850,65 +3482,73 @@ export function WildPawGame({
     <SafeAreaView style={styles.safeArea} edges={[]}>
       <View style={styles.container}>
         <Image
-          source={arenaBackground}
+          source={getArenaBackground(game.arenaBackgroundWave)}
           style={styles.arenaBackground}
           contentFit="cover"
           pointerEvents="none"
         />
         <View style={styles.arenaStage}>
           <View style={[styles.arena, { transform: [{ scale: arenaScale }] }]}>
-            {game.waveCountdown > 0 && game.isRunning && (
-              <View pointerEvents="box-none" style={styles.waveCountdownGroup}>
-                <Text pointerEvents="none" style={styles.waveCountdownOverlay}>
-                  WAVE {game.wave} · STARTS IN {Math.ceil(game.waveCountdown)}
-                </Text>
-
-                <GestureDetector gesture={waveCountdownGesture}>
-                  <View
-                    accessible
-                    accessibilityRole="button"
-                    accessibilityState={{
-                      disabled:
-                        isLocalPlayerReviving ||
-                        localPlayer.isDead ||
-                        (multiplayerRole === "host" && !canHostSkipWave),
-                    }}
-                    accessibilityLabel={
-                      multiplayerRole === "host"
-                        ? canHostSkipWave
-                          ? "Start wave"
-                          : "Waiting for player to get ready"
-                        : multiplayerRole === "join"
-                          ? "Mark ready for next wave"
-                          : "Start wave"
-                    }
-                    pointerEvents="auto"
-                    style={[
-                      styles.waveCountdownSkipButton,
-                      (isLocalPlayerReviving ||
-                        localPlayer.isDead ||
-                        (multiplayerRole === "host" && !canHostSkipWave)) &&
-                        styles.waveCountdownSkipButtonDisabled,
-                    ]}
+            {game.waveCountdown > 0 &&
+              game.warpTransitionTimer <= 0 &&
+              game.isRunning && (
+                <View
+                  pointerEvents="box-none"
+                  style={styles.waveCountdownGroup}
+                >
+                  <Text
+                    pointerEvents="none"
+                    style={styles.waveCountdownOverlay}
                   >
-                    <Text
-                      pointerEvents="none"
-                      style={styles.waveCountdownSkipText}
+                    WAVE {game.wave} · STARTS IN {Math.ceil(game.waveCountdown)}
+                  </Text>
+
+                  <GestureDetector gesture={waveCountdownGesture}>
+                    <View
+                      accessible
+                      accessibilityRole="button"
+                      accessibilityState={{
+                        disabled:
+                          isLocalPlayerReviving ||
+                          localPlayer.isDead ||
+                          (multiplayerRole === "host" && !canHostSkipWave),
+                      }}
+                      accessibilityLabel={
+                        multiplayerRole === "host"
+                          ? canHostSkipWave
+                            ? "Start wave"
+                            : "Waiting for player to get ready"
+                          : multiplayerRole === "join"
+                            ? "Mark ready for next wave"
+                            : "Start wave"
+                      }
+                      pointerEvents="auto"
+                      style={[
+                        styles.waveCountdownSkipButton,
+                        (isLocalPlayerReviving ||
+                          localPlayer.isDead ||
+                          (multiplayerRole === "host" && !canHostSkipWave)) &&
+                          styles.waveCountdownSkipButtonDisabled,
+                      ]}
                     >
-                      {multiplayerRole === "host"
-                        ? canHostSkipWave
-                          ? "START WAVE!"
-                          : "WAITING FOR READY"
-                        : multiplayerRole === "join"
-                          ? multiplayerReadiness.join
-                            ? "READY!"
-                            : "READY"
-                          : "START WAVE!"}
-                    </Text>
-                  </View>
-                </GestureDetector>
-              </View>
-            )}
+                      <Text
+                        pointerEvents="none"
+                        style={styles.waveCountdownSkipText}
+                      >
+                        {multiplayerRole === "host"
+                          ? canHostSkipWave
+                            ? "START WAVE!"
+                            : "WAITING FOR READY"
+                          : multiplayerRole === "join"
+                            ? multiplayerReadiness.join
+                              ? "READY!"
+                              : "READY"
+                            : "START WAVE!"}
+                      </Text>
+                    </View>
+                  </GestureDetector>
+                </View>
+              )}
 
             {grenadePreview && grenadePreviewPlayer && grenadeLanding && (
               <View pointerEvents="none">
@@ -3171,6 +3811,73 @@ export function WildPawGame({
               );
             })}
 
+            {game.orbBeams.map((beam) => {
+              const distance = Math.hypot(
+                beam.endX - beam.startX,
+                beam.endY - beam.startY,
+              );
+              const angle = Math.atan2(
+                beam.endY - beam.startY,
+                beam.endX - beam.startX,
+              );
+              return (
+                <Image
+                  key={beam.id}
+                  pointerEvents="none"
+                  source={getOrbSkin(beam.orbSkinId).laserImage}
+                  contentFit="fill"
+                  style={[
+                    styles.orbLaser,
+                    {
+                      left: (beam.startX + beam.endX) / 2 - distance / 2,
+                      top: (beam.startY + beam.endY) / 2 - 7,
+                      width: distance,
+                      opacity: beam.life / ORB_BEAM_DURATION,
+                      transform: [{ rotate: `${angle}rad` }],
+                    },
+                  ]}
+                />
+              );
+            })}
+
+            {game.player.orbEquipped && !game.player.isDead && (
+              <Image
+                pointerEvents="none"
+                source={getOrbSkin(game.player.orbSkinId).orbImage}
+                contentFit="contain"
+                style={[
+                  styles.orbCompanion,
+                  {
+                    left:
+                      getOrbPosition(game.player, ghostAnimationTime).x - 16,
+                    top: getOrbPosition(game.player, ghostAnimationTime).y - 16,
+                  },
+                ]}
+              />
+            )}
+
+            {game.player.buddyId && !game.player.isDead && (
+              <Image
+                pointerEvents="none"
+                source={getBuddy(game.player.buddyId)?.source}
+                contentFit="contain"
+                style={[
+                  styles.buddyCompanion,
+                  {
+                    left:
+                      getBuddyPosition(game.player, ghostAnimationTime).x - 16,
+                    top:
+                      getBuddyPosition(game.player, ghostAnimationTime).y - 16,
+                    transform: [
+                      {
+                        translateY: Math.sin(ghostAnimationTime * 8) * 1.5,
+                      },
+                    ],
+                  },
+                ]}
+              />
+            )}
+
             <View
               style={[
                 styles.player,
@@ -3246,45 +3953,89 @@ export function WildPawGame({
             )}
 
             {game.joinPlayer && (
-              <View
-                style={[
-                  styles.player,
-                  {
-                    left: game.joinPlayer.x - game.joinPlayer.radius,
-                    top: game.joinPlayer.y - game.joinPlayer.radius,
-                    width: game.joinPlayer.radius * 2,
-                    height: game.joinPlayer.radius * 2,
-                    shadowColor: game.joinPlayer.skinColor,
-                    opacity: game.joinPlayer.isDead ? 0.45 : 1,
-                  },
-                ]}
-              >
-                {isLocalMultiplayer && (
-                  <PlayerBuffIndicators player={game.joinPlayer} />
+              <>
+                {game.joinPlayer.orbEquipped && !game.joinPlayer.isDead && (
+                  <Image
+                    pointerEvents="none"
+                    source={getOrbSkin(game.joinPlayer.orbSkinId).orbImage}
+                    contentFit="contain"
+                    style={[
+                      styles.orbCompanion,
+                      {
+                        left:
+                          getOrbPosition(game.joinPlayer, ghostAnimationTime)
+                            .x - 16,
+                        top:
+                          getOrbPosition(game.joinPlayer, ghostAnimationTime)
+                            .y - 16,
+                      },
+                    ]}
+                  />
                 )}
-                <Image
-                  source={getSkinImage(
-                    game.joinPlayer.hero,
-                    game.joinPlayer.skinId,
-                  )}
-                  style={styles.playerImage}
-                  contentFit="contain"
-                />
+                {game.joinPlayer.buddyId && !game.joinPlayer.isDead && (
+                  <Image
+                    pointerEvents="none"
+                    source={getBuddy(game.joinPlayer.buddyId)?.source}
+                    contentFit="contain"
+                    style={[
+                      styles.buddyCompanion,
+                      {
+                        left:
+                          getBuddyPosition(game.joinPlayer, ghostAnimationTime)
+                            .x - 16,
+                        top:
+                          getBuddyPosition(game.joinPlayer, ghostAnimationTime)
+                            .y - 16,
+                        transform: [
+                          {
+                            translateY:
+                              Math.sin(ghostAnimationTime * 8 + 1) * 1.5,
+                          },
+                        ],
+                      },
+                    ]}
+                  />
+                )}
                 <View
-                  pointerEvents="none"
                   style={[
-                    styles.playerAimIndicator,
+                    styles.player,
                     {
-                      transform: [
-                        {
-                          rotate: `${Math.atan2(joinAimDirection.y, joinAimDirection.x)}rad`,
-                        },
-                      ],
+                      left: game.joinPlayer.x - game.joinPlayer.radius,
+                      top: game.joinPlayer.y - game.joinPlayer.radius,
+                      width: game.joinPlayer.radius * 2,
+                      height: game.joinPlayer.radius * 2,
+                      shadowColor: game.joinPlayer.skinColor,
+                      opacity: game.joinPlayer.isDead ? 0.45 : 1,
                     },
                   ]}
-                />
-                <View style={styles.playerFacing} />
-              </View>
+                >
+                  {isLocalMultiplayer && (
+                    <PlayerBuffIndicators player={game.joinPlayer} />
+                  )}
+                  <Image
+                    source={getSkinImage(
+                      game.joinPlayer.hero,
+                      game.joinPlayer.skinId,
+                    )}
+                    style={styles.playerImage}
+                    contentFit="contain"
+                  />
+                  <View
+                    pointerEvents="none"
+                    style={[
+                      styles.playerAimIndicator,
+                      {
+                        transform: [
+                          {
+                            rotate: `${Math.atan2(joinAimDirection.y, joinAimDirection.x)}rad`,
+                          },
+                        ],
+                      },
+                    ]}
+                  />
+                  <View style={styles.playerFacing} />
+                </View>
+              </>
             )}
             {game.joinPlayer?.isDead && (
               <Image
@@ -3473,6 +4224,17 @@ export function WildPawGame({
               </View>
             )}
 
+            {!game.isPaused && earnedXp > 0 && (
+              <View
+                accessible
+                accessibilityLabel={`${earnedXp} XP earned`}
+                style={styles.gameOverStat}
+              >
+                <Text style={styles.gameOverXpIcon}>XP</Text>
+                <Text style={styles.overlayText}>{earnedXp}</Text>
+              </View>
+            )}
+
             {game.isPaused ? (
               <View style={styles.overlayActions}>
                 <Pressable
@@ -3640,6 +4402,9 @@ export function WildPawGame({
             <View style={styles.scoreWaveStack}>
               <Text style={styles.hudText}>Score: {game.score}</Text>
               <Text style={styles.hudText}>Wave {game.wave}</Text>
+              <Text style={styles.hudText}>
+                Enemies remaining: {getEnemiesRemainingInWave(game)}
+              </Text>
             </View>
             {isLocalMultiplayer && (
               <View style={styles.localMultiplayerBadge}>
@@ -3913,6 +4678,30 @@ export function WildPawGame({
               )}
             </View>
           )}
+        {game.warpTransitionTimer > 0 && game.isRunning && (
+          <View
+            pointerEvents="none"
+            style={[
+              styles.warpTransitionOverlay,
+              { opacity: getWarpFadeOpacity(game.warpTransitionTimer) },
+            ]}
+          />
+        )}
+        {game.warpTransitionTimer > 0 && game.isRunning && (
+          <View
+            pointerEvents="none"
+            accessibilityLiveRegion="polite"
+            accessibilityLabel={`Warping to another location, ${Math.ceil(game.warpTransitionTimer)} seconds`}
+            style={styles.warpTransitionMessage}
+          >
+            <Text style={styles.warpTransitionTitle}>
+              WARPING TO ANOTHER LOCATION
+            </Text>
+            <Text style={styles.warpTransitionCountdown}>
+              {Math.ceil(game.warpTransitionTimer)}
+            </Text>
+          </View>
+        )}
       </View>
     </SafeAreaView>
   );
@@ -4424,6 +5213,23 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 0 },
     overflow: "visible",
   },
+  orbCompanion: {
+    position: "absolute",
+    width: 32,
+    height: 32,
+    zIndex: 2,
+  },
+  buddyCompanion: {
+    position: "absolute",
+    width: 32,
+    height: 32,
+    zIndex: 2,
+  },
+  orbLaser: {
+    position: "absolute",
+    height: 14,
+    zIndex: 1,
+  },
   playerImage: {
     width: "100%",
     height: "100%",
@@ -4641,6 +5447,37 @@ const styles = StyleSheet.create({
     textShadowOffset: { width: 0, height: 2 },
     textShadowRadius: 5,
   },
+  warpTransitionOverlay: {
+    ...StyleSheet.absoluteFill,
+    backgroundColor: "#020617",
+    zIndex: 100,
+  },
+  warpTransitionMessage: {
+    ...StyleSheet.absoluteFill,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 24,
+    zIndex: 101,
+  },
+  warpTransitionTitle: {
+    color: "#e0f2fe",
+    fontSize: 28,
+    fontWeight: "900",
+    letterSpacing: 2,
+    textAlign: "center",
+    textShadowColor: "rgba(0, 0, 0, 0.95)",
+    textShadowOffset: { width: 0, height: 2 },
+    textShadowRadius: 8,
+  },
+  warpTransitionCountdown: {
+    marginTop: 10,
+    color: "#ffffff",
+    fontSize: 48,
+    fontWeight: "900",
+    textShadowColor: "rgba(0, 0, 0, 0.95)",
+    textShadowOffset: { width: 0, height: 2 },
+    textShadowRadius: 8,
+  },
   waveCountdownGroup: {
     position: "absolute",
     top: 10,
@@ -4830,6 +5667,13 @@ const styles = StyleSheet.create({
   gameOverStatIcon: {
     width: 30,
     height: 30,
+  },
+  gameOverXpIcon: {
+    width: 30,
+    color: "#fde68a",
+    fontSize: 13,
+    fontWeight: "900",
+    textAlign: "center",
   },
   overlayActions: {
     flexDirection: "row",
