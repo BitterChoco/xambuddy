@@ -1,7 +1,7 @@
 import {
-    getRemoteAssetSource,
-    hasRemoteAsset,
-    readRemoteAssetJson,
+  getRemoteAssetSource,
+  hasRemoteAsset,
+  readRemoteAssetJson,
 } from "@/services/remote-assets";
 
 export type BundledImage =
@@ -87,7 +87,7 @@ export const PROFILE_PICTURE_CHOICES: (ProfilePictureRecord & {
 export const PROFILE_PICTURES: Record<string, BundledImage> = {};
 export let DEFAULT_PROFILE_PICTURE = "";
 export const PROFILE_BORDERS: ProfileBorderRecord[] = [];
-export let DEFAULT_PROFILE_BORDER = "";
+export let DEFAULT_PROFILE_BORDER = "none";
 export const HEROES: HeroRecord[] = [];
 export let DEFAULT_HERO_ID = "dog";
 
@@ -136,11 +136,7 @@ export async function initializeRemoteGameCatalogs() {
         : undefined,
     })),
   );
-  DEFAULT_PROFILE_BORDER = PROFILE_BORDERS.some(
-    (border) => border.id === borders.defaultId,
-  )
-    ? borders.defaultId
-    : (PROFILE_BORDERS[0]?.id ?? "");
+  DEFAULT_PROFILE_BORDER = "none";
 
   HEROES.splice(
     0,
@@ -165,8 +161,12 @@ export function isProfilePictureId(value: unknown): value is ProfilePictureId {
 export function getProfileBorder(id?: string | null): ProfileBorderRecord {
   return (
     PROFILE_BORDERS.find((border) => border.id === id) ??
-    PROFILE_BORDERS.find((border) => border.id === DEFAULT_PROFILE_BORDER) ??
-    PROFILE_BORDERS[0] ?? { id: DEFAULT_PROFILE_BORDER, name: "Default" }
+    PROFILE_BORDERS.find((border) => border.id === "none") ?? {
+      id: "none",
+      name: "No Border",
+      color: "transparent",
+      width: 0,
+    }
   );
 }
 

@@ -1,10 +1,15 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 import { BUDDIES } from "@/constants/buddy-catalog";
-import { DEFAULT_HERO_ID, HEROES } from "@/constants/game-catalog";
+import {
+  DEFAULT_HERO_ID,
+  HEROES,
+  PROFILE_BORDERS,
+} from "@/constants/game-catalog";
 import { DEFAULT_ORB_SKIN_ID, ORB_SKINS } from "@/constants/orb-catalog";
 
 const INVENTORY_STORAGE_KEY = "wild-paw.player-inventory";
+const inventoryListeners = new Set<(inventory: PlayerInventory) => void>();
 
 export type PlayerInventory = {
   heroes: string[];
@@ -14,6 +19,7 @@ export type PlayerInventory = {
   equippedOrbSkin: string;
   buddies: string[];
   equippedBuddy: string;
+  borders: string[];
 };
 
 export const DEFAULT_PLAYER_INVENTORY: PlayerInventory = {
@@ -24,6 +30,7 @@ export const DEFAULT_PLAYER_INVENTORY: PlayerInventory = {
   equippedOrbSkin: DEFAULT_ORB_SKIN_ID,
   buddies: [],
   equippedBuddy: "",
+  borders: [],
 };
 
 export function initializeDefaultPlayerInventory() {
@@ -49,12 +56,18 @@ function normalizeInventory(value: unknown): PlayerInventory {
     equippedOrbSkin?: unknown;
     buddies?: unknown;
     equippedBuddy?: unknown;
+    borders?: unknown;
   };
   const validHeroIds = new Set(HEROES.map((hero) => hero.id));
   const validSkinIds = new Set(
     HEROES.flatMap((hero) => hero.skins.map((skin) => `${hero.id}:${skin.id}`)),
   );
   const validBuddyIds = new Set(BUDDIES.map((buddy) => buddy.id));
+  const validBorderIds = new Set(
+    PROFILE_BORDERS.filter((border) => border.id !== "none").map(
+      (border) => border.id,
+    ),
+  );
   const heroes = Array.isArray(stored.heroes)
     ? stored.heroes.filter(
         (id): id is string => typeof id === "string" && validHeroIds.has(id),
@@ -82,6 +95,16 @@ function normalizeInventory(value: unknown): PlayerInventory {
       )
     : [];
   const ownedBuddies = Array.from(new Set(buddies));
+  const borders = Array.isArray(stored.borders)
+    ? Array.from(
+        new Set(
+          stored.borders.filter(
+            (id): id is string =>
+              typeof id === "string" && validBorderIds.has(id),
+          ),
+        ),
+      )
+    : [];
   const equippedBuddy =
     typeof stored.equippedBuddy === "string" &&
     ownedBuddies.includes(stored.equippedBuddy)
@@ -96,6 +119,7 @@ function normalizeInventory(value: unknown): PlayerInventory {
     equippedOrbSkin,
     buddies: ownedBuddies,
     equippedBuddy,
+    borders,
   };
 }
 
@@ -113,8 +137,19 @@ export async function loadPlayerInventory() {
 }
 
 export async function savePlayerInventory(inventory: PlayerInventory) {
+  const normalizedInventory = normalizeInventory(inventory);
   await AsyncStorage.setItem(
     INVENTORY_STORAGE_KEY,
-    JSON.stringify(normalizeInventory(inventory)),
+    JSON.stringify(normalizedInventory),
   );
+  for (const listener of inventoryListeners) listener(normalizedInventory);
+}
+
+export function subscribeToPlayerInventory(
+  listener: (inventory: PlayerInventory) => void,
+) {
+  inventoryListeners.add(listener);
+  return () => {
+    inventoryListeners.delete(listener);
+  };
 }

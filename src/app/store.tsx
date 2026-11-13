@@ -2,53 +2,55 @@ import { Image } from "expo-image";
 import { router, useLocalSearchParams } from "expo-router";
 import { useEffect, useMemo, useState } from "react";
 import {
-    Pressable,
-    ScrollView,
-    StyleSheet,
-    Text,
-    useWindowDimensions,
-    View,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  useWindowDimensions,
+  View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { BUDDIES, getBuddyBonusSummary } from "@/constants/buddy-catalog";
 import {
-    awardCoins,
-    getCoinBalance,
-    spendCoins,
-    subscribeToCoinBalance,
+  awardCoins,
+  getCoinBalance,
+  spendCoins,
+  subscribeToCoinBalance,
 } from "@/constants/coin-wallet";
 import {
-    DEFAULT_HERO_ID,
-    getHeroImage,
-    getRarityCardImage,
-    getSkinImage,
-    HEROES,
-    ITEM_RARITIES,
-    type BundledImage,
-    type ItemRarity,
+  DEFAULT_HERO_ID,
+  getHeroImage,
+  getRarityCardImage,
+  getSkinImage,
+  HEROES,
+  ITEM_RARITIES,
+  PROFILE_BORDERS,
+  type BundledImage,
+  type ItemRarity,
 } from "@/constants/game-catalog";
 import {
-    DEFAULT_ORB_SKIN_ID,
-    getOrbRarityColor,
-    ORB_SKINS,
+  DEFAULT_ORB_SKIN_ID,
+  getOrbRarityColor,
+  ORB_SKINS,
 } from "@/constants/orb-catalog";
 import {
-    getPlayerLevelProgress,
-    getPlayerXp,
-    subscribeToPlayerXp,
+  getPlayerLevelProgress,
+  getPlayerXp,
+  subscribeToPlayerXp,
 } from "@/constants/player-experience";
 import {
-    DEFAULT_PLAYER_INVENTORY,
-    loadPlayerInventory,
-    savePlayerInventory,
-    type PlayerInventory,
+  DEFAULT_PLAYER_INVENTORY,
+  loadPlayerInventory,
+  savePlayerInventory,
+  type PlayerInventory,
 } from "@/constants/player-inventory";
 import {
-    getBuddyPricing,
-    getHeroPricing,
-    getOrbPricing,
-    getSkinPricing,
+  getBuddyPricing,
+  getHeroPricing,
+  getOrbPricing,
+  getProfileBorderPricing,
+  getSkinPricing,
 } from "@/constants/store-pricing";
 import { getRemoteAssetSource } from "@/services/remote-assets";
 
@@ -56,7 +58,7 @@ const backdrop = require("@/assets/images/background_1.png");
 const storeIcon = getRemoteAssetSource("game/icons/shop_1.png");
 const coinIcon = getRemoteAssetSource("game/icons/coin_1.png");
 
-type StoreTab = "hero" | "skin" | "orb" | "buddy";
+type StoreTab = "hero" | "skin" | "orb" | "buddy" | "border";
 type Price = { price: number; discountPercent: number; finalPrice: number };
 type StoreItem = {
   key: string;
@@ -81,7 +83,8 @@ export default function StoreScreen() {
   const [tab, setTab] = useState<StoreTab>(() =>
     requestedTab === "skin" ||
     requestedTab === "orb" ||
-    requestedTab === "buddy"
+    requestedTab === "buddy" ||
+    requestedTab === "border"
       ? requestedTab
       : "hero",
   );
@@ -186,7 +189,22 @@ export default function StoreScreen() {
       locked: playerLevel.level < 10,
       description: getBuddyBonusSummary(buddy),
     }));
-    return [...heroes, ...skins, ...orbs, ...buddies];
+    const borders = PROFILE_BORDERS.filter(
+      (border) => border.id !== "none",
+    ).map((border) => ({
+      key: `border:${border.id}`,
+      id: border.id,
+      kind: "border" as const,
+      name: border.name,
+      subtitle: "Profile picture frame",
+      rarity: "common" as const,
+      image: border.source,
+      price: getProfileBorderPricing(border.id),
+      owned: inventory.borders.includes(border.id),
+      locked: false,
+      description: "A decorative frame for your player profile.",
+    }));
+    return [...heroes, ...skins, ...orbs, ...buddies, ...borders];
   }, [inventory, playerLevel.level]);
 
   const items = useMemo(() => {
@@ -257,6 +275,10 @@ export default function StoreScreen() {
           item.kind === "buddy"
             ? [...inventory.buddies, item.id]
             : inventory.buddies,
+        borders:
+          item.kind === "border"
+            ? [...inventory.borders, item.id]
+            : inventory.borders,
       };
       await savePlayerInventory(nextInventory);
       setInventory(nextInventory);
@@ -285,6 +307,7 @@ export default function StoreScreen() {
     { id: "skin", label: "Skins" },
     { id: "orb", label: "Orbs" },
     { id: "buddy", label: "Buddies" },
+    { id: "border", label: "Borders" },
   ];
 
   return (
@@ -331,28 +354,30 @@ export default function StoreScreen() {
 
         <View style={styles.card}>
           <View style={styles.tabs}>
-            {tabLabels.map((entry) => (
-              <Pressable
-                key={entry.id}
-                accessibilityRole="tab"
-                accessibilityState={{ selected: tab === entry.id }}
-                onPress={() => {
-                  setTab(entry.id);
-                  setSelectedKey("");
-                  setMessage("");
-                }}
-                style={[styles.tab, tab === entry.id && styles.activeTab]}
-              >
-                <Text
-                  style={[
-                    styles.tabText,
-                    tab === entry.id && styles.activeTabText,
-                  ]}
+            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+              {tabLabels.map((entry) => (
+                <Pressable
+                  key={entry.id}
+                  accessibilityRole="tab"
+                  accessibilityState={{ selected: tab === entry.id }}
+                  onPress={() => {
+                    setTab(entry.id);
+                    setSelectedKey("");
+                    setMessage("");
+                  }}
+                  style={[styles.tab, tab === entry.id && styles.activeTab]}
                 >
-                  {entry.label}
-                </Text>
-              </Pressable>
-            ))}
+                  <Text
+                    style={[
+                      styles.tabText,
+                      tab === entry.id && styles.activeTabText,
+                    ]}
+                  >
+                    {entry.label}
+                  </Text>
+                </Pressable>
+              ))}
+            </ScrollView>
           </View>
 
           <View style={styles.toolbar}>

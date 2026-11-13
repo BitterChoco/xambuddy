@@ -233,6 +233,11 @@
       "sha256": "7cc4a0c84b916ddbd614079881a52b980f6f6a5ad7b3783052ee506270881810"
     },
     {
+      "path": "game/icons/chest_1.png",
+      "size": 242058,
+      "sha256": "4a381a65f492af9bd7b1fbf14e680f4964d0d329cb91d91d6e07f5babf010199"
+    },
+    {
       "path": "game/icons/coin_1.png",
       "size": 66336,
       "sha256": "896e8593d3d27223cd7b5ce6bb0b286849aebc0f7d6c95fe501c3efdc3faac98"

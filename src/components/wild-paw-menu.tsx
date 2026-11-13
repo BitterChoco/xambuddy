@@ -17,8 +17,6 @@ import {
   getSkinImage,
   HEROES,
   isProfilePictureId,
-  PROFILE_BORDERS,
-  PROFILE_PICTURE_CHOICES,
   PROFILE_PICTURES,
   type HeroRecord,
   type ProfilePictureId,
@@ -37,6 +35,7 @@ import {
   DEFAULT_PLAYER_INVENTORY,
   loadPlayerInventory,
   savePlayerInventory,
+  subscribeToPlayerInventory,
   type PlayerInventory,
 } from "@/constants/player-inventory";
 import { getLocalHostAddresses } from "@/services/local-host-address";
@@ -48,8 +47,8 @@ import { getRemoteAssetSource } from "@/services/remote-assets";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Image, type ImageSource } from "expo-image";
 import * as Network from "expo-network";
-import { router, type Href } from "expo-router";
-import { useEffect, useMemo, useState } from "react";
+import { router, useFocusEffect, type Href } from "expo-router";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Animated,
   Pressable,
@@ -63,9 +62,8 @@ import { SafeAreaView } from "react-native-safe-area-context";
 
 const heroes = HEROES;
 type HeroId = string;
-type MenuScreen = "main" | "hero" | "play" | "multiplayer" | "profile";
+type MenuScreen = "main" | "hero" | "play" | "multiplayer";
 type SelectionTab = "hero" | "skin" | "orb" | "buddy";
-type ProfileTab = "picture" | "border";
 type MultiplayerView = "choice" | "host" | "join";
 type LocalHost = {
   id: string;
@@ -88,7 +86,6 @@ const settingsImage = getRemoteAssetSource("game/icons/settings_1.png");
 const emailImage = getRemoteAssetSource("game/icons/email_1.png");
 const rankImage = getRemoteAssetSource("game/icons/rank_1.png");
 const friendsImage = getRemoteAssetSource("game/icons/friends_1.png");
-const menuShortcuts = [{ label: "Friends", source: friendsImage }];
 
 function CoinBalanceBadge({ balance }: { balance: number }) {
   return (
@@ -171,14 +168,19 @@ function ProfilePicture({
           accessibilityLabel="Events"
         />
       </Pressable>
-      <View style={styles.profileMenuIconTile}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Open daily tasks"
+        onPress={() => router.push("/tasks" as Href)}
+        style={styles.profileMenuIconTile}
+      >
         <Image
           source={taskImage}
           style={styles.profileMenuIcon}
           contentFit="contain"
-          accessibilityLabel="Tasks"
+          pointerEvents="none"
         />
-      </View>
+      </Pressable>
       <Pressable
         accessibilityRole="button"
         accessibilityLabel="Open settings"
@@ -318,7 +320,6 @@ export function WildPawMenu() {
     DEFAULT_PROFILE_PICTURE,
   );
   const [profileBorder, setProfileBorder] = useState(DEFAULT_PROFILE_BORDER);
-  const [profileTab, setProfileTab] = useState<ProfileTab>("picture");
   const [orbMessage, setOrbMessage] = useState("");
   const [buddyMessage, setBuddyMessage] = useState("");
   const [profileLoaded, setProfileLoaded] = useState(false);
@@ -371,6 +372,7 @@ export function WildPawMenu() {
 
   useEffect(() => {
     let isMounted = true;
+    const unsubscribe = subscribeToPlayerInventory(setInventory);
     void loadPlayerInventory()
       .then((loadedInventory) => {
         if (isMounted) {
@@ -391,51 +393,57 @@ export function WildPawMenu() {
 
     return () => {
       isMounted = false;
+      unsubscribe();
     };
   }, []);
 
-  useEffect(() => {
-    let isMounted = true;
+  useFocusEffect(
+    useCallback(() => {
+      let isMounted = true;
+      setProfileLoaded(false);
 
-    void AsyncStorage.getItem(PROFILE_STORAGE_KEY)
-      .then((storedProfile) => {
-        if (!isMounted || !storedProfile) {
-          return;
-        }
+      void AsyncStorage.getItem(PROFILE_STORAGE_KEY)
+        .then(async (storedProfile) => {
+          if (!isMounted || !storedProfile) {
+            return;
+          }
 
-        const parsed = JSON.parse(storedProfile) as {
-          name?: unknown;
-          avatar?: unknown;
-          picture?: unknown;
-          border?: unknown;
-        };
-        if (typeof parsed.name === "string" && parsed.name.trim()) {
-          const savedName = parsed.name.trim().slice(0, 20);
-          setProfileName(savedName);
-          setMultiplayerName(savedName);
-        }
-        const savedPicture = parsed.picture ?? parsed.avatar;
-        if (isProfilePictureId(savedPicture)) {
-          setProfilePicture(savedPicture);
-        }
-        if (
-          typeof parsed.border === "string" &&
-          PROFILE_BORDERS.some((border) => border.id === parsed.border)
-        ) {
-          setProfileBorder(parsed.border);
-        }
-      })
-      .catch(() => undefined)
-      .finally(() => {
-        if (isMounted) {
-          setProfileLoaded(true);
-        }
-      });
+          const ownedInventory = await loadPlayerInventory();
+          const parsed = JSON.parse(storedProfile) as {
+            name?: unknown;
+            avatar?: unknown;
+            picture?: unknown;
+            border?: unknown;
+          };
+          if (typeof parsed.name === "string" && parsed.name.trim()) {
+            const savedName = parsed.name.trim().slice(0, 20);
+            setProfileName(savedName);
+            setMultiplayerName(savedName);
+          }
+          const savedPicture = parsed.picture ?? parsed.avatar;
+          if (isProfilePictureId(savedPicture)) {
+            setProfilePicture(savedPicture);
+          }
+          if (
+            parsed.border === "none" ||
+            (typeof parsed.border === "string" &&
+              ownedInventory.borders.includes(parsed.border))
+          ) {
+            setProfileBorder(parsed.border);
+          }
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          if (isMounted) {
+            setProfileLoaded(true);
+          }
+        });
 
-    return () => {
-      isMounted = false;
-    };
-  }, []);
+      return () => {
+        isMounted = false;
+      };
+    }, []),
+  );
 
   useEffect(() => {
     if (!profileLoaded) {
@@ -1096,205 +1104,6 @@ export function WildPawMenu() {
     </View>
   );
 
-  const renderProfileView = () => (
-    <View style={styles.menuPage}>
-      <View style={styles.subScreenShell}>
-        <View style={styles.profileScreenCard}>
-          <View style={styles.profileScreenHeader}>
-            <View style={styles.profileScreenTitleGroup}>
-              <Text style={styles.profileScreenKicker}>PLAYER PROFILE</Text>
-              <Text style={styles.profileScreenTitle}>Make it yours</Text>
-            </View>
-            <View style={styles.profileSavedBadge}>
-              <View style={styles.profileSavedDot} />
-              <Text style={styles.profileSavedText}>SAVED ON THIS DEVICE</Text>
-            </View>
-          </View>
-
-          <View style={styles.profileIdentityPanel}>
-            <View
-              style={[
-                styles.profileAvatarLargeFrame,
-                getProfileBorderStyle(profileBorder),
-              ]}
-            >
-              <Image
-                source={PROFILE_PICTURES[profilePicture]}
-                style={styles.profileAvatarLarge}
-                contentFit="cover"
-                accessibilityLabel={`${profilePicture} profile picture`}
-              />
-              <ProfileBorderOverlay borderId={profileBorder} />
-            </View>
-            <View style={styles.profileNameEditor}>
-              <Text style={styles.profileFieldLabel}>PLAYER NAME</Text>
-              <TextInput
-                value={profileName}
-                onChangeText={updateProfileName}
-                onEndEditing={commitProfileName}
-                autoCapitalize="words"
-                autoCorrect={false}
-                maxLength={20}
-                placeholder="Player 1"
-                placeholderTextColor="#8ba89c"
-                returnKeyType="done"
-                selectTextOnFocus
-                style={[styles.input, styles.profileNameInput]}
-              />
-              <Text style={styles.profileHint}>
-                Used in solo and multiplayer games.
-              </Text>
-            </View>
-          </View>
-
-          <View
-            accessible
-            accessibilityLabel={`Level ${playerLevel.level}, ${playerLevel.xpIntoLevel} of ${playerLevel.xpForNextLevel} XP to next level`}
-            style={styles.profileLevelPanel}
-          >
-            <View style={styles.profileLevelHeading}>
-              <Text style={styles.profileLevelTitle}>PLAYER LEVEL</Text>
-              <Text style={styles.profileLevelValue}>
-                LVL {playerLevel.level}
-              </Text>
-            </View>
-            <View style={styles.profileLevelProgressTrack}>
-              <View
-                style={[
-                  styles.profileLevelProgressFill,
-                  { width: `${playerLevel.progress * 100}%` },
-                ]}
-              />
-            </View>
-            <Text style={styles.profileLevelXpText}>
-              {playerLevel.xpIntoLevel} / {playerLevel.xpForNextLevel} XP to
-              next level
-              <Text style={styles.profileLevelTotalXp}>
-                {`  ·  ${playerLevel.totalXp} XP total`}
-              </Text>
-            </Text>
-          </View>
-
-          <View style={styles.profileTabs}>
-            {(
-              [
-                { id: "picture", label: "PICTURE", icon: "▣" },
-                { id: "border", label: "BORDER", icon: "◇" },
-              ] as const
-            ).map((tab) => (
-              <Pressable
-                key={tab.id}
-                accessibilityRole="tab"
-                accessibilityState={{ selected: profileTab === tab.id }}
-                onPress={() => setProfileTab(tab.id)}
-                style={[
-                  styles.profileTab,
-                  profileTab === tab.id && styles.profileTabActive,
-                ]}
-              >
-                <Text style={styles.profileTabIcon}>{tab.icon}</Text>
-                <Text
-                  style={[
-                    styles.profileTabText,
-                    profileTab === tab.id && styles.profileTabTextActive,
-                  ]}
-                >
-                  {tab.label}
-                </Text>
-              </Pressable>
-            ))}
-          </View>
-
-          <View style={styles.profileOptionsPanel}>
-            {profileTab === "picture" ? (
-              <View style={styles.profileOptionGrid}>
-                {PROFILE_PICTURE_CHOICES.map((picture) => {
-                  const isSelected = profilePicture === picture.id;
-                  return (
-                    <Pressable
-                      key={picture.id}
-                      accessibilityRole="button"
-                      accessibilityLabel={`${picture.name} profile picture`}
-                      accessibilityState={{ selected: isSelected }}
-                      onPress={() => setProfilePicture(picture.id)}
-                      style={[
-                        styles.profileOptionCard,
-                        isSelected && styles.profileOptionCardSelected,
-                      ]}
-                    >
-                      <View
-                        style={[
-                          styles.profileOptionImageFrame,
-                          getProfileBorderStyle(profileBorder),
-                        ]}
-                      >
-                        <Image
-                          source={PROFILE_PICTURES[picture.id]}
-                          style={styles.profileOptionImage}
-                          contentFit="cover"
-                        />
-                        <ProfileBorderOverlay borderId={profileBorder} />
-                      </View>
-                      <Text style={styles.profileOptionName}>
-                        {picture.name}
-                      </Text>
-                      {isSelected && (
-                        <Text style={styles.profileSelectedLabel}>
-                          SELECTED
-                        </Text>
-                      )}
-                    </Pressable>
-                  );
-                })}
-              </View>
-            ) : (
-              <View style={styles.profileOptionGrid}>
-                {PROFILE_BORDERS.map((border) => {
-                  const isSelected = profileBorder === border.id;
-                  return (
-                    <Pressable
-                      key={border.id}
-                      accessibilityRole="button"
-                      accessibilityLabel={`${border.name} profile border`}
-                      accessibilityState={{ selected: isSelected }}
-                      onPress={() => setProfileBorder(border.id)}
-                      style={[
-                        styles.profileOptionCard,
-                        isSelected && styles.profileOptionCardSelected,
-                      ]}
-                    >
-                      <View
-                        style={[
-                          styles.profileOptionImageFrame,
-                          getProfileBorderStyle(border.id),
-                        ]}
-                      >
-                        <Image
-                          source={PROFILE_PICTURES[profilePicture]}
-                          style={styles.profileOptionImage}
-                          contentFit="cover"
-                        />
-                        <ProfileBorderOverlay borderId={border.id} />
-                      </View>
-                      <Text style={styles.profileOptionName}>
-                        {border.name}
-                      </Text>
-                      {isSelected && (
-                        <Text style={styles.profileSelectedLabel}>
-                          SELECTED
-                        </Text>
-                      )}
-                    </Pressable>
-                  );
-                })}
-              </View>
-            )}
-          </View>
-        </View>
-      </View>
-    </View>
-  );
-
   const renderHeroSelector = () => (
     <View style={styles.menuPage}>
       <View style={styles.appShell}>
@@ -1748,23 +1557,26 @@ export function WildPawMenu() {
           ? renderPlaySelector()
           : screen === "multiplayer"
             ? renderMultiplayerMenu()
-            : screen === "profile"
-              ? renderProfileView()
-              : renderHeroSelector()}
+            : renderHeroSelector()}
       {screen !== "hero" && (
         <View pointerEvents="box-none" style={styles.coinBalancePosition}>
           <CoinBalanceBadge balance={coinBalance} />
           {screen === "main" && (
             <View style={styles.menuShortcutStack}>
               <View style={styles.menuShortcutGroup}>
-                <View style={styles.menuShortcutTile}>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Open mailbox"
+                  onPress={() => router.push("/mail" as Href)}
+                  style={styles.menuShortcutTile}
+                >
                   <Image
                     source={emailImage}
                     style={styles.menuShortcutIcon}
                     contentFit="contain"
-                    accessibilityLabel="Email"
+                    pointerEvents="none"
                   />
-                </View>
+                </Pressable>
                 <Pressable
                   accessibilityRole="button"
                   accessibilityLabel="Open player rankings"
@@ -1779,22 +1591,19 @@ export function WildPawMenu() {
                   />
                 </Pressable>
               </View>
-              {menuShortcuts.map(({ label, source }) => (
-                <Pressable
-                  key={label}
-                  accessibilityLabel={`${label} — coming soon`}
-                  accessibilityState={{ disabled: true }}
-                  disabled
-                  style={[styles.menuShortcutTile, styles.menuShortcutDisabled]}
-                >
-                  <Image
-                    source={source}
-                    style={styles.menuShortcutIcon}
-                    contentFit="contain"
-                    pointerEvents="none"
-                  />
-                </Pressable>
-              ))}
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Open friends"
+                onPress={() => router.push("/friends" as Href)}
+                style={styles.menuShortcutTile}
+              >
+                <Image
+                  source={friendsImage}
+                  style={styles.menuShortcutIcon}
+                  contentFit="contain"
+                  pointerEvents="none"
+                />
+              </Pressable>
             </View>
           )}
         </View>
@@ -1811,7 +1620,7 @@ export function WildPawMenu() {
             picture={profilePicture}
             border={profileBorder}
             level={playerLevel.level}
-            onPress={() => setScreen("profile")}
+            onPress={() => router.push("/profile" as Href)}
             onStorePress={() => router.push("/store" as Href)}
             onSettingsPress={() => router.push("/settings" as Href)}
           />
@@ -2053,240 +1862,6 @@ const styles = StyleSheet.create({
     shadowRadius: 24,
     shadowOffset: { width: 0, height: 12 },
     elevation: 12,
-  },
-  profileScreenCard: {
-    width: "100%",
-    maxWidth: 760,
-    padding: 18,
-    borderRadius: 26,
-    borderWidth: 2,
-    borderColor: "rgba(255, 224, 160, 0.72)",
-    backgroundColor: "rgba(5, 18, 14, 0.9)",
-    shadowColor: "#000",
-    shadowOpacity: 0.86,
-    shadowRadius: 24,
-    shadowOffset: { width: 0, height: 12 },
-    elevation: 12,
-  },
-  profileScreenHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    marginBottom: 14,
-  },
-  profileScreenTitleGroup: {
-    alignItems: "center",
-    gap: 2,
-  },
-  profileScreenKicker: {
-    color: "#7dd3fc",
-    fontSize: 9,
-    fontWeight: "900",
-    letterSpacing: 1.8,
-  },
-  profileScreenTitle: {
-    color: "#f0fdf4",
-    fontSize: 22,
-    fontWeight: "900",
-    letterSpacing: 0.5,
-  },
-  profileSavedBadge: {
-    position: "absolute",
-    right: 0,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 5,
-    paddingHorizontal: 8,
-    paddingVertical: 5,
-    borderRadius: 999,
-    backgroundColor: "rgba(21, 128, 61, 0.28)",
-    borderWidth: 1,
-    borderColor: "rgba(134, 239, 172, 0.42)",
-  },
-  profileSavedDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 999,
-    backgroundColor: "#4ade80",
-  },
-  profileSavedText: {
-    color: "#bbf7d0",
-    fontSize: 8,
-    fontWeight: "900",
-    letterSpacing: 0.5,
-  },
-  profileIdentityPanel: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-    padding: 12,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: "rgba(125, 211, 252, 0.28)",
-    backgroundColor: "rgba(9, 29, 24, 0.9)",
-    marginBottom: 12,
-  },
-  profileLevelPanel: {
-    gap: 5,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    marginTop: -4,
-    marginBottom: 10,
-    borderRadius: 13,
-    borderWidth: 1,
-    borderColor: "rgba(250, 204, 21, 0.28)",
-    backgroundColor: "rgba(40, 31, 11, 0.55)",
-  },
-  profileLevelHeading: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-  },
-  profileLevelTitle: {
-    color: "#fde68a",
-    fontSize: 8,
-    fontWeight: "900",
-    letterSpacing: 1,
-  },
-  profileLevelValue: {
-    color: "#fff3c4",
-    fontSize: 11,
-    fontWeight: "900",
-  },
-  profileLevelProgressTrack: {
-    height: 6,
-    overflow: "hidden",
-    borderRadius: 999,
-    backgroundColor: "rgba(15, 23, 42, 0.9)",
-  },
-  profileLevelProgressFill: {
-    height: "100%",
-    borderRadius: 999,
-    backgroundColor: "#facc15",
-  },
-  profileLevelXpText: {
-    color: "#fef3c7",
-    fontSize: 8,
-    fontWeight: "800",
-  },
-  profileLevelTotalXp: {
-    color: "#cbd5e1",
-    fontWeight: "600",
-  },
-  profileNameEditor: {
-    flex: 1,
-    minWidth: 0,
-    gap: 5,
-  },
-  profileFieldLabel: {
-    color: "#9ae6b4",
-    fontSize: 9,
-    fontWeight: "900",
-    letterSpacing: 1,
-  },
-  profileNameInput: {
-    paddingVertical: 7,
-    fontSize: 14,
-  },
-  profileHint: {
-    color: "#9bb7aa",
-    fontSize: 9,
-    fontWeight: "600",
-  },
-  profileTabs: {
-    flexDirection: "row",
-    gap: 8,
-    marginBottom: 8,
-  },
-  profileTab: {
-    flex: 1,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 7,
-    minHeight: 38,
-    borderRadius: 11,
-    borderWidth: 1,
-    borderColor: "rgba(148, 163, 184, 0.28)",
-    backgroundColor: "rgba(8, 24, 19, 0.78)",
-  },
-  profileTabActive: {
-    backgroundColor: "rgba(21, 128, 61, 0.32)",
-    borderColor: "#4ade80",
-  },
-  profileTabIcon: {
-    color: "#a7f3d0",
-    fontSize: 15,
-    fontWeight: "900",
-  },
-  profileTabText: {
-    color: "#9bb7aa",
-    fontSize: 10,
-    fontWeight: "900",
-    letterSpacing: 0.8,
-  },
-  profileTabTextActive: {
-    color: "#ecfdf5",
-  },
-  profileOptionsPanel: {
-    minHeight: 132,
-    padding: 10,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: "rgba(255, 224, 160, 0.22)",
-    backgroundColor: "rgba(4, 17, 13, 0.7)",
-  },
-  profileOptionGrid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    alignItems: "stretch",
-    justifyContent: "center",
-    gap: 8,
-  },
-  profileOptionCard: {
-    width: 104,
-    minHeight: 106,
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 4,
-    padding: 7,
-    borderRadius: 13,
-    borderWidth: 1,
-    borderColor: "rgba(148, 163, 184, 0.28)",
-    backgroundColor: "rgba(10, 31, 25, 0.85)",
-  },
-  profileOptionCardSelected: {
-    borderWidth: 2,
-    borderColor: "#facc15",
-    backgroundColor: "rgba(120, 83, 10, 0.24)",
-  },
-  profileOptionImageFrame: {
-    width: 58,
-    height: 58,
-    padding: 3,
-    alignItems: "center",
-    justifyContent: "center",
-    borderRadius: 17,
-    borderWidth: 1,
-    backgroundColor: "rgba(5, 18, 14, 0.9)",
-    shadowRadius: 7,
-  },
-  profileOptionImage: {
-    width: 48,
-    height: 48,
-    borderRadius: 12,
-  },
-  profileOptionName: {
-    color: "#f0fdf4",
-    fontSize: 10,
-    fontWeight: "800",
-    textAlign: "center",
-  },
-  profileSelectedLabel: {
-    color: "#fde68a",
-    fontSize: 7,
-    fontWeight: "900",
-    letterSpacing: 0.6,
   },
   orbStatusMessage: {
     width: "100%",

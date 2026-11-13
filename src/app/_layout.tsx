@@ -214,14 +214,10 @@ export default function RootLayout() {
             <Stack
               screenOptions={{
                 headerShown: false,
+                animation: "none",
                 contentStyle: { backgroundColor: "#06150f" },
               }}
-            >
-              <Stack.Screen name="store" options={{ animation: "none" }} />
-              <Stack.Screen name="settings" options={{ animation: "none" }} />
-              <Stack.Screen name="event" options={{ animation: "none" }} />
-              <Stack.Screen name="rank" options={{ animation: "none" }} />
-            </Stack>
+            ></Stack>
           </ThemeProvider>
         )}
         {isLoadingScreenVisible && (

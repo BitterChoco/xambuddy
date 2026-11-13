@@ -17,6 +17,7 @@ type StorePricing = {
   orbs?: Record<string, PriceRule>;
   buddies?: Record<string, PriceRule>;
   buddyItems?: Record<string, PriceRule>;
+  profileBorders?: Record<string, PriceRule>;
 };
 
 let pricing: StorePricing;
@@ -68,4 +69,11 @@ export function getBuddyPricing(buddyId: string, rarity: string) {
     pricing.buddyItems?.[buddyId] ?? pricing.buddies?.[rarity],
     pricing.defaults.buddy ?? { price: 250, discountPercent: 0 },
   );
+}
+
+export function getProfileBorderPricing(borderId: string) {
+  return sanitizeRule(pricing.profileBorders?.[borderId], {
+    price: 300,
+    discountPercent: 0,
+  });
 }
