@@ -2,6 +2,27 @@
 
 This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
 
+## Remote game assets
+
+The main menu displays the Email, Rank, and Friends shortcut icons beneath the
+coin balance. Their image files are served from the Wild Paw storage release:
+
+- `game/icons/email_1.png`
+- `game/icons/rank_1.png`
+- `game/icons/friends_1.png`
+
+Hero metadata is loaded from the remote `game/constants/heroes.json` catalog.
+To make the Fox hero available, add its catalog record there and upload its
+portrait as `game/heroes/type/fox.png`. The updated Owl portrait replaces
+`game/heroes/type/owl.png`; keep the existing Owl catalog record if its ID and
+image filename remain unchanged.
+
+After adding or replacing assets, regenerate the storage-release manifest so it
+contains the new icon and Fox paths and the updated Owl file checksum. Publish
+the manifest with the assets at `wild-paw/data/manifest.json`; keep the app's
+`storage-release-manifest.json` snapshot in sync. The hero catalog itself is
+published at `wild-paw/data/assets/game/constants/heroes.json`.
+
 ## Get started
 
 1. Install dependencies

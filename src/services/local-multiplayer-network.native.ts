@@ -1,8 +1,8 @@
 import TcpSocket from "react-native-tcp-socket";
 
 import type {
-    MultiplayerMessageEvent,
-    MultiplayerSocket,
+  MultiplayerMessageEvent,
+  MultiplayerSocket,
 } from "./local-multiplayer.types";
 
 const PORT = 8765;
@@ -50,6 +50,7 @@ type IncomingMessage = {
   profileBorder?: string;
   ready?: boolean;
   action?: string;
+  powerUpId?: string;
   direction?: unknown;
   grenadeRange?: number;
   input?: unknown;
@@ -211,6 +212,7 @@ function handleMessage(client: ClientConnection, message: IncomingMessage) {
         send(peer, {
           type: "room-command",
           action: message.action,
+          powerUpId: message.powerUpId,
           source: client.id,
         });
       }

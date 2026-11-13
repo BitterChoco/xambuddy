@@ -143,6 +143,7 @@ type PlayerState = {
   health: number;
   maxHealth: number;
   speed: number;
+  upgrades: PlayerUpgradeStats;
   speedBoostTimer: number;
   rapidFireTimer: number;
   highDamageTimer: number;
@@ -159,6 +160,22 @@ type PlayerState = {
   pendingDamage: number;
   damageTimer: number;
   isDead: boolean;
+};
+
+type PlayerUpgradeStats = {
+  damagePercent: number;
+  fireRatePercent: number;
+  moveSpeedPercent: number;
+  defensePercent: number;
+  criticalChancePercent: number;
+};
+
+type PowerUpId = keyof PlayerUpgradeStats | "maxHealth";
+type PowerUpChoice = {
+  id: PowerUpId;
+  name: string;
+  description: string;
+  amount: number;
 };
 
 type OrbBeam = {
@@ -209,6 +226,8 @@ type GameState = {
   arenaBackgroundWave: number;
   waveCountdown: number;
   warpTransitionTimer: number;
+  powerUpChoices: PowerUpChoice[];
+  warpPending: boolean;
   enemiesToSpawn: number;
   isRunning: boolean;
   isPaused: boolean;
@@ -305,8 +324,64 @@ const arenaBackgrounds = [
   getRemoteAssetSource("game/arena/arena_3.png"),
   getRemoteAssetSource("game/arena/arena_4.jpg"),
 ];
-const WAVES_PER_ARENA = 5;
+const WAVES_PER_ARENA = 10;
 const WARP_TRANSITION_DURATION = 5;
+const POWER_UPS: Omit<PowerUpChoice, "amount">[] = [
+  {
+    id: "damagePercent",
+    name: "Heavy Hitter",
+    description: "Increase gun and orb damage.",
+  },
+  {
+    id: "fireRatePercent",
+    name: "Rapid Trigger",
+    description: "Fire weapons more frequently.",
+  },
+  {
+    id: "maxHealth",
+    name: "Vitality",
+    description: "Increase maximum health and restore the same amount.",
+  },
+  {
+    id: "moveSpeedPercent",
+    name: "Fleet Footed",
+    description: "Move faster around the arena.",
+  },
+  {
+    id: "defensePercent",
+    name: "Thorn Guard",
+    description: "Reduce damage received.",
+  },
+  {
+    id: "criticalChancePercent",
+    name: "Lucky Strike",
+    description: "Increase critical hit chance.",
+  },
+];
+
+const POWER_UP_AMOUNTS: Record<PowerUpId, number> = {
+  damagePercent: 15,
+  fireRatePercent: 12,
+  maxHealth: 20,
+  moveSpeedPercent: 10,
+  defensePercent: 10,
+  criticalChancePercent: 8,
+};
+
+function createPowerUpChoices(): PowerUpChoice[] {
+  const shuffled = [...POWER_UPS];
+  for (let index = shuffled.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(Math.random() * (index + 1));
+    [shuffled[index], shuffled[swapIndex]] = [
+      shuffled[swapIndex],
+      shuffled[index],
+    ];
+  }
+  return shuffled.slice(0, 2).map((powerUp) => ({
+    ...powerUp,
+    amount: POWER_UP_AMOUNTS[powerUp.id],
+  }));
+}
 
 function getWarpFadeOpacity(remainingSeconds: number) {
   const progress = clamp(1 - remainingSeconds / WARP_TRANSITION_DURATION, 0, 1);
@@ -328,6 +403,7 @@ function getEffectivePlayerSpeed(player: PlayerState) {
   return (
     player.speed *
     (1 + getBuddyBonus(player.buddyId, "moveSpeed") / 100) *
+    (1 + player.upgrades.moveSpeedPercent / 100) *
     (player.speedBoostTimer > 0 ? SPEED_BOOST_MULTIPLIER : 1)
   );
 }
@@ -336,7 +412,10 @@ function getEffectiveFireCooldown(player: PlayerState) {
   const baseCooldown =
     player.rapidFireTimer > 0 ? RAPID_FIRE_COOLDOWN : NORMAL_FIRE_COOLDOWN;
   return (
-    baseCooldown / (1 + getBuddyBonus(player.buddyId, "attackSpeed") / 100)
+    baseCooldown /
+    (1 +
+      getBuddyBonus(player.buddyId, "attackSpeed") / 100 +
+      player.upgrades.fireRatePercent / 100)
   );
 }
 
@@ -344,11 +423,182 @@ function getEffectiveBulletDamage(player: PlayerState) {
   const attackDamage =
     20 *
     (1 + getBuddyBonus(player.buddyId, "attack") / 100) *
+    (1 + player.upgrades.damagePercent / 100) *
     (player.highDamageTimer > 0 ? HIGH_DAMAGE_MULTIPLIER : 1);
-  const criticalChance = getBuddyBonus(player.buddyId, "criticalChance");
+  const criticalChance =
+    getBuddyBonus(player.buddyId, "criticalChance") +
+    player.upgrades.criticalChancePercent;
   return Math.round(
     attackDamage * (Math.random() * 100 < criticalChance ? 1.5 : 1),
   );
+}
+
+function applyPowerUp(
+  player: PlayerState,
+  powerUp: PowerUpChoice,
+): PlayerState {
+  if (powerUp.id === "maxHealth") {
+    return {
+      ...player,
+      maxHealth: player.maxHealth + powerUp.amount,
+      health: Math.min(
+        player.maxHealth + powerUp.amount,
+        player.health + powerUp.amount,
+      ),
+    };
+  }
+
+  return {
+    ...player,
+    upgrades: {
+      ...player.upgrades,
+      [powerUp.id]: player.upgrades[powerUp.id] + powerUp.amount,
+    },
+  };
+}
+
+function getPowerUpBonusText(powerUp: PowerUpChoice) {
+  switch (powerUp.id) {
+    case "damagePercent":
+    case "fireRatePercent":
+    case "moveSpeedPercent":
+    case "defensePercent":
+    case "criticalChancePercent":
+      return `+${powerUp.amount}%`;
+    case "maxHealth":
+      return `+${powerUp.amount} max health`;
+  }
+}
+
+function getPowerUpStatBonus(
+  player: PlayerState,
+  powerUp: PowerUpChoice,
+  statLabel: string,
+) {
+  const affectedStat: Record<PowerUpId, string> = {
+    maxHealth: "MAX HEALTH",
+    damagePercent: "DAMAGE",
+    fireRatePercent: "FIRE RATE",
+    moveSpeedPercent: "SPEED",
+    defensePercent: "DEFENSE",
+    criticalChancePercent: "CRIT",
+  };
+  if (affectedStat[powerUp.id] !== statLabel) return "—";
+  if (powerUp.id === "maxHealth") {
+    return `+${Math.round((powerUp.amount / player.maxHealth) * 100)}%`;
+  }
+  if (powerUp.id === "defensePercent") return `+${powerUp.amount}`;
+  return `+${powerUp.amount}%`;
+}
+
+function getPreviewStats(player: PlayerState, powerUp: PowerUpChoice | null) {
+  const previewPlayer = powerUp ? applyPowerUp(player, powerUp) : player;
+  const defensePercent = Math.min(
+    90,
+    getBuddyBonus(previewPlayer.buddyId, "defense") +
+      previewPlayer.upgrades.defensePercent,
+  );
+  const criticalChancePercent = Math.min(
+    100,
+    getBuddyBonus(previewPlayer.buddyId, "criticalChance") +
+      previewPlayer.upgrades.criticalChancePercent,
+  );
+  return [
+    {
+      label: "MAX HEALTH",
+      value: `${Math.round(previewPlayer.maxHealth)}`,
+    },
+    {
+      label: "DAMAGE",
+      value: `${Math.round(20 * (1 + getBuddyBonus(previewPlayer.buddyId, "attack") / 100) * (1 + previewPlayer.upgrades.damagePercent / 100))}`,
+    },
+    {
+      label: "FIRE RATE",
+      value: `${(1 / getEffectiveFireCooldown(previewPlayer)).toFixed(1)}/s`,
+    },
+    {
+      label: "SPEED",
+      value: `${Math.round(getEffectivePlayerSpeed(previewPlayer))}`,
+    },
+    { label: "DEFENSE", value: `${Math.round(defensePercent)}` },
+    { label: "CRIT", value: `${Math.round(criticalChancePercent)}%` },
+  ];
+}
+
+function getPlayerPopupStats(player: PlayerState) {
+  const buddyMaxHealth = Math.round(
+    MAX_HEALTH * (1 + getBuddyBonus(player.buddyId, "maxHealth") / 100),
+  );
+  const attackBonus = getBuddyBonus(player.buddyId, "attack");
+  const fireRateBonus = getBuddyBonus(player.buddyId, "attackSpeed");
+  const moveSpeedBonus = getBuddyBonus(player.buddyId, "moveSpeed");
+  const defenseBonus = getBuddyBonus(player.buddyId, "defense");
+  const criticalBonus = getBuddyBonus(player.buddyId, "criticalChance");
+  const combineBonuses = (...bonuses: string[]) =>
+    bonuses.filter(Boolean).join(" · ");
+
+  return [
+    {
+      label: "MAX HEALTH",
+      value: `${buddyMaxHealth}`,
+      bonus:
+        player.maxHealth > buddyMaxHealth
+          ? `+${player.maxHealth - buddyMaxHealth}`
+          : "",
+    },
+    {
+      label: "DAMAGE",
+      value: `${Math.round(20 * (1 + attackBonus / 100))}`,
+      bonus: combineBonuses(
+        player.upgrades.damagePercent > 0
+          ? `+${player.upgrades.damagePercent}%`
+          : "",
+        player.highDamageTimer > 0
+          ? `+${Math.round((HIGH_DAMAGE_MULTIPLIER - 1) * 100)}%`
+          : "",
+      ),
+    },
+    {
+      label: "FIRE RATE",
+      value: `${(1 / (NORMAL_FIRE_COOLDOWN / (1 + fireRateBonus / 100))).toFixed(1)}/s`,
+      bonus: combineBonuses(
+        player.upgrades.fireRatePercent > 0
+          ? `+${player.upgrades.fireRatePercent}%`
+          : "",
+        player.rapidFireTimer > 0
+          ? `+${Math.round((NORMAL_FIRE_COOLDOWN / RAPID_FIRE_COOLDOWN - 1) * 100)}%`
+          : "",
+      ),
+    },
+    {
+      label: "SPEED",
+      value: `${Math.round(player.speed * (1 + moveSpeedBonus / 100))}`,
+      bonus: combineBonuses(
+        player.upgrades.moveSpeedPercent > 0
+          ? `+${player.upgrades.moveSpeedPercent}%`
+          : "",
+        player.speedBoostTimer > 0
+          ? `+${Math.round((SPEED_BOOST_MULTIPLIER - 1) * 100)}%`
+          : "",
+      ),
+    },
+    {
+      label: "DEFENSE",
+      value: `${Math.round(defenseBonus)}`,
+      bonus:
+        player.upgrades.defensePercent > 0
+          ? `+${player.upgrades.defensePercent}`
+          : "",
+    },
+    {
+      label: "CRIT",
+      value: `${Math.round(criticalBonus)}%`,
+      bonus:
+        player.upgrades.criticalChancePercent > 0
+          ? `+${player.upgrades.criticalChancePercent}%`
+          : "",
+    },
+  ];
 }
 
 function normalize(vector: Vector): Vector {
@@ -560,15 +810,34 @@ function ActiveBuffBadge({ buff }: { buff: ActiveBuff }) {
       : buff.kind === "rapidFire"
         ? styles.rapidFireBuffBadge
         : styles.highDamageBuffBadge;
+  const duration =
+    buff.kind === "speed"
+      ? SPEED_BOOST_DURATION
+      : buff.kind === "rapidFire"
+        ? RAPID_FIRE_DURATION
+        : HIGH_DAMAGE_DURATION;
+  const fillColor =
+    buff.kind === "speed"
+      ? "rgba(34, 211, 238, 0.72)"
+      : buff.kind === "rapidFire"
+        ? "rgba(251, 146, 60, 0.72)"
+        : "rgba(192, 132, 252, 0.72)";
+  const remainingPercent = clamp((buff.remaining / duration) * 100, 0, 100);
 
   return (
     <View style={badgeStyle}>
+      <View
+        pointerEvents="none"
+        style={[
+          styles.activeBuffCooldownFill,
+          { height: `${remainingPercent}%`, backgroundColor: fillColor },
+        ]}
+      />
       <Image
         source={buff.kind === "speed" ? bootsFastImage : bulletImage}
-        style={styles.speedBoostIcon}
+        style={styles.activeBuffIcon}
         contentFit="contain"
       />
-      <Text style={styles.speedBoostText}>{Math.ceil(buff.remaining)}s</Text>
     </View>
   );
 }
@@ -580,7 +849,7 @@ function PlayerBuffIndicators({ player }: { player: PlayerState }) {
     return null;
   }
 
-  const badgeWidth = activeBuffs.length * 40 + (activeBuffs.length - 1) * 3;
+  const badgeWidth = activeBuffs.length * 18 + (activeBuffs.length - 1) * 3;
 
   return (
     <View
@@ -738,6 +1007,13 @@ function createPlayer(
     health: maxHealth,
     maxHealth,
     speed: PLAYER_SPEED,
+    upgrades: {
+      damagePercent: 0,
+      fireRatePercent: 0,
+      moveSpeedPercent: 0,
+      defensePercent: 0,
+      criticalChancePercent: 0,
+    },
     speedBoostTimer: 0,
     rapidFireTimer: 0,
     highDamageTimer: 0,
@@ -844,10 +1120,13 @@ function fireOrbAtNearestEnemy(
   }
 
   const criticalHit =
-    Math.random() * 100 < getBuddyBonus(player.buddyId, "criticalChance");
+    Math.random() * 100 <
+    getBuddyBonus(player.buddyId, "criticalChance") +
+      player.upgrades.criticalChancePercent;
   const damage = Math.round(
     ORB_ATTACK_DAMAGE *
       (1 + getBuddyBonus(player.buddyId, "attack") / 100) *
+      (1 + player.upgrades.damagePercent / 100) *
       (criticalHit ? 1.5 : 1),
   );
   target.health -= damage;
@@ -923,6 +1202,8 @@ function createInitialGame(
     arenaBackgroundWave: 1,
     waveCountdown: WAVE_BREAK_DURATION,
     warpTransitionTimer: 0,
+    powerUpChoices: [],
+    warpPending: false,
     enemiesToSpawn: getWaveEnemyCount(1),
     isRunning: true,
     isPaused: false,
@@ -1122,6 +1403,13 @@ export function WildPawGame({
   const [selectedWeapon, setSelectedWeapon] = useState<"gun" | "grenade">(
     "gun",
   );
+  const [powerUpSelection, setPowerUpSelection] = useState<{
+    choiceKey: string;
+    id: PowerUpId;
+  } | null>(null);
+  const [statsPopupPlayerId, setStatsPopupPlayerId] = useState<
+    PlayerState["id"] | null
+  >(null);
   const [grenadeAim, setGrenadeAim] = useState<{
     direction: Vector;
     range: number;
@@ -1207,6 +1495,15 @@ export function WildPawGame({
         : false;
   const localPlayer =
     (localPlayerId === "join" ? game.joinPlayer : game.player) ?? game.player;
+  const powerUpChoiceKey = `${game.wave}:${game.powerUpChoices
+    .map((choice) => choice.id)
+    .join("|")}`;
+  const selectedPowerUp =
+    powerUpSelection?.choiceKey === powerUpChoiceKey
+      ? (game.powerUpChoices.find(
+          (choice) => choice.id === powerUpSelection.id,
+        ) ?? null)
+      : null;
   const vibrationEnabledRef = useRef(true);
   const vibrationPreferenceLoadedRef = useRef(false);
   const lastDamageEventIdRef = useRef<number | null>(null);
@@ -1607,10 +1904,54 @@ export function WildPawGame({
     [localPlayerId, multiplayerRole],
   );
 
+  const applyPowerUpAndStartWarp = useCallback((powerUpId: string) => {
+    setGame((previous) => {
+      const powerUp = previous.powerUpChoices.find(
+        (choice) => choice.id === powerUpId,
+      );
+      if (!powerUp || !previous.warpPending) {
+        return previous;
+      }
+
+      return {
+        ...previous,
+        player: applyPowerUp(previous.player, powerUp),
+        joinPlayer: previous.joinPlayer
+          ? applyPowerUp(previous.joinPlayer, powerUp)
+          : null,
+        powerUpChoices: [],
+        warpPending: false,
+        warpTransitionTimer: WARP_TRANSITION_DURATION,
+        message: "Warping to another location",
+      };
+    });
+  }, []);
+
+  const confirmPowerUpSelection = useCallback(
+    (powerUp: PowerUpChoice) => {
+      if (multiplayerRole === "join") {
+        const socket = multiplayerSocketRef.current;
+        if (socket?.readyState === MULTIPLAYER_SOCKET_OPEN) {
+          socket.send(
+            JSON.stringify({
+              type: "command",
+              action: "choose-power-up",
+              powerUpId: powerUp.id,
+            }),
+          );
+        }
+        return;
+      }
+
+      applyPowerUpAndStartWarp(powerUp.id);
+    },
+    [applyPowerUpAndStartWarp, multiplayerRole],
+  );
+
   const skipWaveCooldown = useCallback(
     (broadcast = true) => {
       setGame((previous) =>
-        previous.waveCountdown > 0
+        previous.waveCountdown > 0 && previous.powerUpChoices.length === 0
           ? {
               ...previous,
               waveCountdown: 0,
@@ -1759,6 +2100,7 @@ export function WildPawGame({
           };
           payload?: GameState;
           action?: string;
+          powerUpId?: string;
           direction?: Vector;
           grenadeRange?: number;
           sourceRole?: string;
@@ -1940,6 +2282,16 @@ export function WildPawGame({
           return;
         }
 
+        if (
+          message.type === "room-command" &&
+          message.action === "choose-power-up" &&
+          multiplayerRole === "host" &&
+          message.powerUpId
+        ) {
+          applyPowerUpAndStartWarp(message.powerUpId);
+          return;
+        }
+
         if (message.type === "room-command" && message.action === "skip-wave") {
           skipWaveCooldown(false);
           return;
@@ -2012,6 +2364,7 @@ export function WildPawGame({
     buddyId,
     skipWaveCooldown,
     resetGameLocally,
+    applyPowerUpAndStartWarp,
   ]);
 
   useEffect(() => {
@@ -2335,6 +2688,7 @@ export function WildPawGame({
           if (
             !previous.isRunning ||
             previous.isPaused ||
+            previous.powerUpChoices.length > 0 ||
             !player ||
             player.isDead ||
             previous.reviveState?.reviverId === "join"
@@ -2385,7 +2739,11 @@ export function WildPawGame({
       }
 
       setGame((previous) => {
-        if (!previous.isRunning || previous.isPaused) {
+        if (
+          !previous.isRunning ||
+          previous.isPaused ||
+          previous.powerUpChoices.length > 0
+        ) {
           return previous;
         }
 
@@ -2746,6 +3104,8 @@ export function WildPawGame({
           0,
           previous.warpTransitionTimer - delta,
         );
+        let powerUpChoices = previous.powerUpChoices;
+        let warpPending = previous.warpPending;
         let enemiesToSpawn = previous.enemiesToSpawn;
         let bossSpawnedAtWave = previous.bossSpawnedAtWave;
         let message = previous.message;
@@ -3056,14 +3416,16 @@ export function WildPawGame({
           wave += 1;
           waveCountdown = WAVE_BREAK_DURATION;
           const isNewArena = (wave - 1) % WAVES_PER_ARENA === 0;
-          warpTransitionTimer = isNewArena ? WARP_TRANSITION_DURATION : 0;
+          warpTransitionTimer = 0;
+          powerUpChoices = isNewArena ? createPowerUpChoices() : [];
+          warpPending = isNewArena;
           enemiesToSpawn = getWaveEnemyCount(wave);
           bullets = [];
           spawnCooldown = 0;
           bossHealth = 0;
           bossHealthMax = 0;
           message = isNewArena
-            ? "Warping to another location"
+            ? "Choose a power-up before warping"
             : `Wave ${wave - 1} cleared! Prepare for wave ${wave}`;
         }
 
@@ -3088,6 +3450,8 @@ export function WildPawGame({
           wave,
           waveCountdown,
           warpTransitionTimer,
+          powerUpChoices,
+          warpPending,
           enemiesToSpawn,
           isRunning: !player.isDead || (!!joinPlayer && !joinPlayer.isDead),
           message:
@@ -3501,6 +3865,13 @@ export function WildPawGame({
                     style={styles.waveCountdownOverlay}
                   >
                     WAVE {game.wave} · STARTS IN {Math.ceil(game.waveCountdown)}
+                  </Text>
+
+                  <Text
+                    pointerEvents="none"
+                    style={styles.wavePreparationLabel}
+                  >
+                    PREPARATION
                   </Text>
 
                   <GestureDetector gesture={waveCountdownGesture}>
@@ -4292,61 +4663,94 @@ export function WildPawGame({
           </View>
         )}
 
-        <View pointerEvents="none" style={styles.hud}>
-          <View style={styles.playerHudGroup}>
+        <View pointerEvents="box-none" style={styles.hud}>
+          <View pointerEvents="box-none" style={styles.playerHudGroup}>
             {hudPlayers.map(
               ({ id, badge, role, player, profilePicture, profileBorder }) => (
-                <View key={id} style={styles.playerHudPlayer}>
-                  <View
-                    style={[styles.playerHudCard, styles.playerHudCardCompact]}
+                <View
+                  key={id}
+                  pointerEvents="box-none"
+                  style={styles.playerHudPlayer}
+                >
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={`View ${player.name}'s stats`}
+                    accessibilityState={{
+                      expanded: statsPopupPlayerId === player.id,
+                    }}
+                    onPress={() =>
+                      setStatsPopupPlayerId((current) =>
+                        current === player.id ? null : player.id,
+                      )
+                    }
+                    hitSlop={4}
+                    style={styles.playerHudTouchable}
                   >
                     <View
+                      pointerEvents="none"
                       style={[
-                        styles.playerAvatarWrap,
-                        styles.playerAvatarWrapCompact,
-                        getProfileBorderStyle(profileBorder),
+                        styles.playerHudCard,
+                        styles.playerHudCardCompact,
                       ]}
                     >
-                      <View style={styles.playerAvatarBadge}>
-                        <Text style={styles.playerAvatarBadgeText}>
-                          {badge}
-                        </Text>
-                      </View>
-                      <Image
-                        source={PROFILE_PICTURES[profilePicture]}
+                      <View
                         style={[
-                          styles.playerAvatarImage,
-                          styles.playerAvatarImageCompact,
+                          styles.playerAvatarWrap,
+                          styles.playerAvatarWrapCompact,
+                          getProfileBorderStyle(profileBorder),
                         ]}
-                        contentFit="cover"
-                      />
-                      <ProfileBorderOverlay borderId={profileBorder} />
-                    </View>
-
-                    <View
-                      style={[
-                        styles.playerHealthColumn,
-                        styles.playerHealthColumnCompact,
-                      ]}
-                    >
-                      <Image
-                        source={heartImage}
-                        style={styles.playerHealthIcon}
-                        contentFit="contain"
-                      />
-                      <View style={styles.playerHealthTrack}>
-                        <View
+                      >
+                        <View style={styles.playerAvatarBadge}>
+                          <Text style={styles.playerAvatarBadgeText}>
+                            {badge}
+                          </Text>
+                        </View>
+                        <Image
+                          source={PROFILE_PICTURES[profilePicture]}
                           style={[
-                            styles.playerHealthFill,
-                            {
-                              width: `${Math.max(
-                                0,
-                                (player.health / player.maxHealth) * 100,
-                              )}%`,
-                              backgroundColor: "#ef4444",
-                            },
+                            styles.playerAvatarImage,
+                            styles.playerAvatarImageCompact,
                           ]}
+                          contentFit="cover"
                         />
+                        <ProfileBorderOverlay borderId={profileBorder} />
+                      </View>
+
+                      <View
+                        style={[
+                          styles.playerHealthColumn,
+                          styles.playerHealthColumnCompact,
+                        ]}
+                      >
+                        <Text
+                          numberOfLines={1}
+                          style={styles.playerHudPlayerName}
+                        >
+                          {player.name}
+                        </Text>
+                        <View style={styles.playerHealthBarRow}>
+                          <View style={styles.playerHealthTrack}>
+                            <View
+                              style={[
+                                styles.playerHealthFill,
+                                {
+                                  width: `${Math.max(
+                                    0,
+                                    (player.health / player.maxHealth) * 100,
+                                  )}%`,
+                                  backgroundColor: "#ef4444",
+                                },
+                              ]}
+                            />
+                            <Text
+                              pointerEvents="none"
+                              style={styles.playerHealthValue}
+                            >
+                              {Math.max(0, Math.round(player.health))}/
+                              {Math.round(player.maxHealth)}
+                            </Text>
+                          </View>
+                        </View>
                         {getActiveBuffs(player).length > 0 && (
                           <View style={styles.activeBuffs} pointerEvents="none">
                             {getActiveBuffs(player).map((buff) => (
@@ -4354,45 +4758,68 @@ export function WildPawGame({
                             ))}
                           </View>
                         )}
-                        <Text
-                          pointerEvents="none"
-                          style={styles.playerHealthValue}
-                        >
-                          {Math.max(0, Math.round(player.health))}/
-                          {Math.round(player.maxHealth)}
-                        </Text>
                       </View>
-                    </View>
 
-                    {isLocalMultiplayer && (
-                      <View
-                        style={[
-                          styles.playerReadyIndicator,
-                          role === "host"
-                            ? styles.playerReadyIndicatorHost
-                            : multiplayerReadiness.join
-                              ? styles.playerReadyIndicatorReady
-                              : styles.playerReadyIndicatorWaiting,
-                        ]}
-                      >
-                        <Text
+                      {isLocalMultiplayer && (
+                        <View
+                          pointerEvents="none"
                           style={[
-                            styles.playerReadyIndicatorText,
-                            role === "host" && styles.playerHostCrown,
+                            styles.playerReadyIndicator,
+                            role === "host"
+                              ? styles.playerReadyIndicatorHost
+                              : multiplayerReadiness.join
+                                ? styles.playerReadyIndicatorReady
+                                : styles.playerReadyIndicatorWaiting,
                           ]}
                         >
-                          {role === "host"
-                            ? "👑"
-                            : multiplayerReadiness.join
-                              ? "READY"
-                              : "NOT READY"}
-                        </Text>
-                      </View>
-                    )}
-                  </View>
-                  <Text numberOfLines={1} style={styles.playerHudPlayerName}>
-                    {badge} · {player.name}
-                  </Text>
+                          <Text
+                            style={[
+                              styles.playerReadyIndicatorText,
+                              role === "host" && styles.playerHostCrown,
+                            ]}
+                          >
+                            {role === "host"
+                              ? "👑"
+                              : multiplayerReadiness.join
+                                ? "READY"
+                                : "NOT READY"}
+                          </Text>
+                        </View>
+                      )}
+                    </View>
+                  </Pressable>
+                  {statsPopupPlayerId === player.id && (
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={`Close ${player.name}'s stat details`}
+                      onPress={() => setStatsPopupPlayerId(null)}
+                      style={styles.playerStatsPopup}
+                    >
+                      <Text style={styles.playerStatsPopupTitle}>
+                        {player.name.toUpperCase()} · STATS
+                      </Text>
+                      {getPlayerPopupStats(player).map((stat) => (
+                        <View
+                          key={stat.label}
+                          style={styles.playerStatsPopupRow}
+                        >
+                          <Text style={styles.playerStatsPopupLabel}>
+                            {stat.label}
+                          </Text>
+                          <View style={styles.playerStatsPopupValues}>
+                            <Text style={styles.playerStatsPopupValue}>
+                              {stat.value}
+                            </Text>
+                            {!!stat.bonus && (
+                              <Text style={styles.playerStatsPopupBonus}>
+                                {stat.bonus}
+                              </Text>
+                            )}
+                          </View>
+                        </View>
+                      ))}
+                    </Pressable>
+                  )}
                 </View>
               ),
             )}
@@ -4434,7 +4861,7 @@ export function WildPawGame({
 
         <View
           style={styles.topRow}
-          pointerEvents={isLocalPlayerReviving ? "none" : "auto"}
+          pointerEvents={isLocalPlayerReviving ? "none" : "box-none"}
         >
           <View style={styles.topRowContent}>
             <View style={styles.topRowActions}>
@@ -4678,6 +5105,186 @@ export function WildPawGame({
               )}
             </View>
           )}
+        {game.powerUpChoices.length > 0 &&
+          game.warpPending &&
+          game.isRunning && (
+            <View style={styles.powerUpOverlay}>
+              <View style={styles.powerUpBackdrop}>
+                <View
+                  style={[
+                    styles.powerUpPanel,
+                    height < 440 && styles.powerUpPanelCompact,
+                  ]}
+                >
+                  <Text style={styles.powerUpEyebrow}>
+                    WAVE {game.wave - 1} CLEARED · TEAM POWER-UP
+                  </Text>
+                  <Text style={styles.powerUpTitle}>Choose your upgrade</Text>
+
+                  <View style={styles.powerUpCards}>
+                    {game.powerUpChoices.map((choice, index) => {
+                      const isSelected = selectedPowerUp?.id === choice.id;
+                      const currentStats = getPreviewStats(localPlayer, null);
+                      const projectedStats = getPreviewStats(
+                        localPlayer,
+                        choice,
+                      );
+                      return (
+                        <Pressable
+                          key={choice.id}
+                          accessibilityRole="button"
+                          accessibilityState={{ selected: isSelected }}
+                          accessibilityLabel={`${choice.name}, ${choice.description}, ${getPowerUpBonusText(choice)}`}
+                          onPress={() =>
+                            setPowerUpSelection({
+                              choiceKey: powerUpChoiceKey,
+                              id: choice.id,
+                            })
+                          }
+                          style={[
+                            styles.powerUpCard,
+                            height < 440 && styles.powerUpCardCompact,
+                            isSelected && styles.powerUpCardSelected,
+                          ]}
+                        >
+                          <Text style={styles.powerUpCardIndex}>
+                            POWER-UP {index + 1}
+                          </Text>
+                          <Text
+                            numberOfLines={1}
+                            style={styles.powerUpCardTitle}
+                          >
+                            {choice.name}
+                          </Text>
+                          <Text style={styles.powerUpCardBonus}>
+                            {getPowerUpBonusText(choice)}
+                          </Text>
+                          {isSelected && (
+                            <Text style={styles.powerUpPreviewLabel}>
+                              SELECTED
+                            </Text>
+                          )}
+
+                          <View style={styles.powerUpCardStats}>
+                            <View style={styles.powerUpCardStatsHeader}>
+                              <Text
+                                style={[
+                                  styles.powerUpCardStatHeading,
+                                  styles.powerUpCardStatName,
+                                ]}
+                              >
+                                STAT
+                              </Text>
+                              <Text style={styles.powerUpCardStatHeading}>
+                                CURRENT → NEW
+                              </Text>
+                              <Text
+                                style={[
+                                  styles.powerUpCardStatHeading,
+                                  styles.powerUpCardStatBonus,
+                                ]}
+                              >
+                                BONUS
+                              </Text>
+                            </View>
+                            {[
+                              {
+                                title: "BASE STATS",
+                                labels: ["MAX HEALTH", "DAMAGE", "DEFENSE"],
+                              },
+                              {
+                                title: "ADVANCED STATS",
+                                labels: ["FIRE RATE", "SPEED", "CRIT"],
+                              },
+                            ].map((section) => (
+                              <View key={section.title}>
+                                <Text style={styles.powerUpCardSectionTitle}>
+                                  {section.title}
+                                </Text>
+                                {section.labels.map((label, rowIndex) => {
+                                  const current = currentStats.find(
+                                    (stat) => stat.label === label,
+                                  );
+                                  const projected = projectedStats.find(
+                                    (stat) => stat.label === label,
+                                  );
+                                  if (!current || !projected) return null;
+                                  const bonus = getPowerUpStatBonus(
+                                    localPlayer,
+                                    choice,
+                                    label,
+                                  );
+                                  return (
+                                    <View
+                                      key={label}
+                                      style={[
+                                        styles.powerUpCardStatRow,
+                                        rowIndex % 2 === 0 &&
+                                          styles.powerUpStatRowAlternate,
+                                      ]}
+                                    >
+                                      <Text
+                                        numberOfLines={1}
+                                        style={[
+                                          styles.powerUpCardStatName,
+                                          styles.powerUpStatLabel,
+                                        ]}
+                                      >
+                                        {label}
+                                      </Text>
+                                      <Text
+                                        numberOfLines={1}
+                                        style={styles.powerUpCardStatCurrent}
+                                      >
+                                        {current.value} → {projected.value}
+                                      </Text>
+                                      <Text
+                                        style={[
+                                          styles.powerUpStatBonus,
+                                          styles.powerUpCardStatBonus,
+                                          bonus === "—" &&
+                                            styles.powerUpStatBonusEmpty,
+                                        ]}
+                                      >
+                                        {bonus}
+                                      </Text>
+                                    </View>
+                                  );
+                                })}
+                              </View>
+                            ))}
+                          </View>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+
+                  <Text style={styles.powerUpTeamNote}>
+                    The selected upgrade applies to both players in co-op.
+                  </Text>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityState={{ disabled: !selectedPowerUp }}
+                    disabled={!selectedPowerUp}
+                    onPress={() =>
+                      selectedPowerUp &&
+                      confirmPowerUpSelection(selectedPowerUp)
+                    }
+                    style={[
+                      styles.powerUpConfirmButton,
+                      !selectedPowerUp && styles.powerUpConfirmButtonDisabled,
+                    ]}
+                  >
+                    <Text style={styles.powerUpConfirmText}>
+                      {multiplayerRole === "join"
+                        ? "CHOOSE FOR TEAM & WARP"
+                        : "CHOOSE & CONTINUE TO WARP"}
+                    </Text>
+                  </Pressable>
+                </View>
+              </View>
+            </View>
+          )}
         {game.warpTransitionTimer > 0 && game.isRunning && (
           <View
             pointerEvents="none"
@@ -4883,6 +5490,12 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   playerHudPlayer: {
+    position: "relative",
+    alignItems: "flex-start",
+    gap: 2,
+    maxWidth: 170,
+  },
+  playerHudTouchable: {
     alignItems: "flex-start",
     gap: 2,
     maxWidth: 170,
@@ -4899,11 +5512,59 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(7, 15, 13, 0.72)",
   },
   playerHudPlayerName: {
-    maxWidth: 170,
+    maxWidth: 74,
     color: "#d9f5dc",
-    fontSize: 9,
+    fontSize: 8,
     fontWeight: "800",
-    paddingHorizontal: 3,
+  },
+  playerStatsPopup: {
+    position: "absolute",
+    top: "100%",
+    left: 0,
+    zIndex: 30,
+    elevation: 30,
+    width: 150,
+    marginTop: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    borderRadius: 9,
+    borderWidth: 1,
+    borderColor: "rgba(187, 247, 208, 0.28)",
+    backgroundColor: "rgba(5, 15, 11, 0.68)",
+  },
+  playerStatsPopupTitle: {
+    marginBottom: 3,
+    color: "#bbf7d0",
+    fontSize: 8,
+    fontWeight: "900",
+    letterSpacing: 0.4,
+  },
+  playerStatsPopupRow: {
+    minHeight: 15,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 4,
+  },
+  playerStatsPopupLabel: {
+    color: "#d8e3dc",
+    fontSize: 8,
+    fontWeight: "600",
+  },
+  playerStatsPopupValue: {
+    color: "#fff",
+    fontSize: 8,
+    fontWeight: "800",
+  },
+  playerStatsPopupValues: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+  },
+  playerStatsPopupBonus: {
+    color: "#84cc16",
+    fontSize: 8,
+    fontWeight: "900",
   },
   playerAvatarWrap: {
     position: "relative",
@@ -4920,7 +5581,7 @@ const styles = StyleSheet.create({
   playerAvatarBadge: {
     position: "absolute",
     top: -5,
-    right: -5,
+    left: -5,
     minWidth: 18,
     height: 18,
     paddingHorizontal: 4,
@@ -4943,26 +5604,27 @@ const styles = StyleSheet.create({
     borderRadius: 10,
   },
   playerAvatarWrapCompact: {
+    width: 38,
+    height: 38,
+  },
+  playerAvatarImageCompact: {
     width: 32,
     height: 32,
   },
-  playerAvatarImageCompact: {
-    width: 26,
-    height: 26,
-  },
   playerHealthColumn: {
     width: 94,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 1,
+    flexDirection: "column",
+    alignItems: "stretch",
+    gap: 2,
   },
   playerHealthColumnCompact: {
     width: 74,
   },
-  playerHealthIcon: {
-    width: 12,
-    height: 12,
-    flexShrink: 0,
+  playerHealthBarRow: {
+    width: "100%",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 2,
   },
   playerHealthTrack: {
     position: "relative",
@@ -4981,15 +5643,15 @@ const styles = StyleSheet.create({
     overflow: "hidden",
   },
   speedBoostBadge: {
-    flexDirection: "row",
+    width: 18,
+    height: 18,
     alignItems: "center",
-    gap: 2,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 999,
-    backgroundColor: "rgba(14, 116, 144, 0.9)",
+    justifyContent: "center",
+    borderRadius: 5,
+    backgroundColor: "rgba(14, 116, 144, 0.72)",
     borderWidth: 1,
     borderColor: "rgba(125, 211, 252, 0.9)",
+    overflow: "hidden",
     zIndex: 5,
   },
   playerWorldBuffs: {
@@ -5001,44 +5663,46 @@ const styles = StyleSheet.create({
     zIndex: 8,
   },
   activeBuffs: {
-    position: "absolute",
-    top: -19,
-    left: -12,
     flexDirection: "row",
+    flexWrap: "wrap",
     alignItems: "center",
-    gap: 4,
+    gap: 3,
+    maxWidth: 74,
+    marginTop: 1,
     zIndex: 5,
   },
   rapidFireBuffBadge: {
-    flexDirection: "row",
+    width: 18,
+    height: 18,
     alignItems: "center",
-    gap: 2,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 999,
-    backgroundColor: "rgba(180, 83, 9, 0.95)",
+    justifyContent: "center",
+    borderRadius: 5,
+    backgroundColor: "rgba(180, 83, 9, 0.72)",
     borderWidth: 1,
     borderColor: "rgba(253, 186, 116, 0.95)",
+    overflow: "hidden",
   },
   highDamageBuffBadge: {
-    flexDirection: "row",
+    width: 18,
+    height: 18,
     alignItems: "center",
-    gap: 2,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 999,
-    backgroundColor: "rgba(126, 34, 206, 0.95)",
+    justifyContent: "center",
+    borderRadius: 5,
+    backgroundColor: "rgba(126, 34, 206, 0.72)",
     borderWidth: 1,
     borderColor: "rgba(216, 180, 254, 0.95)",
+    overflow: "hidden",
   },
-  speedBoostIcon: {
-    width: 11,
-    height: 11,
+  activeBuffCooldownFill: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
   },
-  speedBoostText: {
-    color: "#ecfeff",
-    fontSize: 9,
-    fontWeight: "800",
+  activeBuffIcon: {
+    width: 12,
+    height: 12,
+    zIndex: 1,
   },
   playerHealthValue: {
     position: "absolute",
@@ -5446,6 +6110,204 @@ const styles = StyleSheet.create({
     textShadowColor: "rgba(0, 0, 0, 0.9)",
     textShadowOffset: { width: 0, height: 2 },
     textShadowRadius: 5,
+  },
+  wavePreparationLabel: {
+    marginTop: 1,
+    color: "#bbf7d0",
+    fontSize: 9,
+    fontWeight: "900",
+    letterSpacing: 2,
+    textShadowColor: "rgba(0, 0, 0, 0.9)",
+    textShadowRadius: 4,
+  },
+  powerUpOverlay: {
+    ...StyleSheet.absoluteFill,
+    zIndex: 110,
+    elevation: 110,
+  },
+  powerUpBackdrop: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    backgroundColor: "rgba(2, 8, 6, 0.9)",
+  },
+  powerUpPanel: {
+    width: "100%",
+    maxWidth: 620,
+    alignItems: "center",
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: "rgba(134, 239, 172, 0.55)",
+    backgroundColor: "#0b1b14",
+  },
+  powerUpPanelCompact: {
+    paddingVertical: 8,
+  },
+  powerUpEyebrow: {
+    color: "#86efac",
+    fontSize: 9,
+    fontWeight: "900",
+    letterSpacing: 1.8,
+    textAlign: "center",
+  },
+  powerUpTitle: {
+    marginTop: 2,
+    color: "#fff",
+    fontSize: 20,
+    fontWeight: "900",
+    textAlign: "center",
+  },
+  powerUpCards: {
+    width: "100%",
+    flexDirection: "row",
+    alignItems: "stretch",
+    gap: 7,
+    marginTop: 7,
+  },
+  powerUpCard: {
+    flex: 1,
+    minWidth: 0,
+    justifyContent: "flex-start",
+    paddingHorizontal: 7,
+    paddingVertical: 7,
+    borderWidth: 1,
+    borderColor: "#42644f",
+    borderRadius: 11,
+    backgroundColor: "#13271d",
+  },
+  powerUpCardCompact: {
+    paddingHorizontal: 5,
+    paddingVertical: 5,
+  },
+  powerUpCardSelected: {
+    borderWidth: 2,
+    borderColor: "#86efac",
+    backgroundColor: "#1c3b2a",
+  },
+  powerUpCardIndex: {
+    color: "#9db6a5",
+    fontSize: 7,
+    fontWeight: "900",
+    letterSpacing: 1,
+  },
+  powerUpCardTitle: {
+    marginTop: 1,
+    color: "#fff",
+    fontSize: 12,
+    fontWeight: "900",
+  },
+  powerUpCardBonus: {
+    marginTop: 1,
+    color: "#86efac",
+    fontSize: 9,
+    fontWeight: "900",
+  },
+  powerUpPreviewLabel: {
+    position: "absolute",
+    top: 6,
+    right: 6,
+    color: "#bbf7d0",
+    fontSize: 6,
+    fontWeight: "900",
+    letterSpacing: 0.7,
+  },
+  powerUpCardStats: {
+    marginTop: 5,
+    paddingTop: 3,
+    borderTopWidth: 1,
+    borderTopColor: "rgba(255, 255, 255, 0.12)",
+  },
+  powerUpCardStatsHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    minHeight: 13,
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(255, 255, 255, 0.13)",
+  },
+  powerUpCardStatHeading: {
+    width: 91,
+    color: "#82948a",
+    fontSize: 6,
+    fontWeight: "900",
+    textAlign: "right",
+  },
+  powerUpCardStatName: {
+    flex: 1,
+    minWidth: 44,
+    textAlign: "left",
+  },
+  powerUpCardStatBonus: {
+    width: 34,
+  },
+  powerUpCardSectionTitle: {
+    paddingTop: 2,
+    paddingBottom: 0,
+    color: "#87988e",
+    fontSize: 6,
+    fontWeight: "800",
+  },
+  powerUpCardStatRow: {
+    minHeight: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 2,
+  },
+  powerUpStatRowAlternate: {
+    backgroundColor: "rgba(148, 163, 184, 0.12)",
+  },
+  powerUpStatLabel: {
+    color: "#f1f5f9",
+    fontSize: 7,
+    fontWeight: "700",
+  },
+  powerUpCardStatCurrent: {
+    width: 91,
+    color: "#e2e8f0",
+    fontSize: 7,
+    fontWeight: "700",
+    textAlign: "right",
+  },
+  powerUpStatBonus: {
+    width: 34,
+    color: "#84cc16",
+    fontSize: 7,
+    fontWeight: "900",
+    textAlign: "right",
+  },
+  powerUpStatBonusEmpty: {
+    color: "#64746a",
+    fontWeight: "500",
+  },
+  powerUpTeamNote: {
+    marginTop: 4,
+    color: "#9db6a5",
+    fontSize: 7,
+    textAlign: "center",
+  },
+  powerUpConfirmButton: {
+    width: "100%",
+    minHeight: 36,
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: "#22c55e",
+  },
+  powerUpConfirmButtonDisabled: {
+    opacity: 0.45,
+  },
+  powerUpConfirmText: {
+    color: "#052e16",
+    fontSize: 11,
+    fontWeight: "900",
+    letterSpacing: 0.8,
+    textAlign: "center",
   },
   warpTransitionOverlay: {
     ...StyleSheet.absoluteFill,

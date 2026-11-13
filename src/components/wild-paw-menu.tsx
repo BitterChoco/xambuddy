@@ -85,6 +85,14 @@ const calendarImage = getRemoteAssetSource("game/icons/calendar_1.png");
 const taskImage = getRemoteAssetSource("game/icons/task_1.png");
 const homeImage = getRemoteAssetSource("game/icons/home_1.png");
 const settingsImage = getRemoteAssetSource("game/icons/settings_1.png");
+const emailImage = getRemoteAssetSource("game/icons/email_1.png");
+const rankImage = getRemoteAssetSource("game/icons/rank_1.png");
+const friendsImage = getRemoteAssetSource("game/icons/friends_1.png");
+const menuShortcuts = [
+  { label: "Email", source: emailImage },
+  { label: "Rank", source: rankImage },
+  { label: "Friends", source: friendsImage },
+];
 
 function CoinBalanceBadge({ balance }: { balance: number }) {
   return (
@@ -1748,8 +1756,27 @@ export function WildPawMenu() {
               ? renderProfileView()
               : renderHeroSelector()}
       {screen !== "hero" && (
-        <View pointerEvents="none" style={styles.coinBalancePosition}>
+        <View pointerEvents="box-none" style={styles.coinBalancePosition}>
           <CoinBalanceBadge balance={coinBalance} />
+          {screen === "main" && (
+            <View
+              pointerEvents="none"
+              accessibilityElementsHidden
+              importantForAccessibility="no-hide-descendants"
+              style={styles.menuShortcutStack}
+            >
+              {menuShortcuts.map(({ label, source }) => (
+                <View key={label} style={styles.menuShortcutTile}>
+                  <Image
+                    source={source}
+                    style={styles.menuShortcutIcon}
+                    contentFit="contain"
+                    accessibilityLabel={label}
+                  />
+                </View>
+              ))}
+            </View>
+          )}
         </View>
       )}
       {screen !== "main" && (
@@ -1804,6 +1831,31 @@ const styles = StyleSheet.create({
     top: 10,
     right: 12,
     zIndex: 40,
+    alignItems: "flex-end",
+  },
+  menuShortcutStack: {
+    alignItems: "center",
+    gap: 8,
+    marginTop: 10,
+  },
+  menuShortcutTile: {
+    width: 42,
+    height: 42,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 11,
+    borderWidth: 1.5,
+    borderColor: "rgba(255, 224, 160, 0.75)",
+    backgroundColor: "rgba(5, 18, 14, 0.9)",
+    shadowColor: "#000",
+    shadowOpacity: 0.55,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 3 },
+    elevation: 8,
+  },
+  menuShortcutIcon: {
+    width: 30,
+    height: 30,
   },
   profilePicturePosition: {
     position: "absolute",

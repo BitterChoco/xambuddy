@@ -259,6 +259,10 @@ wss.on("connection", (socket) => {
         const payload = JSON.stringify({
           type: "room-command",
           action: message.action,
+          powerUpId:
+            typeof message.powerUpId === "string"
+              ? message.powerUpId
+              : undefined,
           source: socket.id,
         });
 
