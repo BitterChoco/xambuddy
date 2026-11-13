@@ -6,7 +6,8 @@
     "@expo/ui": "~58.0.28",
     "@react-native-async-storage/async-storage": "2.2.0",
     "@react-native-community/slider": "5.2.1",
-    "expo": "~58.0.24",
+    "expo": "~58.0.25",
+    "expo-asset": "~58.0.21",
     "expo-audio": "~58.0.12",
     "expo-constants": "~58.0.15",
     "expo-crypto": "~58.0.8",
@@ -51,6 +52,17 @@
     "web": "npx expo start --web",
     "lint": "npx expo lint",
     "multiplayer:server": "node ./scripts/local-multiplayer-server.mjs"
+  },
+  "expo": {
+    "doctor": {
+      "reactNativeDirectoryCheck": {
+        "exclude": [
+          "@wildpaw/local-network-address",
+          "react-native-tcp-socket"
+        ],
+        "listUnknownPackages": false
+      }
+    }
   },
   "private": true
 }
