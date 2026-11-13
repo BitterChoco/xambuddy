@@ -88,11 +88,7 @@ const settingsImage = getRemoteAssetSource("game/icons/settings_1.png");
 const emailImage = getRemoteAssetSource("game/icons/email_1.png");
 const rankImage = getRemoteAssetSource("game/icons/rank_1.png");
 const friendsImage = getRemoteAssetSource("game/icons/friends_1.png");
-const menuShortcuts = [
-  { label: "Email", source: emailImage },
-  { label: "Rank", source: rankImage },
-  { label: "Friends", source: friendsImage },
-];
+const menuShortcuts = [{ label: "Friends", source: friendsImage }];
 
 function CoinBalanceBadge({ balance }: { balance: number }) {
   return (
@@ -1759,21 +1755,45 @@ export function WildPawMenu() {
         <View pointerEvents="box-none" style={styles.coinBalancePosition}>
           <CoinBalanceBadge balance={coinBalance} />
           {screen === "main" && (
-            <View
-              pointerEvents="none"
-              accessibilityElementsHidden
-              importantForAccessibility="no-hide-descendants"
-              style={styles.menuShortcutStack}
-            >
+            <View style={styles.menuShortcutStack}>
+              <View style={styles.menuShortcutGroup}>
+                <View style={styles.menuShortcutTile}>
+                  <Image
+                    source={emailImage}
+                    style={styles.menuShortcutIcon}
+                    contentFit="contain"
+                    accessibilityLabel="Email"
+                  />
+                </View>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Open player rankings"
+                  onPress={() => router.push("/rank" as Href)}
+                  style={styles.menuShortcutTile}
+                >
+                  <Image
+                    source={rankImage}
+                    style={styles.menuShortcutIcon}
+                    contentFit="contain"
+                    pointerEvents="none"
+                  />
+                </Pressable>
+              </View>
               {menuShortcuts.map(({ label, source }) => (
-                <View key={label} style={styles.menuShortcutTile}>
+                <Pressable
+                  key={label}
+                  accessibilityLabel={`${label} — coming soon`}
+                  accessibilityState={{ disabled: true }}
+                  disabled
+                  style={[styles.menuShortcutTile, styles.menuShortcutDisabled]}
+                >
                   <Image
                     source={source}
                     style={styles.menuShortcutIcon}
                     contentFit="contain"
-                    accessibilityLabel={label}
+                    pointerEvents="none"
                   />
-                </View>
+                </Pressable>
               ))}
             </View>
           )}
@@ -1838,6 +1858,10 @@ const styles = StyleSheet.create({
     gap: 8,
     marginTop: 10,
   },
+  menuShortcutGroup: {
+    alignItems: "center",
+    gap: 8,
+  },
   menuShortcutTile: {
     width: 42,
     height: 42,
@@ -1852,6 +1876,9 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
     shadowOffset: { width: 0, height: 3 },
     elevation: 8,
+  },
+  menuShortcutDisabled: {
+    opacity: 0.72,
   },
   menuShortcutIcon: {
     width: 30,

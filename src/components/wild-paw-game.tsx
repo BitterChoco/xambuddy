@@ -8,6 +8,7 @@ import {
 } from "@/constants/game-configuration";
 import { DEFAULT_ORB_SKIN_ID, getOrbSkin } from "@/constants/orb-catalog";
 import { awardPlayerXp } from "@/constants/player-experience";
+import { recordPlayerHighScore } from "@/constants/player-high-score";
 import {
   DEFAULT_HERO_ID,
   DEFAULT_PROFILE_BORDER,
@@ -1822,6 +1823,7 @@ export function WildPawGame({
   });
   const coinsAwardedRef = useRef(false);
   const xpAwardedRef = useRef(false);
+  const highScoreRecordedRef = useRef(false);
   const multiplayerSocketRef = useRef<MultiplayerSocket | null>(null);
   const gameRef = useRef(game);
   const soundEffectsVolumeRef = useRef(0.75);
@@ -1978,6 +1980,7 @@ export function WildPawGame({
   const resetGameLocally = useCallback(() => {
     coinsAwardedRef.current = false;
     xpAwardedRef.current = false;
+    highScoreRecordedRef.current = false;
     setEarnedCoins(0);
     setEarnedXp(0);
     setGame((previous) => {
@@ -2459,6 +2462,31 @@ export function WildPawGame({
       );
     }
   }, [isLocalMultiplayer, multiplayerReadiness.host, multiplayerRole]);
+
+  useEffect(() => {
+    if (
+      game.isRunning ||
+      game.isPaused ||
+      highScoreRecordedRef.current ||
+      isMultiplayerLobby ||
+      (isLocalMultiplayer && multiplayerRole === "join")
+    ) {
+      return;
+    }
+
+    highScoreRecordedRef.current = true;
+    void recordPlayerHighScore(game.score, localPlayer.name).catch(
+      () => undefined,
+    );
+  }, [
+    game.isPaused,
+    game.isRunning,
+    game.score,
+    isLocalMultiplayer,
+    isMultiplayerLobby,
+    localPlayer.name,
+    multiplayerRole,
+  ]);
 
   useEffect(() => {
     if (

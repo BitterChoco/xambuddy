@@ -220,6 +220,7 @@ export default function RootLayout() {
               <Stack.Screen name="store" options={{ animation: "none" }} />
               <Stack.Screen name="settings" options={{ animation: "none" }} />
               <Stack.Screen name="event" options={{ animation: "none" }} />
+              <Stack.Screen name="rank" options={{ animation: "none" }} />
             </Stack>
           </ThemeProvider>
         )}
