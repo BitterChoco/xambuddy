@@ -1,89 +1,89 @@
 import { ProfileBorderOverlay } from "@/components/ui/profile-border-overlay";
 import {
-  BUDDIES,
-  getBuddy,
-  getBuddyBonusSummary,
-  getBuddyRarityColor,
+    BUDDIES,
+    getBuddy,
+    getBuddyBonusSummary,
+    getBuddyRarityColor,
 } from "@/constants/buddy-catalog";
 import {
-  awardCoins,
-  getCoinBalance,
-  spendCoins,
-  subscribeToCoinBalance,
+    awardCoins,
+    getCoinBalance,
+    spendCoins,
+    subscribeToCoinBalance,
 } from "@/constants/coin-wallet";
 import {
-  DEFAULT_HERO_ID,
-  DEFAULT_PROFILE_BORDER,
-  DEFAULT_PROFILE_PICTURE,
-  getHeroImage,
-  getProfileBorderStyle,
-  getRarityCardImage,
-  getSkinImage,
-  HEROES,
-  isProfilePictureId,
-  ITEM_RARITIES,
-  PROFILE_BORDERS,
-  PROFILE_PICTURE_CHOICES,
-  PROFILE_PICTURES,
-  type HeroRecord,
-  type ItemRarity,
-  type ProfilePictureId,
+    DEFAULT_HERO_ID,
+    DEFAULT_PROFILE_BORDER,
+    DEFAULT_PROFILE_PICTURE,
+    getHeroImage,
+    getProfileBorderStyle,
+    getRarityCardImage,
+    getSkinImage,
+    HEROES,
+    isProfilePictureId,
+    ITEM_RARITIES,
+    PROFILE_BORDERS,
+    PROFILE_PICTURE_CHOICES,
+    PROFILE_PICTURES,
+    type HeroRecord,
+    type ItemRarity,
+    type ProfilePictureId,
 } from "@/constants/game-catalog";
 import {
-  DEFAULT_ORB_SKIN_ID,
-  getOrbRarityColor,
-  getOrbSkin,
-  ORB_SKINS,
+    DEFAULT_ORB_SKIN_ID,
+    getOrbRarityColor,
+    getOrbSkin,
+    ORB_SKINS,
 } from "@/constants/orb-catalog";
 import {
-  getPlayerLevelProgress,
-  getPlayerXp,
-  subscribeToPlayerXp,
+    getPlayerLevelProgress,
+    getPlayerXp,
+    subscribeToPlayerXp,
 } from "@/constants/player-experience";
 import {
-  DEFAULT_PLAYER_INVENTORY,
-  loadPlayerInventory,
-  savePlayerInventory,
-  type PlayerInventory,
+    DEFAULT_PLAYER_INVENTORY,
+    loadPlayerInventory,
+    savePlayerInventory,
+    type PlayerInventory,
 } from "@/constants/player-inventory";
 import {
-  getMusicVolume,
-  getSoundEffectsVolume,
-  getVibrationEnabled,
-  saveMusicVolume,
-  saveSoundEffectsVolume,
-  saveVibrationEnabled,
-  updateMusicVolume,
-  updateSoundEffectsVolume,
+    getMusicVolume,
+    getSoundEffectsVolume,
+    getVibrationEnabled,
+    saveMusicVolume,
+    saveSoundEffectsVolume,
+    saveVibrationEnabled,
+    updateMusicVolume,
+    updateSoundEffectsVolume,
 } from "@/constants/player-settings";
 import {
-  getBuddyPricing,
-  getHeroPricing,
-  getOrbPricing,
-  getSkinPricing,
+    getBuddyPricing,
+    getHeroPricing,
+    getOrbPricing,
+    getSkinPricing,
 } from "@/constants/store-pricing";
 import { getLocalHostAddresses } from "@/services/local-host-address";
 import {
-  probeLocalServer,
-  startLocalHostServer,
+    probeLocalServer,
+    startLocalHostServer,
 } from "@/services/local-multiplayer-network";
 import { getRemoteAssetSource } from "@/services/remote-assets";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import Slider from "@react-native-community/slider";
 import { Image, type ImageSource } from "expo-image";
 import * as Network from "expo-network";
-import { router } from "expo-router";
+import { router, type Href } from "expo-router";
 import { useEffect, useMemo, useState } from "react";
 import {
-  Animated,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Switch,
-  Text,
-  TextInput,
-  useWindowDimensions,
-  View,
+    Animated,
+    Pressable,
+    ScrollView,
+    StyleSheet,
+    Switch,
+    Text,
+    TextInput,
+    useWindowDimensions,
+    View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
@@ -197,14 +197,19 @@ function ProfilePicture({
           accessibilityLabel="Shop"
         />
       </Pressable>
-      <View style={styles.profileMenuIconTile}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Open events and rewards"
+        onPress={() => router.push("/event" as Href)}
+        style={styles.profileMenuIconTile}
+      >
         <Image
           source={calendarImage}
           style={styles.profileMenuIcon}
           contentFit="contain"
-          accessibilityLabel="Calendar"
+          accessibilityLabel="Events"
         />
-      </View>
+      </Pressable>
       <View style={styles.profileMenuIconTile}>
         <Image
           source={taskImage}

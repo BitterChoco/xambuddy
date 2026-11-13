@@ -191,20 +191,23 @@ export function getRemoteAssetSource(path: string) {
   return { uri };
 }
 
+export async function fetchRemoteAssetJson<T>(path: string): Promise<T> {
+  const response = await fetch(`${REMOTE_ASSET_BASE_URL}/${encodePath(path)}`, {
+    cache: "no-store",
+  });
+  if (!response.ok) {
+    throw new Error(`Unable to load ${path} (HTTP ${response.status}).`);
+  }
+  return (await response.json()) as T;
+}
+
 export async function readRemoteAssetJson<T>(path: string): Promise<T> {
   if (!hasLoadedAssetManifest || !availableAssetPaths.has(path)) {
     throw new Error(`The asset release does not include ${path}.`);
   }
 
   if (Platform.OS === "web") {
-    const response = await fetch(
-      `${REMOTE_ASSET_BASE_URL}/${encodePath(path)}`,
-      { cache: "no-store" },
-    );
-    if (!response.ok) {
-      throw new Error(`Unable to load ${path} (HTTP ${response.status}).`);
-    }
-    return (await response.json()) as T;
+    return fetchRemoteAssetJson<T>(path);
   }
 
   const file = new File(getAssetDirectory(), ...path.split("/"));
