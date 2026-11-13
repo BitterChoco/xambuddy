@@ -69,38 +69,38 @@
     },
     {
       "path": "game/constants/buddies.json",
-      "size": 2879,
-      "sha256": "38ef4c737b8ccc36871e148f32fdafab20d84c6a07672e7f5b65cd26a842db2e"
+      "size": 2763,
+      "sha256": "00a497ab1050d0b723ab7c477688bb701c3efcd1bfba3d0ec23b1b94c2c4d62e"
     },
     {
       "path": "game/constants/coin-rewards.json",
-      "size": 29,
-      "sha256": "dff129ba3fe99855f3adc200047aaebce5b1c85c7c8f7ab6dd71f707d9145b4e"
+      "size": 26,
+      "sha256": "80e82bb957eae1cbdf69fc41935529188e19948fef5afb42a8c495eeee702c98"
     },
     {
       "path": "game/constants/drop-config.json",
-      "size": 1469,
-      "sha256": "81991de08825ebee208f66d1904f1d03b07b3b9fb1e2689f1185ee5570f55156"
+      "size": 1406,
+      "sha256": "eb32b75d563d72c94cf1c3b0056311c7716ce3228ec362ae257235ad6c92d324"
     },
     {
       "path": "game/constants/heroes.json",
-      "size": 3518,
-      "sha256": "869c1fb3fe6c75d480d6bfc8f0a8b212c5b4cf50ac40aeb77149db06cde4a80a"
+      "size": 3373,
+      "sha256": "eeeab38315872c8fe42f3d8bf1bcc2af12301a4ec88c76f30ad2af2d127710fa"
     },
     {
       "path": "game/constants/profile-borders.json",
-      "size": 302,
-      "sha256": "fe0030af37cd09a7ab50282819f88e7fbf44c1d77c922aaac7ebbb021b32f9c4"
+      "size": 285,
+      "sha256": "aea8884b795ad073868740756c58294decc178ef1b1a064180f8ab67fc2f9b2e"
     },
     {
       "path": "game/constants/profile-pictures.json",
-      "size": 329,
-      "sha256": "92ce6a1aa1e34fdfb4ff989d6c7985a26ed11f72bb281088dd97d7e1d55e7562"
+      "size": 309,
+      "sha256": "eb95b9f313170a7dac3247fc7a2e4ce0347d0bcf0cca5ce248b5ea3196da83f3"
     },
     {
       "path": "game/constants/store-pricing.json",
-      "size": 2200,
-      "sha256": "289a61efb2d782c83ef9270ade2c3dfa2bab9298a7489644105c5561f3121cb5"
+      "size": 2142,
+      "sha256": "9c0861323a8d14b68d109e446173774fb5298f42ec8ba5d4e98055683a2c8d99"
     },
     {
       "path": "game/functions/background_2.png",

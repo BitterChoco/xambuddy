@@ -1,3 +1,4 @@
+import * as Crypto from "expo-crypto";
 import { Directory, File, Paths } from "expo-file-system";
 import { Platform } from "react-native";
 
@@ -25,6 +26,8 @@ export type AssetLoadingState = {
   detail: string;
   completedFiles: number;
   totalFiles: number;
+  downloadedBytes: number;
+  totalDownloadBytes: number;
   error: string | null;
   isComplete: boolean;
 };
@@ -43,6 +46,8 @@ export function createInitialAssetLoadingState(): AssetLoadingState {
     detail: "Connecting to the asset release…",
     completedFiles: 0,
     totalFiles: 0,
+    downloadedBytes: 0,
+    totalDownloadBytes: 0,
     error: null,
     isComplete: false,
   };
@@ -58,6 +63,35 @@ function getAssetDirectory() {
 
 function encodePath(path: string) {
   return path.split("/").map(encodeURIComponent).join("/");
+}
+
+async function matchesManifestChecksum(file: File, entry: ManifestFile) {
+  if (!entry.sha256) return false;
+
+  const expectedChecksum = entry.sha256.toLowerCase();
+  if ((await file.digest("SHA-256")).toLowerCase() === expectedChecksum) {
+    return true;
+  }
+  if (!/\.(json|md)$/i.test(entry.path)) return false;
+
+  const text = await file.text();
+  const normalizedTexts = [
+    text.replace(/\r\n/g, "\n"),
+    text.replace(/\r\n|\n/g, "\r\n"),
+  ];
+  for (const normalizedText of normalizedTexts) {
+    if (
+      (
+        await Crypto.digestStringAsync(
+          Crypto.CryptoDigestAlgorithm.SHA256,
+          normalizedText,
+        )
+      ).toLowerCase() === expectedChecksum
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function validateManifest(value: unknown): AssetManifest {
@@ -198,6 +232,8 @@ export async function loadRemoteAssets(onProgress: ProgressCallback) {
       detail: `Release ${manifest.version} is ready; web images load on demand.`,
       completedFiles: 0,
       totalFiles: manifest.files.length,
+      downloadedBytes: 0,
+      totalDownloadBytes: 0,
       error: null,
       isComplete: true,
     });
@@ -214,14 +250,11 @@ export async function loadRemoteAssets(onProgress: ProgressCallback) {
   const installedVersion = installedVersionFile.exists
     ? await installedVersionFile.text().catch(() => "")
     : "";
-  const totalBytes = manifest.files.reduce(
-    (sum, entry) => sum + Math.max(entry.size, 1),
-    0,
-  );
   const activeBytes = new Map<string, number>();
   let completedBytes = 0;
+  let totalDownloadBytes = 0;
   let completedFiles = 0;
-  let nextFileIndex = 0;
+  let isCheckingFiles = true;
   let lastPublishedAt = 0;
   let downloadError: Error | null = null;
 
@@ -233,19 +266,21 @@ export async function loadRemoteAssets(onProgress: ProgressCallback) {
       (sum, bytes) => sum + bytes,
       0,
     );
+    const downloadedBytes = completedBytes + inProgressBytes;
     onProgress({
-      progress:
-        totalBytes === 0
-          ? 100
+      progress: isCheckingFiles
+        ? 0
+        : totalDownloadBytes === 0
+          ? 99
           : Math.min(
               99,
-              Math.floor(
-                ((completedBytes + inProgressBytes) / totalBytes) * 100,
-              ),
+              Math.floor((downloadedBytes / totalDownloadBytes) * 100),
             ),
       detail,
       completedFiles,
       totalFiles: manifest.files.length,
+      downloadedBytes: Math.min(downloadedBytes, totalDownloadBytes),
+      totalDownloadBytes,
       error: null,
       isComplete: false,
     });
@@ -256,79 +291,105 @@ export async function loadRemoteAssets(onProgress: ProgressCallback) {
     true,
   );
 
+  const pendingDownloads: { entry: ManifestFile; destination: File }[] = [];
+  for (const entry of manifest.files) {
+    const destination = new File(assetDirectory, ...entry.path.split("/"));
+    const parentDirectory = new Directory(
+      assetDirectory,
+      ...entry.path.split("/").slice(0, -1),
+    );
+
+    try {
+      parentDirectory.create({ idempotent: true, intermediates: true });
+      publish(`Checking ${entry.path}`, true);
+
+      let alreadyCurrent =
+        destination.exists && destination.size === entry.size;
+      if (
+        destination.exists &&
+        (!alreadyCurrent || installedVersion !== manifest.version)
+      ) {
+        alreadyCurrent = await matchesManifestChecksum(destination, entry);
+      }
+
+      if (alreadyCurrent) {
+        completedFiles += 1;
+      } else {
+        pendingDownloads.push({ entry, destination });
+        totalDownloadBytes += entry.size;
+      }
+    } catch (error) {
+      throw error instanceof Error
+        ? error
+        : new Error(`Failed to check ${entry.path}.`);
+    }
+  }
+
+  isCheckingFiles = false;
+  publish(
+    pendingDownloads.length > 0
+      ? `Downloading ${pendingDownloads.length} assets…`
+      : "All assets are already downloaded.",
+    true,
+  );
+
+  let nextFileIndex = 0;
   const worker = async () => {
-    while (nextFileIndex < manifest.files.length && !downloadError) {
-      const entry = manifest.files[nextFileIndex];
+    while (nextFileIndex < pendingDownloads.length && !downloadError) {
+      const { entry, destination } = pendingDownloads[nextFileIndex];
       nextFileIndex += 1;
       const weight = Math.max(entry.size, 1);
-      const destination = new File(assetDirectory, ...entry.path.split("/"));
-      const parentDirectory = new Directory(
-        assetDirectory,
-        ...entry.path.split("/").slice(0, -1),
-      );
 
       try {
-        parentDirectory.create({ idempotent: true, intermediates: true });
-        publish(`Checking ${entry.path}`, true);
-
-        let alreadyCurrent =
-          destination.exists && destination.size === entry.size;
-        if (alreadyCurrent && installedVersion !== manifest.version) {
-          if (entry.sha256) {
-            alreadyCurrent =
-              (await destination.digest("SHA-256")).toLowerCase() ===
-              entry.sha256.toLowerCase();
-          } else {
-            alreadyCurrent = false;
-          }
-        }
-
-        if (!alreadyCurrent) {
-          if (destination.exists) destination.delete();
-          activeBytes.set(entry.path, 0);
-          publish(`Downloading ${entry.path}`, true);
-          const task = File.createDownloadTask(
-            `${REMOTE_ASSET_BASE_URL}/${encodePath(entry.path)}`,
-            destination,
-            {
-              onProgress: ({ bytesWritten, totalBytes: fileTotalBytes }) => {
-                activeBytes.set(
-                  entry.path,
-                  Math.min(
-                    weight,
-                    fileTotalBytes > 0
-                      ? bytesWritten
-                      : Math.min(bytesWritten, weight),
-                  ),
-                );
-                publish(`Downloading ${entry.path}`);
-              },
+        if (destination.exists) destination.delete();
+        activeBytes.set(entry.path, 0);
+        publish(`Downloading ${entry.path}`, true);
+        const task = File.createDownloadTask(
+          `${REMOTE_ASSET_BASE_URL}/${encodePath(entry.path)}`,
+          destination,
+          {
+            onProgress: ({ bytesWritten, totalBytes: fileTotalBytes }) => {
+              activeBytes.set(
+                entry.path,
+                Math.min(
+                  weight,
+                  fileTotalBytes > 0
+                    ? bytesWritten
+                    : Math.min(bytesWritten, weight),
+                ),
+              );
+              publish(`Downloading ${entry.path}`);
             },
+          },
+        );
+        const downloadedFile = await task.downloadAsync();
+        if (!downloadedFile || !downloadedFile.exists) {
+          throw new Error(`Download did not complete: ${entry.path}`);
+        }
+        const checksumMatches = await matchesManifestChecksum(
+          downloadedFile,
+          entry,
+        );
+        if (
+          entry.size > 0 &&
+          downloadedFile.size !== entry.size &&
+          !checksumMatches
+        ) {
+          downloadedFile.delete();
+          throw new Error(
+            `Downloaded file size does not match the manifest: ${entry.path}`,
           );
-          const downloadedFile = await task.downloadAsync();
-          if (!downloadedFile || !downloadedFile.exists) {
-            throw new Error(`Download did not complete: ${entry.path}`);
-          }
-          if (entry.size > 0 && downloadedFile.size !== entry.size) {
-            downloadedFile.delete();
-            throw new Error(
-              `Downloaded file size does not match the manifest: ${entry.path}`,
-            );
-          }
-          if (
-            entry.sha256 &&
-            (await downloadedFile.digest("SHA-256")).toLowerCase() !==
-              entry.sha256.toLowerCase()
-          ) {
-            downloadedFile.delete();
-            throw new Error(
-              `Downloaded file checksum does not match: ${entry.path}`,
-            );
-          }
-          activeBytes.delete(entry.path);
+        }
+        if (entry.sha256 && !checksumMatches) {
+          downloadedFile.delete();
+          throw new Error(
+            `Downloaded file checksum does not match: ${entry.path}`,
+          );
         }
 
-        completedBytes += weight;
+        activeBytes.delete(entry.path);
+        totalDownloadBytes += downloadedFile.size - entry.size;
+        completedBytes += downloadedFile.size;
         completedFiles += 1;
         publish(`Ready: ${entry.path}`, true);
       } catch (error) {
@@ -356,6 +417,8 @@ export async function loadRemoteAssets(onProgress: ProgressCallback) {
     detail: `All ${manifest.files.length} assets are ready.`,
     completedFiles: manifest.files.length,
     totalFiles: manifest.files.length,
+    downloadedBytes: completedBytes,
+    totalDownloadBytes,
     error: null,
     isComplete: true,
   });

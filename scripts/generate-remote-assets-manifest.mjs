@@ -1,5 +1,6 @@
+import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
-import { readdir, readFile, stat } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -68,14 +69,17 @@ const files = [
   .sort((left, right) => left.localeCompare(right));
 const manifestFiles = await Promise.all(
   files.map(async (absolutePath) => {
-    const [contents, fileStats] = await Promise.all([
-      readFile(absolutePath),
-      stat(absolutePath),
-    ]);
+    const contents = await readFile(absolutePath);
+    const isTextFile = [".json", ".md"].includes(
+      path.extname(absolutePath).toLowerCase(),
+    );
+    const manifestContents = isTextFile
+      ? Buffer.from(contents.toString("utf8").replace(/\r\n/g, "\n"), "utf8")
+      : contents;
     return {
       path: path.relative(assetsRoot, absolutePath).split(path.sep).join("/"),
-      size: fileStats.size,
-      sha256: createHash("sha256").update(contents).digest("hex"),
+      size: manifestContents.byteLength,
+      sha256: createHash("sha256").update(manifestContents).digest("hex"),
     };
   }),
 );

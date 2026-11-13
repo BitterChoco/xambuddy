@@ -3,16 +3,16 @@ import { initializeRemoteGameCatalogs } from "@/constants/game-catalog";
 import { initializeRemoteGameConfiguration } from "@/constants/game-configuration";
 import { initializeDefaultPlayerInventory } from "@/constants/player-inventory";
 import {
-  getMusicVolume,
-  subscribeToMusicVolume,
+    getMusicVolume,
+    subscribeToMusicVolume,
 } from "@/constants/player-settings";
 import { initializeRemoteStorePricing } from "@/constants/store-pricing";
 import "@/global.css";
 import {
-  createInitialAssetLoadingState,
-  getRemoteAssetSource,
-  loadRemoteAssets,
-  type AssetLoadingState,
+    createInitialAssetLoadingState,
+    getRemoteAssetSource,
+    loadRemoteAssets,
+    type AssetLoadingState,
 } from "@/services/remote-assets";
 import { createAudioPlayer, setAudioModeAsync } from "expo-audio";
 import { Image } from "expo-image";
@@ -35,6 +35,20 @@ const battleMusic = getRemoteAssetSource(
 
 if (Platform.OS !== "web") {
   void SplashScreen.preventAutoHideAsync().catch(() => undefined);
+}
+
+function formatBytes(bytes: number) {
+  if (bytes < 1024) return `${Math.max(0, Math.round(bytes))} B`;
+
+  const units = ["KB", "MB", "GB"];
+  let value = bytes / 1024;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+
+  return `${value.toFixed(value >= 10 ? 0 : 1)} ${units[unitIndex]}`;
 }
 
 export default function RootLayout() {
@@ -309,6 +323,23 @@ export default function RootLayout() {
                   {assetLoadingState.progress}%
                 </Text>
               </View>
+              <Text
+                style={{
+                  color: "rgba(255,255,255,0.9)",
+                  marginTop: 4,
+                  fontSize: 11,
+                  textAlign: "center",
+                  textShadowColor: "rgba(0,0,0,0.95)",
+                  textShadowOffset: { width: 1, height: 1 },
+                  textShadowRadius: 3,
+                }}
+              >
+                {Platform.OS === "web"
+                  ? "Assets load on demand"
+                  : assetLoadingState.totalFiles === 0
+                    ? "Calculating download size…"
+                    : `${formatBytes(assetLoadingState.downloadedBytes)} / ${formatBytes(assetLoadingState.totalDownloadBytes)} downloaded`}
+              </Text>
               {assetLoadingState.error && (
                 <Pressable
                   onPress={retryAssetDownload}
