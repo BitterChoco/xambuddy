@@ -3,16 +3,16 @@ import { initializeRemoteGameCatalogs } from "@/constants/game-catalog";
 import { initializeRemoteGameConfiguration } from "@/constants/game-configuration";
 import { initializeDefaultPlayerInventory } from "@/constants/player-inventory";
 import {
-  getMusicVolume,
-  subscribeToMusicVolume,
+    getMusicVolume,
+    subscribeToMusicVolume,
 } from "@/constants/player-settings";
 import { initializeRemoteStorePricing } from "@/constants/store-pricing";
 import "@/global.css";
 import {
-  createInitialAssetLoadingState,
-  getRemoteAssetSource,
-  loadRemoteAssets,
-  type AssetLoadingState,
+    createInitialAssetLoadingState,
+    getRemoteAssetSource,
+    loadRemoteAssets,
+    type AssetLoadingState,
 } from "@/services/remote-assets";
 import { createAudioPlayer, setAudioModeAsync } from "expo-audio";
 import { Image } from "expo-image";

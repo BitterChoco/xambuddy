@@ -1,22 +1,25 @@
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
-  DEFAULT_PROFILE_PICTURE,
-  PROFILE_PICTURES,
-  isProfilePictureId,
+    DEFAULT_PROFILE_PICTURE,
+    PROFILE_PICTURES,
+    isProfilePictureId,
 } from "@/constants/game-catalog";
-import { getPlayerLevelProgress, getPlayerXp } from "@/constants/player-experience";
+import {
+    getPlayerLevelProgress,
+    getPlayerXp,
+} from "@/constants/player-experience";
 import { getPlayerHighScore } from "@/constants/player-high-score";
 import { getRemoteAssetSource } from "@/services/remote-assets";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Image } from "expo-image";
 import { router } from "expo-router";
 import { useEffect, useState } from "react";
 import {
-  ActivityIndicator,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  View,
+    ActivityIndicator,
+    Pressable,
+    ScrollView,
+    StyleSheet,
+    Text,
+    View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
@@ -155,7 +158,9 @@ export default function RankScreen() {
           <View style={styles.listHeader}>
             <View>
               <Text style={styles.listTitle}>
-                {isScoreTab ? "HIGH SCORE LEADERBOARD" : "PLAYER LEVEL LEADERBOARD"}
+                {isScoreTab
+                  ? "HIGH SCORE LEADERBOARD"
+                  : "PLAYER LEVEL LEADERBOARD"}
               </Text>
               <Text style={styles.listSubtitle}>YOUR LOCAL PLAYER PROFILE</Text>
             </View>
@@ -199,7 +204,9 @@ export default function RankScreen() {
                     </View>
                   </View>
                   <Text style={styles.playerDetail}>
-                    {isScoreTab ? "PERSONAL BEST" : `${player.totalXp.toLocaleString()} TOTAL XP`}
+                    {isScoreTab
+                      ? "PERSONAL BEST"
+                      : `${player.totalXp.toLocaleString()} TOTAL XP`}
                   </Text>
                 </View>
                 <Text style={styles.playerValue}>

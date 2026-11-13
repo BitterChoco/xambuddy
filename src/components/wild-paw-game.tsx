@@ -71,6 +71,48 @@ type Enemy = {
   damage: number;
   color: string;
   isBoss: boolean;
+  arenaBossId?: string;
+  scoreReward?: number;
+};
+
+type ArenaBossPattern = "artillery" | "charger";
+type BossPhase = "idle" | "warning" | "entrance" | "active";
+type BossAttackPhase = "cooldown" | "telegraph" | "dash";
+type ArenaBossConfig = {
+  id: string;
+  name: string;
+  pattern: ArenaBossPattern;
+  color: string;
+  fallbackIcon: string;
+  /** Storage-release asset path; set when the boss portrait is uploaded. */
+  imageAsset: string | null;
+  health: number;
+  contactDamage: number;
+  projectileDamage: number;
+  areaDamage: number;
+  dashDamage: number;
+  scoreReward: number;
+};
+
+type BossProjectile = {
+  id: number;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  speed: number;
+  radius: number;
+  damage: number;
+  life: number;
+  color: string;
+};
+
+type BossAreaEffect = {
+  id: number;
+  x: number;
+  y: number;
+  radius: number;
+  life: number;
 };
 
 type Bullet = {
@@ -244,6 +286,16 @@ type GameState = {
   bossHealth: number;
   bossHealthMax: number;
   bossName: string;
+  bossConfigId: string | null;
+  bossPhase: BossPhase;
+  bossPhaseTimer: number;
+  bossAttackPhase: BossAttackPhase;
+  bossAttackTimer: number;
+  bossTelegraphTarget: Vector | null;
+  bossDashDirection: Vector | null;
+  bossDashHasHit: boolean;
+  bossProjectiles: BossProjectile[];
+  bossAreaEffects: BossAreaEffect[];
 };
 
 const ARENA_WIDTH = 640;
@@ -306,7 +358,15 @@ function getEnemiesRemainingInWave(game: GameState) {
     game.wave > 1 && game.wave % 3 === 0 && game.bossSpawnedAtWave !== game.wave
       ? 1
       : 0;
-  return game.enemies.length + game.enemiesToSpawn + pendingBoss;
+  const pendingArenaBoss =
+    game.wave % WAVES_PER_ARENA === 0 &&
+    game.bossPhase === "warning" &&
+    !game.enemies.some((enemy) => enemy.arenaBossId)
+      ? 1
+      : 0;
+  return (
+    game.enemies.length + game.enemiesToSpawn + pendingBoss + pendingArenaBoss
+  );
 }
 
 function replaySoundEffect(
@@ -327,6 +387,54 @@ const arenaBackgrounds = [
 ];
 const WAVES_PER_ARENA = 10;
 const WARP_TRANSITION_DURATION = 5;
+const BOSS_WARNING_DURATION = 5;
+const BOSS_ENTRANCE_DURATION = 2.8;
+const BOSS_ATTACK_TELEGRAPH_DURATION = 1.35;
+const BOSS_DASH_DURATION = 0.72;
+const BOSS_DASH_SPEED = 520;
+const BOSS_AREA_RADIUS = 74;
+const BOSS_CONFIGS: ArenaBossConfig[] = [
+  {
+    id: "thorn-titan",
+    name: "Thorn Titan",
+    pattern: "artillery",
+    color: "#fb7185",
+    fallbackIcon: "♛",
+    // Example future path: "game/boss/thorn_titan.png"
+    imageAsset: null,
+    health: 5000,
+    contactDamage: 18,
+    projectileDamage: 38,
+    areaDamage: 46,
+    dashDamage: 0,
+    scoreReward: 1500,
+  },
+  {
+    id: "bloom-beast",
+    name: "Bloom Beast",
+    pattern: "charger",
+    color: "#c084fc",
+    fallbackIcon: "✿",
+    // Example future path: "game/boss/bloom_beast.png"
+    imageAsset: null,
+    health: 8000,
+    contactDamage: 14,
+    projectileDamage: 0,
+    areaDamage: 0,
+    dashDamage: 58,
+    scoreReward: 1800,
+  },
+];
+
+function getArenaBossForWave(wave: number): ArenaBossConfig {
+  const encounterIndex = Math.max(0, Math.floor(wave / WAVES_PER_ARENA) - 1);
+  return BOSS_CONFIGS[encounterIndex % BOSS_CONFIGS.length];
+}
+
+function getEnemyScoreReward(enemy: Enemy) {
+  return enemy.scoreReward ?? (enemy.isBoss ? 50 : 10);
+}
+
 const POWER_UPS: Omit<PowerUpChoice, "amount">[] = [
   {
     id: "damagePercent",
@@ -924,7 +1032,7 @@ function advanceGrenadeProjectiles(
         target: "enemy",
       });
       if (enemy.health <= 0) {
-        score += enemy.isBoss ? 50 : 10;
+        score += getEnemyScoreReward(enemy);
         itemDrops.push(...makeEnemyDrops(enemy, itemDrops));
       }
     }
@@ -979,6 +1087,44 @@ function makeEnemy(wave: number, id: number): Enemy {
     color: isBoss ? "#f97316" : "#34d399",
     isBoss,
   };
+}
+
+function makeArenaBoss(config: ArenaBossConfig, wave: number): Enemy {
+  const encounterNumber = Math.max(1, Math.floor(wave / WAVES_PER_ARENA));
+  const health = config.health + (encounterNumber - 1) * 250;
+  return {
+    id: Date.now() + Math.random(),
+    x: ARENA_WIDTH / 2,
+    y: -86,
+    radius: 42,
+    health,
+    maxHealth: health,
+    speed: 0,
+    damage: config.contactDamage,
+    color: config.color,
+    isBoss: true,
+    arenaBossId: config.id,
+    scoreReward: config.scoreReward,
+  };
+}
+
+function distanceToSegment(point: Vector, start: Vector, end: Vector) {
+  const segmentX = end.x - start.x;
+  const segmentY = end.y - start.y;
+  const lengthSquared = segmentX * segmentX + segmentY * segmentY;
+  const t =
+    lengthSquared === 0
+      ? 0
+      : clamp(
+          ((point.x - start.x) * segmentX + (point.y - start.y) * segmentY) /
+            lengthSquared,
+          0,
+          1,
+        );
+  return Math.hypot(
+    point.x - (start.x + t * segmentX),
+    point.y - (start.y + t * segmentY),
+  );
 }
 
 function createPlayer(
@@ -1150,8 +1296,14 @@ function fireOrbAtNearestEnemy(
     enemies: defeated
       ? enemies.filter((enemy) => enemy.id !== target.id)
       : enemies,
-    score: defeated ? (target.isBoss ? 50 : 10) : 0,
-    message: defeated ? (target.isBoss ? "Boss defeated!" : "Plant down!") : "",
+    score: defeated ? getEnemyScoreReward(target) : 0,
+    message: defeated
+      ? target.arenaBossId
+        ? `${BOSS_CONFIGS.find((boss) => boss.id === target.arenaBossId)?.name ?? "Boss"} defeated!`
+        : target.isBoss
+          ? "Boss defeated!"
+          : "Plant down!"
+      : "",
     beam: {
       id: Date.now() + Math.random(),
       playerId: player.id,
@@ -1218,6 +1370,16 @@ function createInitialGame(
     bossHealth: 0,
     bossHealthMax: 0,
     bossName: "Thorn Titan",
+    bossConfigId: null,
+    bossPhase: "idle",
+    bossPhaseTimer: 0,
+    bossAttackPhase: "cooldown",
+    bossAttackTimer: 0,
+    bossTelegraphTarget: null,
+    bossDashDirection: null,
+    bossDashHasHit: false,
+    bossProjectiles: [],
+    bossAreaEffects: [],
   };
 }
 
@@ -3026,7 +3188,207 @@ export function WildPawGame({
           (candidate): candidate is PlayerState =>
             !!candidate && !candidate.isDead,
         );
+        let message = previous.message;
+        let bossPhase = previous.bossPhase;
+        let bossPhaseTimer = previous.bossPhaseTimer;
+        let bossConfigId = previous.bossConfigId;
+        let bossAttackPhase = previous.bossAttackPhase;
+        let bossAttackTimer = previous.bossAttackTimer;
+        let bossTelegraphTarget = previous.bossTelegraphTarget;
+        let bossDashDirection = previous.bossDashDirection;
+        let bossDashHasHit = previous.bossDashHasHit;
+        let bossHealth = previous.bossHealth;
+        let bossHealthMax = previous.bossHealthMax;
+        let bossName = previous.bossName;
+        let bossProjectiles: BossProjectile[] = previous.bossProjectiles
+          .map((projectile) => ({
+            ...projectile,
+            life: projectile.life - delta,
+          }))
+          .filter((projectile) => projectile.life > 0);
+        let bossAreaEffects = previous.bossAreaEffects
+          .map((effect) => ({ ...effect, life: effect.life - delta }))
+          .filter((effect) => effect.life > 0);
+        let bossDamageHost = 0;
+        let bossDamageJoin = 0;
+        let bossDefeatedThisTick = false;
+
+        if (bossPhase === "warning") {
+          bossPhaseTimer = Math.max(0, bossPhaseTimer - delta);
+          if (bossPhaseTimer === 0) {
+            const config = getArenaBossForWave(previous.wave);
+            bossConfigId = config.id;
+            bossName = config.name;
+            bossHealth =
+              config.health +
+              (Math.floor(previous.wave / WAVES_PER_ARENA) - 1) * 250;
+            bossHealthMax = bossHealth;
+            bossPhase = "entrance";
+            bossPhaseTimer = BOSS_ENTRANCE_DURATION;
+            bossAttackPhase = "cooldown";
+            bossAttackTimer = 0;
+            bossTelegraphTarget = null;
+            bossDashDirection = null;
+            bossDashHasHit = false;
+          }
+        } else if (bossPhase === "entrance") {
+          bossPhaseTimer = Math.max(0, bossPhaseTimer - delta);
+          if (bossPhaseTimer === 0) {
+            bossPhase = "active";
+            bossAttackPhase = "cooldown";
+            bossAttackTimer = 2.5;
+            message = `${bossName} is ready to attack!`;
+          }
+        } else if (bossPhase === "active") {
+          const config = BOSS_CONFIGS.find((boss) => boss.id === bossConfigId);
+          const arenaBoss = previous.enemies.find(
+            (enemy) => enemy.arenaBossId === bossConfigId,
+          );
+          if (config && arenaBoss && bossAttackPhase === "cooldown") {
+            bossAttackTimer = Math.max(0, bossAttackTimer - delta);
+            if (bossAttackTimer === 0) {
+              const target = livingPlayers.reduce((closest, candidate) =>
+                Math.hypot(
+                  candidate.x - arenaBoss.x,
+                  candidate.y - arenaBoss.y,
+                ) < Math.hypot(closest.x - arenaBoss.x, closest.y - arenaBoss.y)
+                  ? candidate
+                  : closest,
+              );
+              bossTelegraphTarget = { x: target.x, y: target.y };
+              if (config.pattern === "artillery") {
+                const direction = normalize({
+                  x: target.x - arenaBoss.x,
+                  y: target.y - arenaBoss.y,
+                });
+                bossProjectiles.push({
+                  id: Date.now() + Math.random(),
+                  x: arenaBoss.x,
+                  y: arenaBoss.y,
+                  vx: direction.x,
+                  vy: direction.y,
+                  speed: 210,
+                  radius: 15,
+                  damage: config.projectileDamage,
+                  life: 5,
+                  color: config.color,
+                });
+              } else {
+                bossDashDirection = normalize({
+                  x: target.x - arenaBoss.x,
+                  y: target.y - arenaBoss.y,
+                });
+              }
+              bossAttackPhase = "telegraph";
+              bossAttackTimer = BOSS_ATTACK_TELEGRAPH_DURATION;
+            }
+          } else if (config && bossAttackPhase === "telegraph") {
+            bossAttackTimer = Math.max(0, bossAttackTimer - delta);
+            if (bossAttackTimer === 0 && config.pattern === "artillery") {
+              const target = bossTelegraphTarget;
+              if (target) {
+                bossAreaEffects.push({
+                  id: Date.now() + Math.random(),
+                  x: target.x,
+                  y: target.y,
+                  radius: BOSS_AREA_RADIUS,
+                  life: 0.55,
+                });
+                for (const candidate of livingPlayers) {
+                  if (
+                    Math.hypot(
+                      candidate.x - target.x,
+                      candidate.y - target.y,
+                    ) <=
+                    BOSS_AREA_RADIUS + candidate.radius
+                  ) {
+                    const damage =
+                      config.areaDamage *
+                      (1 - getBuddyBonus(candidate.buddyId, "defense") / 100);
+                    if (candidate.id === "host") bossDamageHost += damage;
+                    else bossDamageJoin += damage;
+                  }
+                }
+              }
+              bossAttackPhase = "cooldown";
+              bossAttackTimer = 1.65;
+              bossTelegraphTarget = null;
+            } else if (bossAttackTimer === 0 && config?.pattern === "charger") {
+              bossAttackPhase = "dash";
+              bossAttackTimer = BOSS_DASH_DURATION;
+              bossDashHasHit = false;
+            }
+          } else if (config && bossAttackPhase === "dash") {
+            bossAttackTimer = Math.max(0, bossAttackTimer - delta);
+            if (bossAttackTimer === 0) {
+              bossAttackPhase = "cooldown";
+              bossAttackTimer = 3;
+              bossDashDirection = null;
+              bossTelegraphTarget = null;
+              bossDashHasHit = false;
+            }
+          }
+        }
+
         let enemies = previous.enemies.map((enemy) => {
+          if (enemy.arenaBossId) {
+            if (previous.bossPhase === "entrance") {
+              const progress = clamp(
+                1 - bossPhaseTimer / BOSS_ENTRANCE_DURATION,
+                0,
+                1,
+              );
+              const wiggle =
+                Math.sin((BOSS_ENTRANCE_DURATION - bossPhaseTimer) * 22) *
+                22 *
+                (1 - progress);
+              return {
+                ...enemy,
+                x: ARENA_WIDTH / 2 + wiggle,
+                y: -enemy.radius + (92 + enemy.radius) * progress,
+              };
+            }
+            if (
+              bossPhase === "active" &&
+              bossAttackPhase === "dash" &&
+              bossDashDirection
+            ) {
+              const nextX = clamp(
+                enemy.x + bossDashDirection.x * BOSS_DASH_SPEED * delta,
+                enemy.radius,
+                ARENA_WIDTH - enemy.radius,
+              );
+              const nextY = clamp(
+                enemy.y + bossDashDirection.y * BOSS_DASH_SPEED * delta,
+                enemy.radius,
+                ARENA_HEIGHT - enemy.radius,
+              );
+              const start = { x: enemy.x, y: enemy.y };
+              const end = { x: nextX, y: nextY };
+              if (!bossDashHasHit) {
+                for (const candidate of livingPlayers) {
+                  if (
+                    distanceToSegment(candidate, start, end) <=
+                    enemy.radius + candidate.radius
+                  ) {
+                    const config = BOSS_CONFIGS.find(
+                      (boss) => boss.id === enemy.arenaBossId,
+                    );
+                    const damage =
+                      (config?.dashDamage ?? 50) *
+                      (1 - getBuddyBonus(candidate.buddyId, "defense") / 100);
+                    if (candidate.id === "host") bossDamageHost += damage;
+                    else bossDamageJoin += damage;
+                    bossDashHasHit = true;
+                    break;
+                  }
+                }
+              }
+              return { ...enemy, x: nextX, y: nextY };
+            }
+            return enemy;
+          }
+
           const target = livingPlayers.reduce((closest, candidate) =>
             Math.hypot(candidate.x - enemy.x, candidate.y - enemy.y) <
             Math.hypot(closest.x - enemy.x, closest.y - enemy.y)
@@ -3046,6 +3408,48 @@ export function WildPawGame({
             y: clamp(newY, enemy.radius, ARENA_HEIGHT - enemy.radius),
           };
         });
+
+        if (previous.bossPhase === "warning" && bossPhase === "entrance") {
+          const config = BOSS_CONFIGS.find((boss) => boss.id === bossConfigId);
+          if (config) enemies.push(makeArenaBoss(config, previous.wave));
+        }
+
+        const projectileHitIds = new Set<number>();
+        for (const projectile of bossProjectiles) {
+          const start = { x: projectile.x, y: projectile.y };
+          const end = {
+            x: projectile.x + projectile.vx * projectile.speed * delta,
+            y: projectile.y + projectile.vy * projectile.speed * delta,
+          };
+          for (const candidate of livingPlayers) {
+            if (
+              distanceToSegment(candidate, start, end) <=
+              projectile.radius + candidate.radius
+            ) {
+              const damage =
+                projectile.damage *
+                (1 - getBuddyBonus(candidate.buddyId, "defense") / 100);
+              if (candidate.id === "host") bossDamageHost += damage;
+              else bossDamageJoin += damage;
+              projectileHitIds.add(projectile.id);
+              break;
+            }
+          }
+          if (projectileHitIds.has(projectile.id)) continue;
+          projectile.x = end.x;
+          projectile.y = end.y;
+          if (
+            projectile.x < -projectile.radius ||
+            projectile.x > ARENA_WIDTH + projectile.radius ||
+            projectile.y < -projectile.radius ||
+            projectile.y > ARENA_HEIGHT + projectile.radius
+          ) {
+            projectileHitIds.add(projectile.id);
+          }
+        }
+        bossProjectiles = bossProjectiles.filter(
+          (projectile) => !projectileHitIds.has(projectile.id),
+        );
 
         let bullets = previous.bullets
           .map((bullet) => ({
@@ -3136,10 +3540,6 @@ export function WildPawGame({
         let warpPending = previous.warpPending;
         let enemiesToSpawn = previous.enemiesToSpawn;
         let bossSpawnedAtWave = previous.bossSpawnedAtWave;
-        let message = previous.message;
-        let bossHealth = previous.bossHealth;
-        let bossHealthMax = previous.bossHealthMax;
-        let bossName = previous.bossName;
         let damageNumbers = previous.damageNumbers
           .map((damageNumber) => ({
             ...damageNumber,
@@ -3186,8 +3586,16 @@ export function WildPawGame({
 
               if (enemy.health <= 0) {
                 enemyAlive = false;
-                score += enemy.isBoss ? 50 : 10;
-                message = enemy.isBoss ? "Boss defeated!" : "Plant down!";
+                score += getEnemyScoreReward(enemy);
+                if (enemy.arenaBossId) {
+                  const config = BOSS_CONFIGS.find(
+                    (boss) => boss.id === enemy.arenaBossId,
+                  );
+                  message = `${config?.name ?? "Boss"} defeated! +${getEnemyScoreReward(enemy)} points`;
+                  bossDefeatedThisTick = true;
+                } else {
+                  message = enemy.isBoss ? "Boss defeated!" : "Plant down!";
+                }
                 itemDrops.push(...makeEnemyDrops(enemy, itemDrops));
               }
               break;
@@ -3257,11 +3665,17 @@ export function WildPawGame({
           bossName = bossEnemy.isBoss ? "Thorn Titan" : "Bloom Beast";
         }
 
-        const currentBoss = enemies.find((enemy) => enemy.isBoss);
+        const currentBoss =
+          enemies.find((enemy) => enemy.arenaBossId) ??
+          enemies.find((enemy) => enemy.isBoss);
         if (currentBoss) {
           bossHealth = currentBoss.health;
           bossHealthMax = currentBoss.maxHealth;
-          bossName = currentBoss.health > 0 ? "Thorn Titan" : bossName;
+          if (currentBoss.arenaBossId) {
+            bossName =
+              BOSS_CONFIGS.find((boss) => boss.id === currentBoss.arenaBossId)
+                ?.name ?? bossName;
+          }
         } else {
           bossHealth = 0;
           bossHealthMax = 0;
@@ -3281,9 +3695,10 @@ export function WildPawGame({
         const damageOnePlayer = (
           currentPlayer: PlayerState | null,
           hostPlayer: boolean,
+          arenaBossDamage: number,
         ) => {
           if (!currentPlayer || currentPlayer.isDead) return currentPlayer;
-          let damageTaken = 0;
+          let damageTaken = arenaBossDamage;
           for (const enemy of enemies) {
             const dx = currentPlayer.x - enemy.x;
             const dy = currentPlayer.y - enemy.y;
@@ -3341,8 +3756,8 @@ export function WildPawGame({
             damageTimer,
           };
         };
-        player = damageOnePlayer(player, true) ?? player;
-        joinPlayer = damageOnePlayer(joinPlayer, false);
+        player = damageOnePlayer(player, true, bossDamageHost) ?? player;
+        joinPlayer = damageOnePlayer(joinPlayer, false, bossDamageJoin);
 
         if (!player.isDead) {
           const pickup = advanceItemDrops(itemDrops, player, delta);
@@ -3440,7 +3855,7 @@ export function WildPawGame({
         const pendingPlayerDamage = player.pendingDamage;
         const playerDamageTimer = player.damageTimer;
 
-        if (enemies.length === 0 && enemiesToSpawn === 0) {
+        const advanceWaveAfterClear = () => {
           wave += 1;
           waveCountdown = WAVE_BREAK_DURATION;
           const isNewArena = (wave - 1) % WAVES_PER_ARENA === 0;
@@ -3452,9 +3867,53 @@ export function WildPawGame({
           spawnCooldown = 0;
           bossHealth = 0;
           bossHealthMax = 0;
+          bossPhase = "idle";
+          bossPhaseTimer = 0;
+          bossConfigId = null;
+          bossAttackPhase = "cooldown";
+          bossAttackTimer = 0;
+          bossTelegraphTarget = null;
+          bossDashDirection = null;
+          bossDashHasHit = false;
+          bossProjectiles = [];
+          bossAreaEffects = [];
           message = isNewArena
             ? "Choose a power-up before warping"
             : `Wave ${wave - 1} cleared! Prepare for wave ${wave}`;
+        };
+
+        if (enemies.length === 0 && enemiesToSpawn === 0) {
+          const majorBossAlive = enemies.some((enemy) => enemy.arenaBossId);
+          const majorBossWasDefeated =
+            previous.bossPhase === "active" &&
+            (!majorBossAlive || bossDefeatedThisTick);
+          if (
+            previous.wave % WAVES_PER_ARENA === 0 &&
+            previous.bossPhase === "idle" &&
+            bossSpawnedAtWave !== previous.wave
+          ) {
+            const config = getArenaBossForWave(previous.wave);
+            bossPhase = "warning";
+            bossPhaseTimer = BOSS_WARNING_DURATION;
+            bossConfigId = config.id;
+            bossName = config.name;
+            bossSpawnedAtWave = previous.wave;
+            bossHealth = 0;
+            bossHealthMax =
+              config.health +
+              (Math.floor(previous.wave / WAVES_PER_ARENA) - 1) * 250;
+            bossAttackPhase = "cooldown";
+            bossAttackTimer = 0;
+            bossProjectiles = [];
+            bossAreaEffects = [];
+            message = `WARNING! ${config.name} is coming!`;
+          } else if (majorBossWasDefeated) {
+            bossHealth = 0;
+            bossHealthMax = 0;
+            advanceWaveAfterClear();
+          } else if (previous.bossPhase === "idle") {
+            advanceWaveAfterClear();
+          }
         }
 
         const nextState: GameState = {
@@ -3493,6 +3952,16 @@ export function WildPawGame({
           bossHealth,
           bossHealthMax,
           bossName,
+          bossConfigId,
+          bossPhase,
+          bossPhaseTimer,
+          bossAttackPhase,
+          bossAttackTimer,
+          bossTelegraphTarget,
+          bossDashDirection,
+          bossDashHasHit,
+          bossProjectiles,
+          bossAreaEffects,
         };
 
         return nextState;
@@ -3734,6 +4203,27 @@ export function WildPawGame({
     onActivate: triggerDash,
   });
 
+  const arenaBossConfig = BOSS_CONFIGS.find(
+    (boss) => boss.id === game.bossConfigId,
+  );
+  const arenaBoss = game.enemies.find(
+    (enemy) => enemy.arenaBossId === game.bossConfigId,
+  );
+  const bossTelegraphDistance =
+    arenaBoss && game.bossTelegraphTarget
+      ? Math.hypot(
+          game.bossTelegraphTarget.x - arenaBoss.x,
+          game.bossTelegraphTarget.y - arenaBoss.y,
+        )
+      : 0;
+  const bossTelegraphAngle =
+    arenaBoss && game.bossTelegraphTarget
+      ? Math.atan2(
+          game.bossTelegraphTarget.y - arenaBoss.y,
+          game.bossTelegraphTarget.x - arenaBoss.x,
+        )
+      : 0;
+
   if (isMultiplayerLobby && isLocalMultiplayer) {
     const isHost = multiplayerRole === "host";
     const displayedPlayers = lobbyPlayers.length
@@ -3881,6 +4371,159 @@ export function WildPawGame({
         />
         <View style={styles.arenaStage}>
           <View style={[styles.arena, { transform: [{ scale: arenaScale }] }]}>
+            {game.bossPhase === "warning" && game.isRunning && (
+              <View
+                pointerEvents="none"
+                accessibilityLiveRegion="assertive"
+                accessibilityLabel={`${game.bossName} is coming in ${Math.ceil(game.bossPhaseTimer)} seconds`}
+                style={styles.bossWarningOverlay}
+              >
+                <Text style={styles.bossWarningEyebrow}>
+                  WAVE {game.wave} CLEARED
+                </Text>
+                <Text style={styles.bossWarningTitle}>BOSS INCOMING!</Text>
+                <Text style={styles.bossWarningName}>{game.bossName}</Text>
+                <Text style={styles.bossWarningCountdown}>
+                  {Math.ceil(game.bossPhaseTimer)}
+                </Text>
+                <Text style={styles.bossWarningHint}>GET READY TO FIGHT</Text>
+              </View>
+            )}
+
+            {(game.bossPhase === "entrance" || game.bossPhase === "active") &&
+              arenaBossConfig && (
+                <View pointerEvents="none" style={styles.bossBarWrap}>
+                  <Text style={styles.bossLabel}>
+                    {arenaBossConfig.name} ·{" "}
+                    {arenaBossConfig.pattern.toUpperCase()}
+                  </Text>
+                  <View style={styles.bossBarOuter}>
+                    <View
+                      style={[
+                        styles.bossBarInner,
+                        {
+                          width: `${Math.max(
+                            0,
+                            (game.bossHealth /
+                              Math.max(1, game.bossHealthMax)) *
+                              100,
+                          )}%`,
+                          backgroundColor: arenaBossConfig?.color,
+                        },
+                      ]}
+                    />
+                  </View>
+                  <Text style={styles.bossHealthText}>
+                    {Math.ceil(game.bossHealth).toLocaleString()} /{" "}
+                    {Math.ceil(game.bossHealthMax).toLocaleString()}
+                  </Text>
+                </View>
+              )}
+
+            {game.bossPhase === "active" &&
+              game.bossAttackPhase === "telegraph" &&
+              game.bossTelegraphTarget && (
+                <View pointerEvents="none" style={styles.bossTelegraphLayer}>
+                  {arenaBossConfig?.pattern === "artillery" ? (
+                    <View
+                      style={[
+                        styles.bossAreaTelegraph,
+                        {
+                          left: game.bossTelegraphTarget.x - BOSS_AREA_RADIUS,
+                          top: game.bossTelegraphTarget.y - BOSS_AREA_RADIUS,
+                        },
+                      ]}
+                    />
+                  ) : arenaBoss ? (
+                    <>
+                      <View
+                        style={[
+                          styles.bossDashTelegraph,
+                          {
+                            left:
+                              (arenaBoss.x + game.bossTelegraphTarget.x) / 2 -
+                              bossTelegraphDistance / 2,
+                            top:
+                              (arenaBoss.y + game.bossTelegraphTarget.y) / 2 -
+                              22,
+                            width: bossTelegraphDistance,
+                            transform: [{ rotate: `${bossTelegraphAngle}rad` }],
+                          },
+                        ]}
+                      />
+                      <View
+                        style={[
+                          styles.bossAreaTelegraph,
+                          {
+                            left:
+                              game.bossTelegraphTarget.x - BOSS_AREA_RADIUS / 2,
+                            top:
+                              game.bossTelegraphTarget.y - BOSS_AREA_RADIUS / 2,
+                            width: BOSS_AREA_RADIUS,
+                            height: BOSS_AREA_RADIUS,
+                            borderRadius: BOSS_AREA_RADIUS / 2,
+                          },
+                        ]}
+                      />
+                    </>
+                  ) : null}
+                  <Text
+                    style={[
+                      styles.bossTelegraphLabel,
+                      {
+                        left: clamp(
+                          game.bossTelegraphTarget.x - 56,
+                          4,
+                          ARENA_WIDTH - 116,
+                        ),
+                        top: clamp(
+                          game.bossTelegraphTarget.y - BOSS_AREA_RADIUS - 22,
+                          4,
+                          ARENA_HEIGHT - 24,
+                        ),
+                      },
+                    ]}
+                  >
+                    MOVE!
+                  </Text>
+                </View>
+              )}
+
+            {game.bossAreaEffects.map((effect) => (
+              <View
+                key={effect.id}
+                pointerEvents="none"
+                style={[
+                  styles.bossAreaImpact,
+                  {
+                    left: effect.x - effect.radius,
+                    top: effect.y - effect.radius,
+                    width: effect.radius * 2,
+                    height: effect.radius * 2,
+                    opacity: effect.life / 0.55,
+                  },
+                ]}
+              />
+            ))}
+
+            {game.bossProjectiles.map((projectile) => (
+              <View
+                key={projectile.id}
+                pointerEvents="none"
+                style={[
+                  styles.bossProjectile,
+                  {
+                    left: projectile.x - projectile.radius,
+                    top: projectile.y - projectile.radius,
+                    width: projectile.radius * 2,
+                    height: projectile.radius * 2,
+                    backgroundColor: projectile.color,
+                    shadowColor: projectile.color,
+                  },
+                ]}
+              />
+            ))}
+
             {game.waveCountdown > 0 &&
               game.warpTransitionTimer <= 0 &&
               game.isRunning && (
@@ -4062,50 +4705,87 @@ export function WildPawGame({
               />
             ))}
 
-            {game.enemies.map((enemy) => (
-              <View key={enemy.id}>
-                <View
-                  style={[
-                    styles.enemyHealthBarOuter,
-                    {
-                      left: enemy.x - 22,
-                      top: enemy.y - enemy.radius - 13,
-                      width: 44,
-                    },
-                  ]}
-                >
+            {game.enemies.map((enemy) => {
+              const bossConfig = enemy.arenaBossId
+                ? BOSS_CONFIGS.find((boss) => boss.id === enemy.arenaBossId)
+                : undefined;
+              const isArenaBoss = !!bossConfig;
+              const entranceElapsed =
+                BOSS_ENTRANCE_DURATION - game.bossPhaseTimer;
+              const entranceRotation =
+                game.bossPhase === "entrance" && isArenaBoss
+                  ? Math.sin(entranceElapsed * 22) * 0.1
+                  : 0;
+
+              return (
+                <View key={enemy.id}>
                   <View
                     style={[
-                      styles.enemyHealthBarInner,
+                      styles.enemyHealthBarOuter,
+                      isArenaBoss && styles.arenaBossHealthBar,
                       {
-                        width: `${Math.max(
-                          0,
-                          (enemy.health / enemy.maxHealth) * 100,
-                        )}%`,
+                        left: enemy.x - (isArenaBoss ? 58 : 22),
+                        top: enemy.y - enemy.radius - (isArenaBoss ? 25 : 13),
+                        width: isArenaBoss ? 116 : 44,
                       },
                     ]}
-                  />
-                  <Text style={styles.enemyHealthText}>
-                    {Math.ceil(enemy.health)}
-                  </Text>
-                </View>
+                  >
+                    <View
+                      style={[
+                        styles.enemyHealthBarInner,
+                        isArenaBoss && styles.arenaBossHealthFill,
+                        {
+                          width: `${Math.max(
+                            0,
+                            (enemy.health / enemy.maxHealth) * 100,
+                          )}%`,
+                        },
+                      ]}
+                    />
+                    <Text style={styles.enemyHealthText}>
+                      {isArenaBoss
+                        ? `${bossConfig.name} · ${Math.ceil(enemy.health).toLocaleString()}`
+                        : Math.ceil(enemy.health)}
+                    </Text>
+                  </View>
 
-                <View
-                  style={[
-                    styles.enemy,
-                    {
-                      left: enemy.x - enemy.radius,
-                      top: enemy.y - enemy.radius,
-                      width: enemy.radius * 2,
-                      height: enemy.radius * 2,
-                      backgroundColor: enemy.color,
-                      borderWidth: enemy.isBoss ? 3 : 1,
-                      opacity: enemy.isBoss ? 1 : 0.88,
-                    },
-                  ]}
-                />
-              </View>
-            ))}
+                  <View
+                    style={[
+                      styles.enemy,
+                      isArenaBoss && styles.arenaBossEnemy,
+                      {
+                        left: enemy.x - enemy.radius,
+                        top: enemy.y - enemy.radius,
+                        width: enemy.radius * 2,
+                        height: enemy.radius * 2,
+                        backgroundColor: enemy.color,
+                        borderWidth: enemy.isBoss ? 3 : 1,
+                        borderColor: bossConfig?.color ?? "#dcfce7",
+                        opacity: enemy.isBoss ? 1 : 0.88,
+                        transform: [{ rotate: `${entranceRotation}rad` }],
+                      },
+                    ]}
+                  >
+                    {bossConfig?.imageAsset ? (
+                      <Image
+                        pointerEvents="none"
+                        source={getRemoteAssetSource(bossConfig.imageAsset)}
+                        style={styles.arenaBossImage}
+                        contentFit="contain"
+                        accessibilityLabel={bossConfig.name}
+                      />
+                    ) : isArenaBoss ? (
+                      <Text
+                        pointerEvents="none"
+                        style={styles.arenaBossFallback}
+                      >
+                        {bossConfig.fallbackIcon}
+                      </Text>
+                    ) : null}
+                  </View>
+                </View>
+              );
+            })}
 
             {game.itemDrops.map((drop) => {
               const dropItemConfig = dropConfig[drop.kind];
@@ -5847,29 +6527,166 @@ const styles = StyleSheet.create({
   },
   bossBarWrap: {
     position: "absolute",
-    top: 82,
-    left: "30%",
-    right: "30%",
-    zIndex: 2,
+    top: 12,
+    left: "25%",
+    right: "25%",
+    alignItems: "center",
+    zIndex: 18,
   },
   bossLabel: {
-    color: "#fed7aa",
-    fontWeight: "800",
-    marginBottom: 6,
-    letterSpacing: 1,
+    color: "#fff1f2",
+    fontSize: 11,
+    fontWeight: "900",
+    marginBottom: 4,
+    letterSpacing: 1.2,
     textTransform: "uppercase",
+    textShadowColor: "rgba(0,0,0,0.9)",
+    textShadowOffset: { width: 0, height: 2 },
+    textShadowRadius: 4,
   },
   bossBarOuter: {
-    height: 12,
-    backgroundColor: "rgba(15, 23, 42, 0.8)",
+    width: "100%",
+    height: 13,
+    backgroundColor: "rgba(15, 23, 42, 0.92)",
     borderRadius: 999,
     overflow: "hidden",
-    borderWidth: 1,
-    borderColor: "#f97316",
+    borderWidth: 1.5,
+    borderColor: "#fb7185",
   },
   bossBarInner: {
     height: "100%",
-    backgroundColor: "#f97316",
+    backgroundColor: "#ef4444",
+  },
+  bossHealthText: {
+    marginTop: 2,
+    color: "#ffe4e6",
+    fontSize: 8,
+    fontWeight: "900",
+    textShadowColor: "rgba(0,0,0,0.9)",
+    textShadowRadius: 3,
+  },
+  bossWarningOverlay: {
+    ...StyleSheet.absoluteFill,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 18,
+    backgroundColor: "rgba(45, 5, 12, 0.6)",
+    zIndex: 25,
+  },
+  bossWarningEyebrow: {
+    color: "#fecdd3",
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 2,
+  },
+  bossWarningTitle: {
+    marginTop: 4,
+    color: "#fff",
+    fontSize: 30,
+    fontWeight: "900",
+    letterSpacing: 1.5,
+    textAlign: "center",
+    textShadowColor: "#dc2626",
+    textShadowOffset: { width: 0, height: 2 },
+    textShadowRadius: 12,
+  },
+  bossWarningName: {
+    marginTop: 3,
+    color: "#fda4af",
+    fontSize: 18,
+    fontWeight: "900",
+    letterSpacing: 1,
+    textAlign: "center",
+  },
+  bossWarningCountdown: {
+    marginTop: 2,
+    color: "#fff",
+    fontSize: 42,
+    fontWeight: "900",
+    textShadowColor: "rgba(0,0,0,0.9)",
+    textShadowOffset: { width: 0, height: 2 },
+    textShadowRadius: 8,
+  },
+  bossWarningHint: {
+    color: "#ffe4e6",
+    fontSize: 9,
+    fontWeight: "900",
+    letterSpacing: 2,
+  },
+  bossTelegraphLayer: {
+    ...StyleSheet.absoluteFill,
+    zIndex: 14,
+  },
+  bossAreaTelegraph: {
+    position: "absolute",
+    width: BOSS_AREA_RADIUS * 2,
+    height: BOSS_AREA_RADIUS * 2,
+    borderRadius: BOSS_AREA_RADIUS,
+    borderWidth: 3,
+    borderColor: "rgba(255, 35, 55, 0.95)",
+    backgroundColor: "rgba(239, 35, 55, 0.2)",
+  },
+  bossDashTelegraph: {
+    position: "absolute",
+    height: 44,
+    borderRadius: 999,
+    borderWidth: 2,
+    borderColor: "rgba(255, 35, 55, 0.95)",
+    backgroundColor: "rgba(239, 35, 55, 0.24)",
+  },
+  bossTelegraphLabel: {
+    position: "absolute",
+    color: "#fff",
+    fontSize: 11,
+    fontWeight: "900",
+    letterSpacing: 1.2,
+    textShadowColor: "#dc2626",
+    textShadowRadius: 6,
+  },
+  bossAreaImpact: {
+    position: "absolute",
+    borderRadius: 999,
+    borderWidth: 4,
+    borderColor: "#fb7185",
+    backgroundColor: "rgba(239, 35, 55, 0.42)",
+    zIndex: 11,
+  },
+  bossProjectile: {
+    position: "absolute",
+    borderRadius: 999,
+    borderWidth: 3,
+    borderColor: "#fff1f2",
+    shadowOpacity: 0.95,
+    shadowRadius: 14,
+    zIndex: 12,
+  },
+  arenaBossEnemy: {
+    zIndex: 10,
+    shadowColor: "#fb7185",
+    shadowOpacity: 0.95,
+    shadowRadius: 24,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 12,
+  },
+  arenaBossImage: {
+    ...StyleSheet.absoluteFill,
+    width: "100%",
+    height: "100%",
+  },
+  arenaBossFallback: {
+    color: "#fff1f2",
+    fontSize: 46,
+    fontWeight: "900",
+    textShadowColor: "rgba(0,0,0,0.8)",
+    textShadowRadius: 8,
+  },
+  arenaBossHealthBar: {
+    height: 12,
+    borderColor: "#fb7185",
+    zIndex: 10,
+  },
+  arenaBossHealthFill: {
+    backgroundColor: "#e11d48",
   },
   badge: {
     color: "#a7f3d0",
