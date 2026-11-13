@@ -19,13 +19,12 @@ import {
 } from "@/services/redeem-codes";
 import { getRemoteAssetSource } from "@/services/remote-assets";
 
-const eventBackdrop = getRemoteAssetSource("images/background_1.png");
+const eventBackdrop = require("@/assets/images/background_1.png");
 const eventIcon = getRemoteAssetSource("game/icons/calendar_1.png");
 
 export default function EventScreen() {
   const [activeTab, setActiveTab] = useState<"events" | "redeem">("events");
   const [codes, setCodes] = useState<RedeemCode[]>([]);
-  const [activeCodeCount, setActiveCodeCount] = useState(0);
   const [codeInput, setCodeInput] = useState("");
   const [message, setMessage] = useState("");
   const [messageIsSuccess, setMessageIsSuccess] = useState(false);
@@ -37,10 +36,6 @@ export default function EventScreen() {
     try {
       const loadedCodes = await loadRedeemCodes();
       setCodes(loadedCodes);
-      setActiveCodeCount(
-        loadedCodes.filter((entry) => Date.now() <= Date.parse(entry.expiry))
-          .length,
-      );
       setMessage("");
     } catch {
       setMessage(
@@ -58,10 +53,6 @@ export default function EventScreen() {
       .then((loadedCodes) => {
         if (!isMounted) return;
         setCodes(loadedCodes);
-        setActiveCodeCount(
-          loadedCodes.filter((entry) => Date.now() <= Date.parse(entry.expiry))
-            .length,
-        );
         setMessage("");
       })
       .catch(() => {
@@ -179,19 +170,13 @@ export default function EventScreen() {
                   </Text>
                 </View>
                 <Text style={styles.eventTitle}>
-                  A little gift for your next adventure
+                  A gift for your next adventure
                 </Text>
                 <Text style={styles.eventDescription}>
-                  Have a Wild Paw code? Redeem it for bonus coins and XP. Codes
-                  are available for a limited time and can only be used once on
-                  this device.
+                  Redeem a limited-time code for bonus coins and XP. Each code
+                  can be used once per device.
                 </Text>
                 <View style={styles.eventFooter}>
-                  <Text style={styles.eventCount}>
-                    {isLoading
-                      ? "Checking rewards…"
-                      : `${activeCodeCount} active reward${activeCodeCount === 1 ? "" : "s"}`}
-                  </Text>
                   <Pressable
                     accessibilityRole="button"
                     onPress={() => {
@@ -200,23 +185,15 @@ export default function EventScreen() {
                     }}
                     style={styles.primaryButton}
                   >
-                    <Text style={styles.primaryButtonText}>ENTER CODE</Text>
+                    <Text style={styles.primaryButtonText}>REDEEM A CODE</Text>
                   </Pressable>
                 </View>
-                {isLoading && (
-                  <ActivityIndicator
-                    color="#a3e635"
-                    style={styles.eventLoader}
-                  />
-                )}
               </View>
             ) : (
               <View style={styles.redeemPanel}>
-                <Text style={styles.panelEyebrow}>CLAIM YOUR REWARD</Text>
                 <Text style={styles.panelTitle}>Redeem a code</Text>
                 <Text style={styles.panelDescription}>
-                  Enter a code exactly as shown. Each code can be redeemed once
-                  per device before its expiry date.
+                  One use per code on this device.
                 </Text>
                 <TextInput
                   accessibilityLabel="Redeem code"
@@ -249,7 +226,9 @@ export default function EventScreen() {
                   {isRedeeming ? (
                     <ActivityIndicator color="#10220d" />
                   ) : (
-                    <Text style={styles.primaryButtonText}>REDEEM REWARD</Text>
+                    <Text style={styles.primaryButtonText}>
+                      {isLoading ? "LOADING…" : "REDEEM REWARD"}
+                    </Text>
                   )}
                 </Pressable>
                 {!!message && (
@@ -265,12 +244,7 @@ export default function EventScreen() {
                     {message}
                   </Text>
                 )}
-                {isLoading ? (
-                  <ActivityIndicator
-                    color="#a3e635"
-                    style={styles.codeLoader}
-                  />
-                ) : codes.length === 0 ? (
+                {!isLoading && codes.length === 0 ? (
                   <Pressable
                     accessibilityRole="button"
                     onPress={() => void refreshCodes()}
@@ -278,20 +252,11 @@ export default function EventScreen() {
                   >
                     <Text style={styles.retryText}>RETRY LOADING CODES</Text>
                   </Pressable>
-                ) : (
-                  <Text style={styles.expiryNote}>
-                    {activeCodeCount > 0
-                      ? `There ${activeCodeCount === 1 ? "is" : "are"} ${activeCodeCount} active code${activeCodeCount === 1 ? "" : "s"}. Enter one to view and claim its reward.`
-                      : "There are no active codes right now. Check back later!"}
-                  </Text>
-                )}
+                ) : null}
               </View>
             )}
           </ScrollView>
         </View>
-        <Text style={styles.footerNote}>
-          Codes are saved as redeemed on this device.
-        </Text>
       </View>
     </SafeAreaView>
   );
@@ -311,22 +276,22 @@ const styles = StyleSheet.create({
     width: "100%",
     maxWidth: 1000,
     alignSelf: "center",
-    paddingHorizontal: 22,
-    paddingTop: 10,
-    paddingBottom: 8,
+    paddingHorizontal: 12,
+    paddingTop: 4,
+    paddingBottom: 4,
   },
   header: {
-    minHeight: 66,
+    minHeight: 48,
     flexDirection: "row",
     alignItems: "center",
-    gap: 16,
-    marginBottom: 12,
+    gap: 10,
+    marginBottom: 5,
   },
   backButton: {
-    minWidth: 82,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    borderRadius: 12,
+    minWidth: 68,
+    paddingVertical: 7,
+    paddingHorizontal: 9,
+    borderRadius: 10,
     borderWidth: 1,
     borderColor: "rgba(217, 249, 157, 0.28)",
     backgroundColor: "rgba(5, 18, 14, 0.82)",
@@ -348,20 +313,20 @@ const styles = StyleSheet.create({
   },
   title: {
     color: "#f0fdf4",
-    fontSize: 23,
+    fontSize: 19,
     fontWeight: "900",
     textShadowColor: "rgba(0,0,0,0.75)",
     textShadowOffset: { width: 0, height: 2 },
     textShadowRadius: 5,
   },
   headerIcon: {
-    width: 43,
-    height: 43,
+    width: 34,
+    height: 34,
   },
   card: {
     flex: 1,
     overflow: "hidden",
-    borderRadius: 25,
+    borderRadius: 18,
     borderWidth: 1.5,
     borderColor: "rgba(217, 249, 157, 0.4)",
     backgroundColor: "rgba(4, 17, 13, 0.94)",
@@ -373,16 +338,16 @@ const styles = StyleSheet.create({
   },
   tabs: {
     flexDirection: "row",
-    paddingHorizontal: 20,
+    paddingHorizontal: 12,
     borderBottomWidth: 1,
     borderBottomColor: "rgba(217, 249, 157, 0.15)",
   },
   tab: {
-    minWidth: 125,
+    minWidth: 100,
     alignItems: "center",
-    paddingHorizontal: 14,
-    paddingVertical: 14,
-    borderBottomWidth: 3,
+    paddingHorizontal: 10,
+    paddingVertical: 9,
+    borderBottomWidth: 2,
     borderBottomColor: "transparent",
   },
   activeTab: {
@@ -400,22 +365,22 @@ const styles = StyleSheet.create({
   content: {
     flexGrow: 1,
     justifyContent: "center",
-    padding: 22,
+    padding: 12,
   },
   featuredEvent: {
     width: "100%",
-    maxWidth: 690,
+    maxWidth: 620,
     alignSelf: "center",
-    padding: 24,
-    borderRadius: 21,
+    padding: 16,
+    borderRadius: 16,
     borderWidth: 1,
     borderColor: "rgba(163, 230, 53, 0.35)",
     backgroundColor: "rgba(15, 35, 25, 0.94)",
   },
   eventBadge: {
     alignSelf: "flex-start",
-    paddingHorizontal: 10,
-    paddingVertical: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
     borderRadius: 999,
     backgroundColor: "rgba(163, 230, 53, 0.15)",
   },
@@ -426,96 +391,81 @@ const styles = StyleSheet.create({
     letterSpacing: 1.2,
   },
   eventTitle: {
-    marginTop: 15,
+    marginTop: 9,
     color: "#f0fdf4",
-    fontSize: 25,
+    fontSize: 20,
     fontWeight: "900",
   },
   eventDescription: {
-    maxWidth: 600,
-    marginTop: 9,
+    maxWidth: 540,
+    marginTop: 5,
     color: "#cbd5e1",
-    fontSize: 14,
-    lineHeight: 21,
+    fontSize: 12,
+    lineHeight: 17,
   },
   eventFooter: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
+    justifyContent: "flex-start",
     gap: 12,
-    marginTop: 22,
-  },
-  eventCount: {
-    color: "#bef264",
-    fontSize: 12,
-    fontWeight: "800",
+    marginTop: 12,
   },
   primaryButton: {
-    minHeight: 43,
-    minWidth: 135,
+    minHeight: 38,
+    minWidth: 120,
     alignItems: "center",
     justifyContent: "center",
-    paddingHorizontal: 18,
-    paddingVertical: 11,
-    borderRadius: 13,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 10,
     backgroundColor: "#a3e635",
   },
   primaryButtonText: {
     color: "#14220b",
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: "900",
     letterSpacing: 0.7,
   },
-  eventLoader: {
-    marginTop: 14,
-  },
   redeemPanel: {
     width: "100%",
-    maxWidth: 480,
+    maxWidth: 440,
     alignSelf: "center",
   },
-  panelEyebrow: {
-    color: "#a3e635",
-    fontSize: 10,
-    fontWeight: "900",
-    letterSpacing: 1.5,
-  },
   panelTitle: {
-    marginTop: 5,
     color: "#f0fdf4",
-    fontSize: 24,
+    fontSize: 21,
     fontWeight: "900",
   },
   panelDescription: {
-    marginTop: 7,
-    marginBottom: 18,
+    marginTop: 3,
+    marginBottom: 10,
     color: "#cbd5e1",
-    fontSize: 13,
-    lineHeight: 19,
+    fontSize: 11,
+    lineHeight: 15,
   },
   codeInput: {
-    minHeight: 51,
-    paddingHorizontal: 15,
-    borderRadius: 13,
+    minHeight: 43,
+    paddingHorizontal: 12,
+    borderRadius: 10,
     borderWidth: 1.5,
     borderColor: "rgba(217, 249, 157, 0.42)",
     backgroundColor: "rgba(2, 12, 9, 0.95)",
     color: "#f0fdf4",
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: "800",
     letterSpacing: 1.2,
   },
   redeemButton: {
-    marginTop: 12,
+    marginTop: 8,
   },
   disabledButton: {
     opacity: 0.55,
   },
   feedback: {
-    marginTop: 12,
-    fontSize: 13,
+    marginTop: 8,
+    fontSize: 11,
     fontWeight: "700",
-    lineHeight: 19,
+    lineHeight: 15,
   },
   successMessage: {
     color: "#bef264",
@@ -523,30 +473,15 @@ const styles = StyleSheet.create({
   errorMessage: {
     color: "#fca5a5",
   },
-  codeLoader: {
-    marginTop: 18,
-  },
   retryButton: {
     alignSelf: "flex-start",
-    marginTop: 18,
-    padding: 8,
+    marginTop: 8,
+    padding: 4,
   },
   retryText: {
     color: "#bef264",
     fontSize: 10,
     fontWeight: "900",
     letterSpacing: 0.7,
-  },
-  expiryNote: {
-    marginTop: 17,
-    color: "#94a3b8",
-    fontSize: 11,
-    lineHeight: 16,
-  },
-  footerNote: {
-    marginTop: 7,
-    color: "rgba(226,232,240,0.72)",
-    fontSize: 10,
-    textAlign: "center",
   },
 });

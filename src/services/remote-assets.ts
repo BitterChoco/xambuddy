@@ -8,6 +8,7 @@ export const REMOTE_ASSET_BASE_URL =
   "https://github.com/BitterChoco/storage-release/raw/refs/heads/main/wild-paw/data/assets";
 
 const DOWNLOAD_CONCURRENCY = 3;
+const BUNDLED_ASSET_PATHS = new Set(["images/background_1.png"]);
 
 type ManifestFile = {
   path: string;
@@ -296,6 +297,11 @@ export async function loadRemoteAssets(onProgress: ProgressCallback) {
 
   const pendingDownloads: { entry: ManifestFile; destination: File }[] = [];
   for (const entry of manifest.files) {
+    if (BUNDLED_ASSET_PATHS.has(entry.path)) {
+      completedFiles += 1;
+      continue;
+    }
+
     const destination = new File(assetDirectory, ...entry.path.split("/"));
     const parentDirectory = new Directory(
       assetDirectory,

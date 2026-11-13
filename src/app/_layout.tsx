@@ -3,20 +3,20 @@ import { initializeRemoteGameCatalogs } from "@/constants/game-catalog";
 import { initializeRemoteGameConfiguration } from "@/constants/game-configuration";
 import { initializeDefaultPlayerInventory } from "@/constants/player-inventory";
 import {
-    getMusicVolume,
-    subscribeToMusicVolume,
+  getMusicVolume,
+  subscribeToMusicVolume,
 } from "@/constants/player-settings";
 import { initializeRemoteStorePricing } from "@/constants/store-pricing";
 import "@/global.css";
 import {
-    createInitialAssetLoadingState,
-    getRemoteAssetSource,
-    loadRemoteAssets,
-    type AssetLoadingState,
+  createInitialAssetLoadingState,
+  getRemoteAssetSource,
+  loadRemoteAssets,
+  type AssetLoadingState,
 } from "@/services/remote-assets";
 import { createAudioPlayer, setAudioModeAsync } from "expo-audio";
 import { Image } from "expo-image";
-import { Stack, usePathname } from "expo-router";
+import { DarkTheme, Stack, ThemeProvider, usePathname } from "expo-router";
 import * as ScreenOrientation from "expo-screen-orientation";
 import * as SplashScreen from "expo-splash-screen";
 import { StatusBar } from "expo-status-bar";
@@ -210,7 +210,18 @@ export default function RootLayout() {
       <View style={{ flex: 1 }} onLayout={() => setIsAppLayoutReady(true)}>
         <StatusBar hidden />
         {assetLoadingState.isComplete && (
-          <Stack screenOptions={{ headerShown: false }} />
+          <ThemeProvider value={DarkTheme}>
+            <Stack
+              screenOptions={{
+                headerShown: false,
+                contentStyle: { backgroundColor: "#06150f" },
+              }}
+            >
+              <Stack.Screen name="store" options={{ animation: "none" }} />
+              <Stack.Screen name="settings" options={{ animation: "none" }} />
+              <Stack.Screen name="event" options={{ animation: "none" }} />
+            </Stack>
+          </ThemeProvider>
         )}
         {isLoadingScreenVisible && (
           <View
