@@ -1707,6 +1707,8 @@ export function WildPawGame({
     () => multiplayerMode === "local-host" || multiplayerMode === "local-join",
   );
   const [isMultiplayerConnected, setIsMultiplayerConnected] = useState(false);
+  const [multiplayerConnectionError, setMultiplayerConnectionError] =
+    useState("");
   const [lobbyPlayers, setLobbyPlayers] = useState<
     {
       id: string;
@@ -2346,6 +2348,7 @@ export function WildPawGame({
 
     socket.onopen = () => {
       setIsMultiplayerConnected(true);
+      setMultiplayerConnectionError("");
       socket.send(
         JSON.stringify({
           type: "register",
@@ -2396,6 +2399,7 @@ export function WildPawGame({
             gameState?: GameState | null;
           };
           payload?: GameState;
+          message?: string;
           action?: string;
           powerUpId?: string;
           direction?: Vector;
@@ -2543,6 +2547,20 @@ export function WildPawGame({
           return;
         }
 
+        if (message.type === "error") {
+          setIsMultiplayerConnected(false);
+          setMultiplayerConnectionError(
+            message.message ?? "The host could not accept this connection.",
+          );
+          setGame((previous) => ({
+            ...previous,
+            message:
+              message.message ??
+              "Could not join this local lobby. Check the host address and try again.",
+          }));
+          return;
+        }
+
         if (message.type === "remote-sync" && message.payload) {
           if (multiplayerRole === "join") {
             setGame(message.payload);
@@ -2637,6 +2655,24 @@ export function WildPawGame({
       } catch {
         // ignore malformed multiplayer messages until the room state arrives
       }
+    };
+
+    socket.onerror = (error) => {
+      setIsMultiplayerConnected(false);
+      setMultiplayerConnectionError(
+        error.message ??
+          "Check both devices are on the same Wi-Fi or hotspot and try again.",
+      );
+      setGame((previous) => ({
+        ...previous,
+        message: error.message
+          ? `Local multiplayer connection failed: ${error.message}`
+          : "Local multiplayer connection failed. Check both devices are on the same Wi-Fi or hotspot.",
+      }));
+    };
+
+    socket.onclose = () => {
+      setIsMultiplayerConnected(false);
     };
 
     return () => {
@@ -4555,16 +4591,29 @@ export function WildPawGame({
                 Connected to host. Waiting for the match to start.
               </Text>
             )}
+            {!!multiplayerConnectionError && (
+              <Text
+                style={[styles.lobbyEmptyText, styles.lobbyConnectionError]}
+              >
+                {multiplayerConnectionError}
+              </Text>
+            )}
 
             <View style={styles.lobbyPlayerList}>
               <Text style={styles.lobbySectionTitle}>
                 PLAYERS · {displayedPlayers.length}/2
               </Text>
               {displayedPlayers.length === 0 ? (
-                <Text style={styles.lobbyEmptyText}>
-                  {isMultiplayerConnected
-                    ? "Waiting for lobby details..."
-                    : "Connecting to lobby..."}
+                <Text
+                  style={[
+                    styles.lobbyEmptyText,
+                    !!multiplayerConnectionError && styles.lobbyConnectionError,
+                  ]}
+                >
+                  {multiplayerConnectionError ||
+                    (isMultiplayerConnected
+                      ? "Waiting for lobby details..."
+                      : "Connecting to lobby...")}
                 </Text>
               ) : (
                 displayedPlayers.map((player) => {
@@ -6469,6 +6518,10 @@ const styles = StyleSheet.create({
     color: "#cbd5e1",
     fontSize: 14,
     paddingVertical: 10,
+  },
+  lobbyConnectionError: {
+    color: "#fca5a5",
+    fontWeight: "800",
   },
   lobbyPlayerRow: {
     flexDirection: "row",

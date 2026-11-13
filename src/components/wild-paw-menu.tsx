@@ -46,7 +46,6 @@ import {
 import { getRemoteAssetSource } from "@/services/remote-assets";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Image, type ImageSource } from "expo-image";
-import * as Network from "expo-network";
 import { router, useFocusEffect, type Href } from "expo-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
@@ -71,6 +70,15 @@ type LocalHost = {
   address: string;
   status: "online" | "offline";
 };
+
+function normalizeLocalHostAddress(value: string) {
+  return value
+    .trim()
+    .replace(/^tcp:\/\//i, "")
+    .replace(/^https?:\/\//i, "")
+    .split("/")[0]
+    .replace(/:\d+$/, "");
+}
 
 const buttonImage = getRemoteAssetSource("game/functions/button_1.png");
 const menuBackground = require("@/assets/images/background_1.png");
@@ -607,22 +615,29 @@ export function WildPawMenu() {
     );
 
     try {
-      const ipAddress = await Network.getIpAddressAsync();
-      const octets = ipAddress.split(".").map(Number);
-      const isLanIpv4 =
-        octets.length === 4 &&
-        octets.every(
-          (octet) => Number.isInteger(octet) && octet >= 0 && octet <= 255,
-        ) &&
-        octets[0] !== 0 &&
-        octets[0] !== 127 &&
-        !(octets[0] === 169 && octets[1] === 254) &&
-        octets[0] < 224;
-      const networkPrefix = isLanIpv4 ? octets.slice(0, 3).join(".") : null;
-      const manualAddress = manualHostAddress
-        .trim()
-        .replace(/^https?:\/\//i, "")
-        .replace(/\/+$/, "");
+      const localAddresses = await getLocalHostAddresses();
+      const wifiAddresses = localAddresses.filter(({ interfaceName }) =>
+        /wifi|wlan|wi-fi|soft.?ap|hotspot/i.test(interfaceName),
+      );
+      const addressesToScan = wifiAddresses.length
+        ? wifiAddresses
+        : localAddresses;
+      const networkPrefixes = new Set(
+        addressesToScan.flatMap(({ address }) => {
+          const octets = address.split(".").map(Number);
+          const isLanIpv4 =
+            octets.length === 4 &&
+            octets.every(
+              (octet) => Number.isInteger(octet) && octet >= 0 && octet <= 255,
+            ) &&
+            octets[0] !== 0 &&
+            octets[0] !== 127 &&
+            !(octets[0] === 169 && octets[1] === 254) &&
+            octets[0] < 224;
+          return isLanIpv4 ? [octets.slice(0, 3).join(".")] : [];
+        }),
+      );
+      const manualAddress = normalizeLocalHostAddress(manualHostAddress);
       const candidateAddresses = new Set<string>();
 
       if (manualAddress) {
@@ -638,20 +653,24 @@ export function WildPawMenu() {
         "10.0.0.1",
         "172.20.10.1",
       ]) {
-        if (address !== ipAddress) {
-          candidateAddresses.add(address);
-        }
+        candidateAddresses.add(address);
       }
 
-      if (networkPrefix) {
-        for (let hostOctet = 1; hostOctet <= 254; hostOctet += 1) {
-          const address = `${networkPrefix}.${hostOctet}`;
-          if (address !== ipAddress) {
-            candidateAddresses.add(address);
+      if (networkPrefixes.size > 0) {
+        for (const networkPrefix of networkPrefixes) {
+          for (let hostOctet = 1; hostOctet <= 254; hostOctet += 1) {
+            const address = `${networkPrefix}.${hostOctet}`;
+            if (!localAddresses.some((entry) => entry.address === address)) {
+              candidateAddresses.add(address);
+            }
           }
         }
         setHostScanMessage(
-          `Checking hotspot addresses and scanning ${networkPrefix}.x...`,
+          `Scanning Wi-Fi/hotspot network${networkPrefixes.size > 1 ? "s" : ""}: ${Array.from(
+            networkPrefixes,
+          )
+            .map((prefix) => `${prefix}.x`)
+            .join(", ")}...`,
         );
       } else if (manualAddress) {
         setHostScanMessage(
@@ -659,7 +678,7 @@ export function WildPawMenu() {
         );
       } else {
         setHostScanMessage(
-          "Could not detect this device's Wi-Fi address. Enter a host IP and refresh.",
+          "Could not detect a Wi-Fi address. Check that local network access is allowed, or enter the host IP manually.",
         );
       }
 
@@ -760,10 +779,7 @@ export function WildPawMenu() {
       return;
     }
 
-    const normalized = address
-      .trim()
-      .replace(/^https?:\/\//i, "")
-      .replace(/\/+$/, "");
+    const normalized = normalizeLocalHostAddress(address);
     if (!normalized) {
       setHostScanMessage(
         "Enter the LAN IP shown on the host phone's lobby screen.",
