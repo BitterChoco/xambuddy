@@ -2,10 +2,10 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 
 import { BUDDIES } from "@/constants/buddy-catalog";
 import {
-  DEFAULT_HERO_ID,
-  HEROES,
-  PROFILE_BORDERS,
-  PROFILE_PICTURE_CHOICES,
+    DEFAULT_HERO_ID,
+    HEROES,
+    PROFILE_BORDERS,
+    PROFILE_PICTURE_CHOICES,
 } from "@/constants/game-catalog";
 import { DEFAULT_ORB_SKIN_ID, ORB_SKINS } from "@/constants/orb-catalog";
 
