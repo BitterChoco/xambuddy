@@ -1,9 +1,10 @@
-import { ProfileBorderOverlay } from "@/components/ui/profile-border-overlay";
 import {
-  getBuddy,
-  getBuddyBonusSummary,
-  getBuddyRarityColor,
-} from "@/constants/buddy-catalog";
+  HeroSelectionScreen,
+  type HeroSelectionTab,
+} from "@/components/hero-selection-screen";
+import { MainMenuScreen } from "@/components/main-menu-screen";
+import { ProfileBorderOverlay } from "@/components/ui/profile-border-overlay";
+import { getBuddy } from "@/constants/buddy-catalog";
 import {
   getCoinBalance,
   subscribeToCoinBalance,
@@ -12,7 +13,6 @@ import {
   DEFAULT_HERO_ID,
   DEFAULT_PROFILE_BORDER,
   DEFAULT_PROFILE_PICTURE,
-  getHeroImage,
   getProfileBorderStyle,
   getSkinImage,
   HEROES,
@@ -21,11 +21,7 @@ import {
   type HeroRecord,
   type ProfilePictureId,
 } from "@/constants/game-catalog";
-import {
-  getOrbRarityColor,
-  getOrbSkin,
-  ORB_SKINS,
-} from "@/constants/orb-catalog";
+import { getOrbSkin } from "@/constants/orb-catalog";
 import {
   getPlayerLevelProgress,
   getPlayerXp,
@@ -45,24 +41,15 @@ import {
 } from "@/services/local-multiplayer-network";
 import { getRemoteAssetSource } from "@/services/remote-assets";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { Image, type ImageSource } from "expo-image";
+import { Image } from "expo-image";
 import { router, useFocusEffect, type Href } from "expo-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import {
-  Animated,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from "react-native";
+import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 const heroes = HEROES;
 type HeroId = string;
 type MenuScreen = "main" | "hero" | "play" | "multiplayer";
-type SelectionTab = "hero" | "skin" | "orb" | "buddy";
 type MultiplayerView = "choice" | "host" | "join";
 type LocalHost = {
   id: string;
@@ -82,9 +69,7 @@ function normalizeLocalHostAddress(value: string) {
 
 const buttonImage = getRemoteAssetSource("game/functions/button_1.png");
 const menuBackground = require("@/assets/images/background_1.png");
-const titleImage = getRemoteAssetSource("game/functions/title_1.png");
 const coinImage = getRemoteAssetSource("game/icons/coin_1.png");
-const orbImage = getRemoteAssetSource("game/orbs/orb_1-1.png");
 const PROFILE_STORAGE_KEY = "wild-paw.player-profile";
 const shopImage = getRemoteAssetSource("game/icons/shop_1.png");
 const calendarImage = getRemoteAssetSource("game/icons/calendar_1.png");
@@ -104,7 +89,7 @@ function CoinBalanceBadge({ balance }: { balance: number }) {
         contentFit="contain"
         accessibilityLabel="Coins"
       />
-      <Text style={styles.coinBalanceText}>{balance}</Text>
+      <Text style={styles.coinBalanceText}>{balance.toLocaleString()}</Text>
     </View>
   );
 }
@@ -145,10 +130,12 @@ function ProfilePicture({
           />
           <ProfileBorderOverlay borderId={border} />
         </View>
-        <Text numberOfLines={1} style={styles.profileUserName}>
-          {name || "Player 1"}
-        </Text>
-        <Text style={styles.profileLevelBadge}>LEVEL {level}</Text>
+        <View style={styles.profileIdentity}>
+          <Text style={styles.profileLevelBadge}>LVL {level}</Text>
+          <Text numberOfLines={1} style={styles.profileNameBadge}>
+            {name || "Player 1"}
+          </Text>
+        </View>
       </Pressable>
       <Pressable
         accessibilityRole="button"
@@ -320,7 +307,7 @@ export function WildPawMenu() {
     DEFAULT_PLAYER_INVENTORY,
   );
   const [inventoryLoaded, setInventoryLoaded] = useState(false);
-  const [selectionTab, setSelectionTab] = useState<SelectionTab>("hero");
+  const [selectionTab, setSelectionTab] = useState<HeroSelectionTab>("hero");
   const [coinBalance, setCoinBalance] = useState(0);
   const [playerXp, setPlayerXp] = useState(0);
   const [profileName, setProfileName] = useState("Player 1");
@@ -341,7 +328,6 @@ export function WildPawMenu() {
   const [hostScanMessage, setHostScanMessage] = useState(
     "Start hosting on this phone to see its address for other players.",
   );
-  const titleWiggle = useMemo(() => new Animated.Value(0), []);
   const playerLevel = getPlayerLevelProgress(playerXp);
 
   useEffect(() => {
@@ -829,107 +815,23 @@ export function WildPawMenu() {
     connectToLocalLobby(address, "join");
   };
 
-  const renderHeroArtwork = (
-    source: ImageSource | number,
-    size: number,
-    borderRadius?: number,
-  ) => (
-    <Image
-      source={source}
-      style={{
-        width: size,
-        height: size,
-        borderRadius: borderRadius ?? 20,
-        zIndex: 1,
-      }}
-      contentFit="contain"
-      loading="eager"
-    />
-  );
-
-  const previewScale = useMemo(() => new Animated.Value(0.96), []);
-
-  useEffect(() => {
-    Animated.sequence([
-      Animated.timing(previewScale, {
-        toValue: 1.04,
-        duration: 180,
-        useNativeDriver: true,
-      }),
-      Animated.timing(previewScale, {
-        toValue: 1,
-        duration: 180,
-        useNativeDriver: true,
-      }),
-    ]).start();
-  }, [previewScale, selectedHero]);
-
-  useEffect(() => {
-    const wiggle = Animated.loop(
-      Animated.sequence([
-        Animated.delay(2200),
-        Animated.timing(titleWiggle, {
-          toValue: 1,
-          duration: 150,
-          useNativeDriver: true,
-        }),
-        Animated.timing(titleWiggle, {
-          toValue: -1,
-          duration: 220,
-          useNativeDriver: true,
-        }),
-        Animated.timing(titleWiggle, {
-          toValue: 0,
-          duration: 150,
-          useNativeDriver: true,
-        }),
-      ]),
-    );
-
-    wiggle.start();
-    return () => wiggle.stop();
-  }, [titleWiggle]);
-
   const renderMainMenu = () => (
-    <View style={styles.menuPage}>
-      <View style={styles.mainMenuShell}>
-        <View style={styles.mainMenuCard}>
-          <Animated.View
-            style={[
-              styles.titleImageWrap,
-              {
-                transform: [
-                  {
-                    rotate: titleWiggle.interpolate({
-                      inputRange: [-1, 0, 1],
-                      outputRange: ["-2deg", "0deg", "2deg"],
-                    }),
-                  },
-                  {
-                    translateY: titleWiggle.interpolate({
-                      inputRange: [-1, 0, 1],
-                      outputRange: [2, 0, -2],
-                    }),
-                  },
-                ],
-              },
-            ]}
-          >
-            <Image
-              source={titleImage}
-              accessibilityLabel="Wild Paw Bloom Wars"
-              contentFit="contain"
-              style={styles.titleImage}
-            />
-          </Animated.View>
-
-          <View style={styles.mainMenuStack}>
-            <SpriteButton title="Hero" onPress={() => setScreen("hero")} />
-            <SpriteButton title="Play" onPress={() => setScreen("play")} />
-          </View>
-        </View>
-      </View>
-    </View>
+    <MainMenuScreen
+      heroImage={getSkinImage(hero.id, selectedSkin.id)}
+      orbImage={
+        inventory.equippedOrb && playerLevel.level >= 5
+          ? getOrbSkin(inventory.equippedOrbSkin).orbImage
+          : undefined
+      }
+      buddyImage={
+        playerLevel.level >= 10 &&
+        inventory.buddies.includes(inventory.equippedBuddy)
+          ? getBuddy(inventory.equippedBuddy)?.source
+          : undefined
+      }
+      onHeroPress={() => setScreen("hero")}
+      onPlayPress={() => setScreen("play")}
+    />
   );
 
   const renderPlaySelector = () => (
@@ -1121,442 +1023,30 @@ export function WildPawMenu() {
   );
 
   const renderHeroSelector = () => (
-    <View style={styles.menuPage}>
-      <View style={styles.appShell}>
-        <View style={styles.headerRow}>
-          <View />
-          <View style={styles.heroHeaderRight}>
-            <CoinBalanceBadge balance={coinBalance} />
-          </View>
-        </View>
-
-        <View style={styles.selectorRow}>
-          <View style={styles.previewPanel}>
-            <View style={styles.heroPictureColumn}>
-              <Animated.View
-                style={[
-                  styles.heroPreview,
-                  { backgroundColor: selectedSkin.color },
-                  { transform: [{ scale: previewScale }] },
-                ]}
-              >
-                {renderHeroArtwork(
-                  getSkinImage(hero.id, selectedSkin.id)!,
-                  116,
-                  28,
-                )}
-              </Animated.View>
-            </View>
-
-            <View style={styles.heroDetailsColumn}>
-              <View style={styles.previewHeader}>
-                <Text style={styles.previewKicker}>Selected Hero</Text>
-                <Text style={styles.previewName}>{hero.name}</Text>
-                <Text style={[styles.roleLabel, { color: hero.accent }]}>
-                  {hero.type}
-                </Text>
-              </View>
-
-              <View style={styles.statRow}>
-                <View style={styles.statBox}>
-                  <Text style={styles.statLabel}>Power</Text>
-                  <Text style={styles.statValue}>{hero.stats.power}</Text>
-                </View>
-                <View style={styles.statBox}>
-                  <Text style={styles.statLabel}>Speed</Text>
-                  <Text style={styles.statValue}>{hero.stats.speed}</Text>
-                </View>
-                <View style={styles.statBox}>
-                  <Text style={styles.statLabel}>Defense</Text>
-                  <Text style={styles.statValue}>{hero.stats.defense}</Text>
-                </View>
-              </View>
-
-              <View style={styles.abilityBox}>
-                <Text style={styles.abilityTitle}>Ability</Text>
-                <Text style={styles.abilityText}>{hero.ability}</Text>
-              </View>
-            </View>
-          </View>
-
-          <View style={styles.selectionPanel}>
-            <View style={styles.selectionTabs}>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Show heroes"
-                accessibilityState={{ selected: selectionTab === "hero" }}
-                onPress={() => setSelectionTab("hero")}
-                style={[
-                  styles.selectionTab,
-                  selectionTab === "hero" && styles.selectionTabActive,
-                ]}
-              >
-                <Text style={styles.selectionTabIcon}>🐾</Text>
-                <Text
-                  style={[
-                    styles.selectionTabText,
-                    selectionTab === "hero" && styles.selectionTabTextActive,
-                  ]}
-                >
-                  Hero
-                </Text>
-              </Pressable>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Show skins for selected hero"
-                accessibilityState={{ selected: selectionTab === "skin" }}
-                onPress={() => setSelectionTab("skin")}
-                style={[
-                  styles.selectionTab,
-                  selectionTab === "skin" && styles.selectionTabActive,
-                ]}
-              >
-                <Text style={styles.selectionTabIcon}>🎨</Text>
-                <Text
-                  style={[
-                    styles.selectionTabText,
-                    selectionTab === "skin" && styles.selectionTabTextActive,
-                  ]}
-                >
-                  Skin
-                </Text>
-              </Pressable>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Show orb companion"
-                accessibilityState={{ selected: selectionTab === "orb" }}
-                onPress={() => setSelectionTab("orb")}
-                style={[
-                  styles.selectionTab,
-                  selectionTab === "orb" && styles.selectionTabActive,
-                ]}
-              >
-                <Text style={styles.selectionTabIcon}>✦</Text>
-                <Text
-                  style={[
-                    styles.selectionTabText,
-                    selectionTab === "orb" && styles.selectionTabTextActive,
-                  ]}
-                >
-                  Orb
-                </Text>
-              </Pressable>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Show buddy companions"
-                accessibilityState={{ selected: selectionTab === "buddy" }}
-                onPress={() => setSelectionTab("buddy")}
-                style={[
-                  styles.selectionTab,
-                  selectionTab === "buddy" && styles.selectionTabActive,
-                ]}
-              >
-                <Text style={styles.selectionTabIcon}>🐾</Text>
-                <Text
-                  style={[
-                    styles.selectionTabText,
-                    selectionTab === "buddy" && styles.selectionTabTextActive,
-                  ]}
-                >
-                  Buddy
-                </Text>
-              </Pressable>
-            </View>
-            <ScrollView
-              style={styles.selectionScroll}
-              showsVerticalScrollIndicator={false}
-              contentContainerStyle={styles.selectionGrid}
-            >
-              {!inventoryLoaded ? (
-                <Text style={styles.collectionStatusText}>
-                  Loading your collection…
-                </Text>
-              ) : selectionTab === "hero" ? (
-                ownedHeroes.map((entry) => {
-                  const isSelected = selectedHero === entry.id;
-                  return (
-                    <Pressable
-                      key={entry.id}
-                      accessibilityRole="button"
-                      accessibilityState={{ selected: isSelected }}
-                      onPress={() => setSelectedHero(entry.id)}
-                      style={[
-                        styles.selectionCard,
-                        isSelected && styles.selectionCardSelected,
-                        {
-                          borderColor: isSelected ? entry.accent : "#315c4c",
-                        },
-                      ]}
-                    >
-                      <View
-                        style={[
-                          styles.selectionArtwork,
-                          { backgroundColor: entry.accent },
-                        ]}
-                      >
-                        {renderHeroArtwork(getHeroImage(entry.id)!, 44, 14)}
-                      </View>
-                      <Text style={styles.selectionName}>{entry.name}</Text>
-                    </Pressable>
-                  );
-                })
-              ) : selectionTab === "skin" && ownedSkins.length === 0 ? (
-                <Text style={styles.collectionStatusText}>
-                  No skins owned yet. Visit the store to find one.
-                </Text>
-              ) : selectionTab === "skin" ? (
-                ownedSkins.map((skin) => {
-                  const isSelected = selectedSkin.id === skin.id;
-                  return (
-                    <Pressable
-                      key={skin.id}
-                      accessibilityRole="button"
-                      accessibilityLabel={`${isSelected ? "Unequip" : "Equip"} ${skin.name} skin`}
-                      accessibilityState={{ selected: isSelected }}
-                      onPress={() => selectSkin(skin.id)}
-                      style={[
-                        styles.selectionCard,
-                        isSelected && styles.selectionCardSelected,
-                        {
-                          borderColor: isSelected ? skin.color : "#315c4c",
-                        },
-                      ]}
-                    >
-                      <View
-                        style={[
-                          styles.selectionArtwork,
-                          { backgroundColor: skin.color },
-                        ]}
-                      >
-                        {renderHeroArtwork(
-                          getSkinImage(hero.id, skin.id)!,
-                          44,
-                          14,
-                        )}
-                      </View>
-                      <Text style={styles.selectionName}>{skin.name}</Text>
-                      <Text
-                        style={[
-                          styles.skinEquipStatus,
-                          isSelected && styles.skinEquipStatusEquipped,
-                        ]}
-                      >
-                        {isSelected ? "EQUIPPED" : "EQUIP"}
-                      </Text>
-                    </Pressable>
-                  );
-                })
-              ) : selectionTab === "orb" ? (
-                <View style={styles.selectionOrbContent}>
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel={
-                      playerLevel.level < 5
-                        ? "Orb locked until level 5"
-                        : inventory.equippedOrb
-                          ? "Unequip orb"
-                          : "Equip orb"
-                    }
-                    accessibilityState={{
-                      disabled: playerLevel.level < 5 || !inventoryLoaded,
-                      selected: inventory.equippedOrb,
-                    }}
-                    disabled={playerLevel.level < 5 || !inventoryLoaded}
-                    onPress={() => void toggleOrbEquipment()}
-                    style={[
-                      styles.selectionCard,
-                      styles.selectionOrbCard,
-                      inventory.equippedOrb && styles.selectionCardSelected,
-                      (playerLevel.level < 5 || !inventoryLoaded) &&
-                        styles.selectionOrbCardLocked,
-                    ]}
-                  >
-                    <Image
-                      source={orbImage}
-                      style={styles.selectionOrbImage}
-                      contentFit="contain"
-                      accessibilityLabel="Orb companion"
-                    />
-                    <Text style={styles.selectionName}>Orb companion</Text>
-                    <Text
-                      style={[
-                        styles.skinEquipStatus,
-                        inventory.equippedOrb && styles.skinEquipStatusEquipped,
-                      ]}
-                    >
-                      {playerLevel.level < 5
-                        ? "UNLOCKS AT LEVEL 5"
-                        : inventory.equippedOrb
-                          ? "EQUIPPED · TAP TO UNEQUIP"
-                          : "UNLOCKED · TAP TO EQUIP"}
-                    </Text>
-                  </Pressable>
-                  <Text style={styles.selectionOrbSectionTitle}>
-                    OWNED ORB SKINS
-                  </Text>
-                  <View style={styles.selectionOrbSkinList}>
-                    {ORB_SKINS.filter((orb) =>
-                      inventory.orbSkins.includes(orb.id),
-                    ).map((orb) => {
-                      const isSelected = inventory.equippedOrbSkin === orb.id;
-                      return (
-                        <Pressable
-                          key={orb.id}
-                          accessibilityRole="button"
-                          accessibilityLabel={`${isSelected ? "Equipped" : "Equip"} ${orb.name}`}
-                          accessibilityState={{
-                            disabled: playerLevel.level < 5,
-                            selected: isSelected,
-                          }}
-                          disabled={playerLevel.level < 5}
-                          onPress={() => void equipOrbSkin(orb.id)}
-                          style={[
-                            styles.selectionOrbSkinCard,
-                            isSelected && styles.selectionCardSelected,
-                            playerLevel.level < 5 &&
-                              styles.selectionOrbCardLocked,
-                          ]}
-                        >
-                          <Image
-                            source={orb.orbImage}
-                            style={styles.selectionOrbSkinImage}
-                            contentFit="contain"
-                            accessibilityLabel={orb.name}
-                          />
-                          <Text
-                            numberOfLines={1}
-                            style={styles.selectionOrbSkinName}
-                          >
-                            {orb.name}
-                          </Text>
-                          <Text
-                            style={[
-                              styles.selectionOrbSkinRarity,
-                              { color: getOrbRarityColor(orb.rarity) },
-                            ]}
-                          >
-                            {orb.rarity.toUpperCase()}
-                          </Text>
-                          <Text
-                            style={[
-                              styles.skinEquipStatus,
-                              isSelected && styles.skinEquipStatusEquipped,
-                            ]}
-                          >
-                            {isSelected ? "EQUIPPED" : "EQUIP"}
-                          </Text>
-                        </Pressable>
-                      );
-                    })}
-                  </View>
-                  <Text style={styles.selectionOrbDescription}>
-                    Automatically targets nearby enemies and fires a laser.
-                  </Text>
-                  {!!orbMessage && (
-                    <Text style={styles.orbStatusMessage}>{orbMessage}</Text>
-                  )}
-                </View>
-              ) : (
-                <View style={styles.selectionBuddyContent}>
-                  <Text style={styles.selectionOrbSectionTitle}>
-                    {playerLevel.level < 10
-                      ? "BUDDY SYSTEM · UNLOCKS AT LEVEL 10"
-                      : "YOUR BUDDIES · EQUIP ONE"}
-                  </Text>
-                  {playerLevel.level < 10 ? (
-                    <Text style={styles.selectionOrbDescription}>
-                      Reach player level 10 to unlock buddies and their
-                      permanent powers.
-                    </Text>
-                  ) : inventory.buddies.length === 0 ? (
-                    <View style={styles.selectionBuddyEmpty}>
-                      <Text style={styles.selectionOrbDescription}>
-                        No buddies owned yet. Visit the store to find a little
-                        companion.
-                      </Text>
-                      <Pressable
-                        accessibilityRole="button"
-                        onPress={() =>
-                          router.push({
-                            pathname: "/store",
-                            params: { tab: "buddy" },
-                          } as Href)
-                        }
-                        style={styles.buddyStoreLinkButton}
-                      >
-                        <Text style={styles.buddyStoreLinkText}>
-                          VISIT BUDDY STORE
-                        </Text>
-                      </Pressable>
-                    </View>
-                  ) : (
-                    <View style={styles.selectionBuddyGrid}>
-                      {inventory.buddies.map((buddyId) => {
-                        const buddy = getBuddy(buddyId);
-                        if (!buddy) return null;
-                        const isEquipped = inventory.equippedBuddy === buddy.id;
-                        return (
-                          <Pressable
-                            key={buddy.id}
-                            accessibilityRole="button"
-                            accessibilityLabel={`${isEquipped ? "Unequip" : "Equip"} ${buddy.name}; ${getBuddyBonusSummary(buddy)}`}
-                            accessibilityState={{ selected: isEquipped }}
-                            onPress={() => void equipBuddy(buddy.id)}
-                            style={[
-                              styles.selectionCard,
-                              styles.selectionBuddyCard,
-                              isEquipped && styles.selectionCardSelected,
-                            ]}
-                          >
-                            <Image
-                              source={buddy.source}
-                              style={styles.selectionBuddyImage}
-                              contentFit="contain"
-                              accessibilityLabel={buddy.name}
-                            />
-                            <Text
-                              numberOfLines={1}
-                              style={styles.selectionName}
-                            >
-                              {buddy.name}
-                            </Text>
-                            <Text
-                              style={[
-                                styles.selectionBuddyRarity,
-                                { color: getBuddyRarityColor(buddy.rarity) },
-                              ]}
-                            >
-                              {buddy.rarity.toUpperCase()}
-                            </Text>
-                            <Text
-                              style={[
-                                styles.skinEquipStatus,
-                                isEquipped && styles.skinEquipStatusEquipped,
-                              ]}
-                            >
-                              {isEquipped ? "EQUIPPED" : "EQUIP"}
-                            </Text>
-                            <Text
-                              numberOfLines={2}
-                              style={styles.selectionBuddyBonus}
-                            >
-                              {getBuddyBonusSummary(buddy)}
-                            </Text>
-                          </Pressable>
-                        );
-                      })}
-                    </View>
-                  )}
-                  {!!buddyMessage && (
-                    <Text style={styles.orbStatusMessage}>{buddyMessage}</Text>
-                  )}
-                </View>
-              )}
-            </ScrollView>
-          </View>
-        </View>
-      </View>
-    </View>
+    <HeroSelectionScreen
+      coinBalance={coinBalance}
+      hero={hero}
+      ownedHeroes={ownedHeroes}
+      selectedHero={selectedHero}
+      onSelectHero={setSelectedHero}
+      ownedSkins={ownedSkins}
+      selectedSkin={selectedSkin}
+      onSelectSkin={selectSkin}
+      selectionTab={selectionTab}
+      onSelectionTabChange={setSelectionTab}
+      inventory={inventory}
+      inventoryLoaded={inventoryLoaded}
+      playerLevel={playerLevel.level}
+      orbMessage={orbMessage}
+      buddyMessage={buddyMessage}
+      onToggleOrbEquipment={() => void toggleOrbEquipment()}
+      onEquipOrbSkin={(skinId) => void equipOrbSkin(skinId)}
+      onEquipBuddy={(buddyId) => void equipBuddy(buddyId)}
+      onOpenStore={(tab) =>
+        router.push({ pathname: "/store", params: { tab } } as Href)
+      }
+      onBack={() => setScreen("main")}
+    />
   );
 
   return (
@@ -1624,7 +1114,7 @@ export function WildPawMenu() {
           )}
         </View>
       )}
-      {screen !== "main" && (
+      {screen !== "main" && screen !== "hero" && (
         <View style={styles.backIconPosition}>
           <BackIconButton onPress={() => setScreen("main")} />
         </View>
@@ -1658,17 +1148,16 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   coinBalanceBadge: {
-    minHeight: 38,
+    minHeight: 34,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 6,
+    gap: 5,
     paddingHorizontal: 10,
-    paddingVertical: 5,
     borderRadius: 999,
-    borderWidth: 1.5,
-    borderColor: "rgba(255, 224, 160, 0.85)",
-    backgroundColor: "rgba(5, 18, 14, 0.82)",
+    borderWidth: 1,
+    borderColor: "rgba(217, 249, 157, 0.4)",
+    backgroundColor: "rgba(5, 18, 14, 0.9)",
     zIndex: 30,
   },
   coinBalancePosition: {
@@ -1736,12 +1225,20 @@ const styles = StyleSheet.create({
     zIndex: 50,
   },
   profileRail: {
-    alignItems: "center",
+    alignItems: "flex-start",
     gap: 12,
   },
   profileBadge: {
-    alignItems: "center",
-    gap: 3,
+    flexDirection: "row",
+    alignItems: "flex-end",
+    gap: 7,
+  },
+  profileIdentity: {
+    maxWidth: 96,
+    alignItems: "flex-start",
+    justifyContent: "flex-end",
+    gap: 2,
+    paddingBottom: 2,
   },
   profileLevelBadge: {
     overflow: "hidden",
@@ -1772,26 +1269,28 @@ const styles = StyleSheet.create({
     elevation: 8,
   },
   profilePicture: {
-    marginLeft: 5,
-    marginTop: 8,
-    width: 42,
-    height: 42,
-    borderRadius: 4,
+    width: "100%",
+    height: "100%",
+    borderRadius: 5,
     shadowColor: "#000",
     shadowOpacity: 0.75,
     shadowRadius: 6,
     shadowOffset: { width: 0, height: 3 },
     elevation: 6,
   },
-  profileUserName: {
-    maxWidth: 78,
+  profileNameBadge: {
+    overflow: "hidden",
+    maxWidth: 96,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(217, 249, 157, 0.55)",
+    backgroundColor: "rgba(5, 18, 14, 0.9)",
     color: "#fff3c4",
     fontSize: 11,
     fontWeight: "900",
-    textAlign: "center",
-    textShadowColor: "rgba(0, 0, 0, 0.9)",
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 3,
+    textAlign: "left",
   },
   profileMenuIcon: {
     width: 30,
@@ -1813,18 +1312,13 @@ const styles = StyleSheet.create({
     elevation: 8,
   },
   coinBalanceIcon: {
-    width: 26,
-    height: 26,
+    width: 22,
+    height: 22,
   },
   coinBalanceText: {
-    color: "#fff3c4",
-    fontSize: 15,
+    color: "#f0fdf4",
+    fontSize: 13,
     fontWeight: "900",
-    minWidth: 18,
-    textAlign: "center",
-    textShadowColor: "#281507",
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 2,
   },
   heroHeaderRight: {
     flexDirection: "row",

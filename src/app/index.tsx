@@ -1,5 +1,5 @@
-import { WildPawMenu } from "@/components/wild-paw-menu";
+import { Redirect } from "expo-router";
 
 export default function HomeScreen() {
-  return <WildPawMenu />;
+  return <Redirect href="/menu" />;
 }

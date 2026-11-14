@@ -3,19 +3,20 @@ import { initializeRemoteGameCatalogs } from "@/constants/game-catalog";
 import { initializeRemoteGameConfiguration } from "@/constants/game-configuration";
 import { initializeDefaultPlayerInventory } from "@/constants/player-inventory";
 import {
-    getMusicVolume,
-    subscribeToMusicVolume,
+  getMusicVolume,
+  subscribeToMusicVolume,
 } from "@/constants/player-settings";
 import { initializeRemoteStorePricing } from "@/constants/store-pricing";
 import "@/global.css";
 import {
-    createInitialAssetLoadingState,
-    getRemoteAssetSource,
-    loadRemoteAssets,
-    type AssetLoadingState,
+  createInitialAssetLoadingState,
+  getRemoteAssetSource,
+  loadRemoteAssets,
+  type AssetLoadingState,
 } from "@/services/remote-assets";
 import { createAudioPlayer, setAudioModeAsync } from "expo-audio";
 import { Image } from "expo-image";
+import { useNetworkState } from "expo-network";
 import { DarkTheme, Stack, ThemeProvider, usePathname } from "expo-router";
 import * as ScreenOrientation from "expo-screen-orientation";
 import * as SplashScreen from "expo-splash-screen";
@@ -53,6 +54,7 @@ function formatBytes(bytes: number) {
 
 export default function RootLayout() {
   const pathname = usePathname();
+  const networkState = useNetworkState();
   const musicPlayerRef = useRef<ReturnType<typeof createAudioPlayer> | null>(
     null,
   );
@@ -66,6 +68,9 @@ export default function RootLayout() {
   const [isAudioModeReady, setIsAudioModeReady] = useState(false);
   const activeTrackRef = useRef<string | number | null>(null);
   const musicVolumeRef = useRef(musicVolume);
+  const isInternetUnavailable =
+    networkState.isConnected === false ||
+    networkState.isInternetReachable === false;
 
   useEffect(() => {
     let isMounted = true;
@@ -280,6 +285,27 @@ export default function RootLayout() {
               >
                 {assetLoadingState.error ?? assetLoadingState.detail}
               </Text>
+              {isInternetUnavailable && (
+                <Text
+                  accessibilityRole="alert"
+                  style={{
+                    alignSelf: "flex-start",
+                    marginTop: 8,
+                    paddingHorizontal: 9,
+                    paddingVertical: 5,
+                    borderRadius: 8,
+                    borderWidth: 1,
+                    borderColor: "rgba(252, 165, 165, 0.75)",
+                    backgroundColor: "rgba(127, 29, 29, 0.78)",
+                    color: "#fff",
+                    fontSize: 11,
+                    fontWeight: "800",
+                  }}
+                >
+                  ⚠ No internet connection. Connect to Wi-Fi or mobile data to
+                  download game assets.
+                </Text>
+              )}
               <View
                 style={{
                   height: 9,
@@ -348,6 +374,25 @@ export default function RootLayout() {
                     ? "Calculating download size…"
                     : `${formatBytes(assetLoadingState.downloadedBytes)} / ${formatBytes(assetLoadingState.totalDownloadBytes)} downloaded`}
               </Text>
+              {Platform.OS !== "web" &&
+                assetLoadingState.totalDownloadBytes > 0 &&
+                !assetLoadingState.isComplete && (
+                  <Text
+                    style={{
+                      color: "rgba(255,255,255,0.9)",
+                      marginTop: 3,
+                      fontSize: 11,
+                      textAlign: "center",
+                      textShadowColor: "rgba(0,0,0,0.95)",
+                      textShadowOffset: { width: 1, height: 1 },
+                      textShadowRadius: 3,
+                    }}
+                  >
+                    Download speed:{" "}
+                    {formatBytes(assetLoadingState.downloadSpeedBytesPerSecond)}
+                    /s
+                  </Text>
+                )}
               {assetLoadingState.error && (
                 <Pressable
                   onPress={retryAssetDownload}

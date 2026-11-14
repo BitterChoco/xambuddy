@@ -29,6 +29,7 @@ export type AssetLoadingState = {
   totalFiles: number;
   downloadedBytes: number;
   totalDownloadBytes: number;
+  downloadSpeedBytesPerSecond: number;
   error: string | null;
   isComplete: boolean;
 };
@@ -49,6 +50,7 @@ export function createInitialAssetLoadingState(): AssetLoadingState {
     totalFiles: 0,
     downloadedBytes: 0,
     totalDownloadBytes: 0,
+    downloadSpeedBytesPerSecond: 0,
     error: null,
     isComplete: false,
   };
@@ -115,11 +117,14 @@ function validateManifest(value: unknown): AssetManifest {
     }
 
     const item = entry as ManifestFile;
+    // Published manifests may use repository-root paths (assets/game/...),
+    // while the app stores and requests paths relative to data/assets (game/...).
+    const normalizedPath = item.path?.replace(/^assets\//, "");
     if (
-      typeof item.path !== "string" ||
-      item.path.startsWith("/") ||
-      item.path.includes("\\") ||
-      item.path
+      typeof normalizedPath !== "string" ||
+      normalizedPath.startsWith("/") ||
+      normalizedPath.includes("\\") ||
+      normalizedPath
         .split("/")
         .some((part) => !part || part === "." || part === "..") ||
       typeof item.size !== "number" ||
@@ -132,7 +137,7 @@ function validateManifest(value: unknown): AssetManifest {
       );
     }
 
-    return item;
+    return { ...item, path: normalizedPath };
   });
 
   if (new Set(files.map((entry) => entry.path)).size !== files.length) {
@@ -238,6 +243,7 @@ export async function loadRemoteAssets(onProgress: ProgressCallback) {
       totalFiles: manifest.files.length,
       downloadedBytes: 0,
       totalDownloadBytes: 0,
+      downloadSpeedBytesPerSecond: 0,
       error: null,
       isComplete: true,
     });
@@ -260,17 +266,33 @@ export async function loadRemoteAssets(onProgress: ProgressCallback) {
   let completedFiles = 0;
   let isCheckingFiles = true;
   let lastPublishedAt = 0;
+  let lastSpeedSampleAt = Date.now();
+  let lastSpeedSampleBytes = 0;
+  let downloadSpeedBytesPerSecond = 0;
   let downloadError: Error | null = null;
 
   const publish = (detail: string, force = false) => {
     const now = Date.now();
-    if (!force && now - lastPublishedAt < 100) return;
-    lastPublishedAt = now;
     const inProgressBytes = Array.from(activeBytes.values()).reduce(
       (sum, bytes) => sum + bytes,
       0,
     );
     const downloadedBytes = completedBytes + inProgressBytes;
+    const speedSampleDuration = (now - lastSpeedSampleAt) / 1000;
+    if (speedSampleDuration >= 0.5) {
+      const sampleSpeed = Math.max(
+        0,
+        (downloadedBytes - lastSpeedSampleBytes) / speedSampleDuration,
+      );
+      downloadSpeedBytesPerSecond =
+        downloadSpeedBytesPerSecond === 0
+          ? sampleSpeed
+          : downloadSpeedBytesPerSecond * 0.4 + sampleSpeed * 0.6;
+      lastSpeedSampleAt = now;
+      lastSpeedSampleBytes = downloadedBytes;
+    }
+    if (!force && now - lastPublishedAt < 100) return;
+    lastPublishedAt = now;
     onProgress({
       progress: isCheckingFiles
         ? 0
@@ -285,6 +307,7 @@ export async function loadRemoteAssets(onProgress: ProgressCallback) {
       totalFiles: manifest.files.length,
       downloadedBytes: Math.min(downloadedBytes, totalDownloadBytes),
       totalDownloadBytes,
+      downloadSpeedBytesPerSecond,
       error: null,
       isComplete: false,
     });
@@ -428,6 +451,7 @@ export async function loadRemoteAssets(onProgress: ProgressCallback) {
     totalFiles: manifest.files.length,
     downloadedBytes: completedBytes,
     totalDownloadBytes,
+    downloadSpeedBytesPerSecond: 0,
     error: null,
     isComplete: true,
   });
