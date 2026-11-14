@@ -1,62 +1,68 @@
+import { SoundPressable as Pressable } from "@/components/ui/sound-pressable";
 import { Image } from "expo-image";
 import { router, useLocalSearchParams } from "expo-router";
 import { useEffect, useMemo, useState } from "react";
 import {
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  useWindowDimensions,
-  View,
+    ScrollView,
+    StyleSheet,
+    Text,
+    useWindowDimensions,
+    View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { BUDDIES, getBuddyBonusSummary } from "@/constants/buddy-catalog";
 import {
-  awardCoins,
-  getCoinBalance,
-  spendCoins,
-  subscribeToCoinBalance,
+    awardCoins,
+    getCoinBalance,
+    spendCoins,
+    subscribeToCoinBalance,
 } from "@/constants/coin-wallet";
 import {
-  DEFAULT_HERO_ID,
-  getHeroImage,
-  getRarityCardImage,
-  getSkinImage,
-  HEROES,
-  ITEM_RARITIES,
-  PROFILE_BORDERS,
-  type BundledImage,
-  type ItemRarity,
+    getDiamondBalance,
+    subscribeToDiamondBalance,
+} from "@/constants/diamond-wallet";
+import {
+    DEFAULT_HERO_ID,
+    getHeroImage,
+    getRarityCardImage,
+    getSkinImage,
+    HEROES,
+    ITEM_RARITIES,
+    PROFILE_BORDERS,
+    PROFILE_PICTURE_CHOICES,
+    type BundledImage,
+    type ItemRarity,
 } from "@/constants/game-catalog";
 import {
-  DEFAULT_ORB_SKIN_ID,
-  getOrbRarityColor,
-  ORB_SKINS,
+    DEFAULT_ORB_SKIN_ID,
+    getOrbRarityColor,
+    ORB_SKINS,
 } from "@/constants/orb-catalog";
 import {
-  getPlayerLevelProgress,
-  getPlayerXp,
-  subscribeToPlayerXp,
+    getPlayerLevelProgress,
+    getPlayerXp,
+    subscribeToPlayerXp,
 } from "@/constants/player-experience";
 import {
-  DEFAULT_PLAYER_INVENTORY,
-  loadPlayerInventory,
-  savePlayerInventory,
-  type PlayerInventory,
+    DEFAULT_PLAYER_INVENTORY,
+    loadPlayerInventory,
+    savePlayerInventory,
+    type PlayerInventory,
 } from "@/constants/player-inventory";
 import {
-  getBuddyPricing,
-  getHeroPricing,
-  getOrbPricing,
-  getProfileBorderPricing,
-  getSkinPricing,
+    getBuddyPricing,
+    getHeroPricing,
+    getOrbPricing,
+    getProfileBorderPricing,
+    getSkinPricing,
 } from "@/constants/store-pricing";
 import { getRemoteAssetSource } from "@/services/remote-assets";
 
 const backdrop = require("@/assets/images/background_1.png");
 const storeIcon = getRemoteAssetSource("game/icons/shop_1.png");
 const coinIcon = getRemoteAssetSource("game/icons/coin_1.png");
+const diamondIcon = getRemoteAssetSource("game/icons/diamond_1.png");
 
 type StoreTab = "hero" | "skin" | "orb" | "buddy" | "border";
 type Price = { price: number; discountPercent: number; finalPrice: number };
@@ -68,6 +74,8 @@ type StoreItem = {
   subtitle: string;
   rarity: ItemRarity;
   image?: BundledImage;
+  profilePicture?: BundledImage;
+  profilePictureName?: string;
   price: Price;
   owned: boolean;
   locked: boolean;
@@ -98,6 +106,7 @@ export default function StoreScreen() {
   );
   const [inventoryLoaded, setInventoryLoaded] = useState(false);
   const [coinBalance, setCoinBalance] = useState(0);
+  const [diamondBalance, setDiamondBalance] = useState(0);
   const [playerXp, setPlayerXp] = useState(0);
   const [purchasingItem, setPurchasingItem] = useState<string | null>(null);
   const [message, setMessage] = useState("");
@@ -107,12 +116,19 @@ export default function StoreScreen() {
   useEffect(() => {
     let mounted = true;
     const unsubscribeCoins = subscribeToCoinBalance(setCoinBalance);
+    const unsubscribeDiamonds = subscribeToDiamondBalance(setDiamondBalance);
     const unsubscribeXp = subscribeToPlayerXp(setPlayerXp);
 
-    void Promise.all([getCoinBalance(), getPlayerXp(), loadPlayerInventory()])
-      .then(([balance, xp, loadedInventory]) => {
+    void Promise.all([
+      getCoinBalance(),
+      getDiamondBalance(),
+      getPlayerXp(),
+      loadPlayerInventory(),
+    ])
+      .then(([balance, diamonds, xp, loadedInventory]) => {
         if (!mounted) return;
         setCoinBalance(balance);
+        setDiamondBalance(diamonds);
         setPlayerXp(xp);
         setInventory(loadedInventory);
       })
@@ -126,6 +142,7 @@ export default function StoreScreen() {
     return () => {
       mounted = false;
       unsubscribeCoins();
+      unsubscribeDiamonds();
       unsubscribeXp();
     };
   }, []);
@@ -140,6 +157,12 @@ export default function StoreScreen() {
         subtitle: `${hero.type} hero`,
         rarity: hero.rarity ?? "common",
         image: getHeroImage(hero.id),
+        profilePicture: PROFILE_PICTURE_CHOICES.find(
+          (picture) => picture.id === hero.id,
+        )?.source,
+        profilePictureName: PROFILE_PICTURE_CHOICES.find(
+          (picture) => picture.id === hero.id,
+        )?.name,
         price: getHeroPricing(hero.id),
         owned: inventory.heroes.includes(hero.id),
         locked: false,
@@ -197,7 +220,7 @@ export default function StoreScreen() {
       kind: "border" as const,
       name: border.name,
       subtitle: "Profile picture frame",
-      rarity: "common" as const,
+      rarity: border.rarity ?? "common",
       image: border.source,
       price: getProfileBorderPricing(border.id),
       owned: inventory.borders.includes(border.id),
@@ -263,6 +286,10 @@ export default function StoreScreen() {
           item.kind === "hero"
             ? [...inventory.heroes, item.id]
             : inventory.heroes,
+        profilePictures:
+          item.kind === "hero" && item.profilePicture
+            ? [...inventory.profilePictures, item.id]
+            : inventory.profilePictures,
         skins:
           item.kind === "skin"
             ? [...inventory.skins, item.id]
@@ -339,16 +366,29 @@ export default function StoreScreen() {
             contentFit="contain"
             accessibilityLabel="Store"
           />
-          <View style={styles.balanceBadge}>
-            <Image
-              source={coinIcon}
-              style={styles.coinIcon}
-              contentFit="contain"
-              accessibilityLabel="Coins"
-            />
-            <Text style={styles.balanceText}>
-              {coinBalance.toLocaleString()}
-            </Text>
+          <View style={styles.currencyBalances}>
+            <View style={[styles.balanceBadge, styles.diamondBalanceBadge]}>
+              <Image
+                source={diamondIcon}
+                style={styles.coinIcon}
+                contentFit="contain"
+                accessibilityLabel="Diamonds"
+              />
+              <Text style={styles.balanceText}>
+                {diamondBalance.toLocaleString()}
+              </Text>
+            </View>
+            <View style={styles.balanceBadge}>
+              <Image
+                source={coinIcon}
+                style={styles.coinIcon}
+                contentFit="contain"
+                accessibilityLabel="Coins"
+              />
+              <Text style={styles.balanceText}>
+                {coinBalance.toLocaleString()}
+              </Text>
+            </View>
           </View>
         </View>
 
@@ -521,7 +561,10 @@ export default function StoreScreen() {
                           {item.image && (
                             <Image
                               source={item.image}
-                              style={styles.itemImage}
+                              style={[
+                                styles.itemImage,
+                                item.kind === "hero" && styles.heroItemImage,
+                              ]}
                               contentFit="contain"
                               pointerEvents="none"
                             />
@@ -532,6 +575,22 @@ export default function StoreScreen() {
                           <Text numberOfLines={1} style={styles.itemRarity}>
                             {item.rarity.toUpperCase()}
                           </Text>
+                          {item.kind === "hero" && item.profilePicture && (
+                            <View style={styles.heroProfilePictureBonus}>
+                              <Image
+                                source={item.profilePicture}
+                                style={styles.heroProfilePicturePreview}
+                                contentFit="cover"
+                                pointerEvents="none"
+                              />
+                              <Text
+                                numberOfLines={1}
+                                style={styles.heroProfilePictureText}
+                              >
+                                + PROFILE PIC
+                              </Text>
+                            </View>
+                          )}
                           <Text
                             numberOfLines={1}
                             style={
@@ -590,6 +649,23 @@ export default function StoreScreen() {
                     <Text style={styles.detailSubtitle}>
                       {selectedItem.subtitle}
                     </Text>
+                    {selectedItem.kind === "hero" &&
+                      selectedItem.profilePicture && (
+                        <View style={styles.detailProfilePictureBonus}>
+                          <Image
+                            source={selectedItem.profilePicture}
+                            style={styles.detailProfilePicturePreview}
+                            contentFit="cover"
+                            accessibilityLabel={`${selectedItem.profilePictureName ?? selectedItem.name} profile picture preview`}
+                          />
+                          <Text style={styles.detailProfilePictureText}>
+                            +{" "}
+                            {selectedItem.profilePictureName ??
+                              selectedItem.name}{" "}
+                            Profile Picture
+                          </Text>
+                        </View>
+                      )}
                     <Text numberOfLines={4} style={styles.detailDescription}>
                       {selectedItem.description}
                     </Text>
@@ -720,6 +796,8 @@ const styles = StyleSheet.create({
     borderColor: "rgba(217, 249, 157, 0.4)",
     backgroundColor: "rgba(5, 18, 14, 0.9)",
   },
+  currencyBalances: { flexDirection: "row", alignItems: "center", gap: 6 },
+  diamondBalanceBadge: { borderColor: "rgba(103, 232, 249, 0.55)" },
   coinIcon: { width: 22, height: 22 },
   balanceText: { color: "#f0fdf4", fontSize: 13, fontWeight: "900" },
   card: {
@@ -843,6 +921,7 @@ const styles = StyleSheet.create({
     letterSpacing: 0.7,
   },
   itemImage: { width: 76, height: 82, marginTop: 2 },
+  heroItemImage: { height: 58 },
   itemName: {
     width: "100%",
     marginTop: 2,
@@ -855,6 +934,26 @@ const styles = StyleSheet.create({
     marginTop: 2,
     color: "#bef264",
     fontSize: 8,
+    fontWeight: "900",
+  },
+  heroProfilePictureBonus: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 3,
+    maxWidth: "100%",
+    marginTop: 2,
+  },
+  heroProfilePicturePreview: {
+    width: 14,
+    height: 14,
+    borderRadius: 7,
+    borderWidth: 1,
+    borderColor: "rgba(103, 232, 249, 0.8)",
+  },
+  heroProfilePictureText: {
+    flexShrink: 1,
+    color: "#a5f3fc",
+    fontSize: 7,
     fontWeight: "900",
   },
   itemPrice: { marginTop: 3, color: "#fef3c7", fontSize: 8, fontWeight: "800" },
@@ -905,6 +1004,30 @@ const styles = StyleSheet.create({
     color: "#9bb7aa",
     fontSize: 10,
     textAlign: "center",
+  },
+  detailProfilePictureBonus: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginTop: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(103, 232, 249, 0.35)",
+    backgroundColor: "rgba(8, 47, 73, 0.3)",
+  },
+  detailProfilePicturePreview: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: 1,
+    borderColor: "rgba(103, 232, 249, 0.8)",
+  },
+  detailProfilePictureText: {
+    color: "#a5f3fc",
+    fontSize: 9,
+    fontWeight: "800",
   },
   detailDescription: {
     marginTop: 7,

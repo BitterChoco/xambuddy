@@ -1,21 +1,21 @@
+import { SoundPressable as Pressable } from "@/components/ui/sound-pressable";
 import { Image } from "expo-image";
 import { router } from "expo-router";
 import { useCallback, useEffect, useState } from "react";
 import {
-    ActivityIndicator,
-    Pressable,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TextInput,
-    View,
+  ActivityIndicator,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import {
-    loadRedeemCodes,
-    redeemCode,
-    type RedeemCode,
+  loadRedeemCodes,
+  redeemCode,
+  type RedeemCode,
 } from "@/services/redeem-codes";
 import { getRemoteAssetSource } from "@/services/remote-assets";
 

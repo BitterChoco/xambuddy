@@ -1,6 +1,6 @@
+import { SoundPressable as Pressable } from "@/components/ui/sound-pressable";
 import { Image } from "expo-image";
 import {
-    Pressable,
     ScrollView,
     StyleSheet,
     Text,
@@ -27,6 +27,7 @@ export type HeroSelectionTab = "hero" | "orb" | "buddy";
 
 type HeroSelectionScreenProps = {
   coinBalance: number;
+  diamondBalance: number;
   hero: HeroRecord;
   ownedHeroes: HeroRecord[];
   selectedHero: string;
@@ -49,6 +50,7 @@ type HeroSelectionScreenProps = {
 };
 
 const coinIcon = getRemoteAssetSource("game/icons/coin_1.png");
+const diamondIcon = getRemoteAssetSource("game/icons/diamond_1.png");
 
 function Artwork({
   source,
@@ -71,6 +73,7 @@ function Artwork({
 
 export function HeroSelectionScreen({
   coinBalance,
+  diamondBalance,
   hero,
   ownedHeroes,
   selectedHero,
@@ -457,14 +460,29 @@ export function HeroSelectionScreen({
           <Text style={styles.eyebrow}>WILD PAW · COLLECTION</Text>
           <Text style={styles.title}>Choose Your Hero</Text>
         </View>
-        <View style={styles.balanceBadge}>
-          <Image
-            source={coinIcon}
-            style={styles.coinIcon}
-            contentFit="contain"
-            accessibilityLabel="Coins"
-          />
-          <Text style={styles.balanceText}>{coinBalance.toLocaleString()}</Text>
+        <View style={styles.currencyBalances}>
+          <View style={[styles.balanceBadge, styles.diamondBalanceBadge]}>
+            <Image
+              source={diamondIcon}
+              style={styles.coinIcon}
+              contentFit="contain"
+              accessibilityLabel="Diamonds"
+            />
+            <Text style={styles.balanceText}>
+              {diamondBalance.toLocaleString()}
+            </Text>
+          </View>
+          <View style={styles.balanceBadge}>
+            <Image
+              source={coinIcon}
+              style={styles.coinIcon}
+              contentFit="contain"
+              accessibilityLabel="Coins"
+            />
+            <Text style={styles.balanceText}>
+              {coinBalance.toLocaleString()}
+            </Text>
+          </View>
         </View>
       </View>
 
@@ -602,6 +620,8 @@ const styles = StyleSheet.create({
     borderColor: "rgba(217, 249, 157, 0.4)",
     backgroundColor: "rgba(5, 18, 14, 0.9)",
   },
+  currencyBalances: { flexDirection: "row", alignItems: "center", gap: 6 },
+  diamondBalanceBadge: { borderColor: "rgba(103, 232, 249, 0.55)" },
   coinIcon: { width: 22, height: 22 },
   balanceText: { color: "#f0fdf4", fontSize: 13, fontWeight: "900" },
   card: {

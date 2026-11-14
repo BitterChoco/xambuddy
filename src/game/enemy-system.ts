@@ -374,12 +374,23 @@ export function advanceEnemyPositions({
       knockbackY: knockbackY * knockbackDecay,
       hitFlashTimer: Math.max(0, (enemy.hitFlashTimer ?? 0) - delta),
     };
-    const applyHitMotion = (nextEnemy: Enemy): Enemy => ({
-      ...nextEnemy,
-      x: nextEnemy.x + knockbackX * delta,
-      y: nextEnemy.y + knockbackY * delta,
-      ...hitMotion,
-    });
+    const applyHitMotion = (
+      nextEnemy: Enemy,
+      constrainToArena = true,
+    ): Enemy => {
+      const x = nextEnemy.x + knockbackX * delta;
+      const y = nextEnemy.y + knockbackY * delta;
+      return {
+        ...nextEnemy,
+        x: constrainToArena
+          ? clampEnemyValue(x, enemy.radius, ARENA_WIDTH - enemy.radius)
+          : x,
+        y: constrainToArena
+          ? clampEnemyValue(y, enemy.radius, ARENA_HEIGHT - enemy.radius)
+          : y,
+        ...hitMotion,
+      };
+    };
 
     if (enemy.arenaBossId) {
       const arenaBossConfig = getArenaBossById(enemy.arenaBossId);
@@ -394,14 +405,19 @@ export function advanceEnemyPositions({
           Math.sin((BOSS_ENTRANCE_DURATION - bossPhaseTimer) * 22) *
           22 *
           (1 - progress);
-        return applyHitMotion({
-          ...enemy,
-          x:
-            bossEntrancePoint.x +
-            (ARENA_WIDTH / 2 - bossEntrancePoint.x) * progress +
-            wiggle,
-          y: bossEntrancePoint.y + (entranceY - bossEntrancePoint.y) * progress,
-        });
+        return applyHitMotion(
+          {
+            ...enemy,
+            x:
+              bossEntrancePoint.x +
+              (ARENA_WIDTH / 2 - bossEntrancePoint.x) * progress +
+              wiggle,
+            y:
+              bossEntrancePoint.y +
+              (entranceY - bossEntrancePoint.y) * progress,
+          },
+          false,
+        );
       }
       if (
         bossPhase === "active" &&

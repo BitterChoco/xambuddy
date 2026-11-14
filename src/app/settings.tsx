@@ -1,8 +1,9 @@
+import { SoundPressable as Pressable } from "@/components/ui/sound-pressable";
 import Slider from "@react-native-community/slider";
 import { Image } from "expo-image";
 import { router } from "expo-router";
 import { useEffect, useState } from "react";
-import { Pressable, StyleSheet, Switch, Text, View } from "react-native";
+import { StyleSheet, Switch, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import {

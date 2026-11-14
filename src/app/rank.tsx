@@ -1,3 +1,4 @@
+import { SoundPressable as Pressable } from "@/components/ui/sound-pressable";
 import {
     DEFAULT_PROFILE_PICTURE,
     PROFILE_PICTURES,
@@ -15,7 +16,6 @@ import { router } from "expo-router";
 import { useEffect, useState } from "react";
 import {
     ActivityIndicator,
-    Pressable,
     ScrollView,
     StyleSheet,
     Text,

@@ -1,3 +1,4 @@
+import { SoundPressable as Pressable } from "@/components/ui/sound-pressable";
 import { initializeRemoteBuddyCatalog } from "@/constants/buddy-catalog";
 import { initializeRemoteGameCatalogs } from "@/constants/game-catalog";
 import { initializeRemoteGameConfiguration } from "@/constants/game-configuration";
@@ -22,17 +23,13 @@ import * as ScreenOrientation from "expo-screen-orientation";
 import * as SplashScreen from "expo-splash-screen";
 import { StatusBar } from "expo-status-bar";
 import { useEffect, useRef, useState } from "react";
-import { Platform, Pressable, Text, View } from "react-native";
+import { Platform, Text, View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 
 const loadingScreenImage = require("@/assets/images/loading_screen.jpg");
 const loadingMusic = require("@/assets/sound/turning_pages-lantern-in-the-glade-600973.mp3");
-const menuMusic = getRemoteAssetSource(
-  "game/music/paulyudin-game-game-music-573991.mp3",
-);
-const battleMusic = getRemoteAssetSource(
-  "game/music/atlasaudio-video-game-617620.mp3",
-);
+const menuMusic = getRemoteAssetSource("game/music/menu_1.mp3");
+const battleMusic = getRemoteAssetSource("game/music/battle_1.mp3");
 
 if (Platform.OS !== "web") {
   void SplashScreen.preventAutoHideAsync().catch(() => undefined);

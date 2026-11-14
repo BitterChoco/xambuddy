@@ -260,6 +260,21 @@ export async function loadRemoteAssets(onProgress: ProgressCallback) {
   const installedVersion = installedVersionFile.exists
     ? await installedVersionFile.text().catch(() => "")
     : "";
+  const installedManifestFile = new File(
+    dataDirectory,
+    "installed-manifest.json",
+  );
+  let installedManifest: AssetManifest | null = null;
+  if (installedManifestFile.exists) {
+    try {
+      installedManifest = validateManifest(await installedManifestFile.json());
+    } catch {
+      // If the snapshot is missing or invalid, verify cached assets directly.
+    }
+  }
+  const installedEntries = new Map(
+    installedManifest?.files.map((entry) => [entry.path, entry]) ?? [],
+  );
   const activeBytes = new Map<string, number>();
   let completedBytes = 0;
   let totalDownloadBytes = 0;
@@ -335,11 +350,19 @@ export async function loadRemoteAssets(onProgress: ProgressCallback) {
       parentDirectory.create({ idempotent: true, intermediates: true });
       publish(`Checking ${entry.path}`, true);
 
+      const previousEntry = installedEntries.get(entry.path);
+      const manifestEntryChanged =
+        !!previousEntry &&
+        (previousEntry.size !== entry.size ||
+          previousEntry.sha256 !== entry.sha256);
       let alreadyCurrent =
         destination.exists && destination.size === entry.size;
       if (
         destination.exists &&
-        (!alreadyCurrent || installedVersion !== manifest.version)
+        (!alreadyCurrent ||
+          installedVersion !== manifest.version ||
+          manifestEntryChanged ||
+          !installedManifest)
       ) {
         alreadyCurrent = await matchesManifestChecksum(destination, entry);
       }
@@ -444,6 +467,7 @@ export async function loadRemoteAssets(onProgress: ProgressCallback) {
   if (downloadError) throw downloadError;
 
   await installedVersionFile.write(manifest.version);
+  await installedManifestFile.write(JSON.stringify(manifest));
   onProgress({
     progress: 100,
     detail: `All ${manifest.files.length} assets are ready.`,

@@ -16,7 +16,8 @@ export type DropKind =
   | "medkit"
   | "boots"
   | "rapidFire"
-  | "highDamage";
+  | "highDamage"
+  | "chest";
 
 export type DropConfig = {
   heart: DropCommonConfig & {
@@ -28,6 +29,7 @@ export type DropConfig = {
   boots: DropCommonConfig & { amount: number };
   rapidFire: DropCommonConfig;
   highDamage: DropCommonConfig;
+  chest: DropCommonConfig;
 };
 
 export type CoinRewardConfig = {
@@ -37,11 +39,84 @@ export type CoinRewardConfig = {
 export let dropConfig = {} as DropConfig;
 export let coinRewards = {} as CoinRewardConfig;
 
+const DEFAULT_DROP_CONFIG: DropConfig = {
+  heart: {
+    enabled: true,
+    dropChance: 0.35,
+    stayDurationSeconds: 8,
+    flickerDurationSeconds: 2,
+    flickerIntervalSeconds: 0.18,
+    pickupRadius: 18,
+    iconSize: 22,
+    healAmount: 25,
+    healPopupDurationSeconds: 1,
+  },
+  grenade: {
+    enabled: true,
+    dropChance: 0.2,
+    stayDurationSeconds: 12,
+    flickerDurationSeconds: 2,
+    flickerIntervalSeconds: 0.2,
+    pickupRadius: 18,
+    iconSize: 20,
+    amount: 1,
+    inventoryCap: 3,
+  },
+  medkit: {
+    enabled: true,
+    dropChance: 0.18,
+    stayDurationSeconds: 12,
+    flickerDurationSeconds: 2,
+    flickerIntervalSeconds: 0.2,
+    pickupRadius: 18,
+    iconSize: 20,
+    amount: 1,
+    inventoryCap: 3,
+  },
+  boots: {
+    enabled: true,
+    dropChance: 0.14,
+    stayDurationSeconds: 12,
+    flickerDurationSeconds: 2,
+    flickerIntervalSeconds: 0.2,
+    pickupRadius: 18,
+    iconSize: 20,
+    amount: 1,
+  },
+  rapidFire: {
+    enabled: true,
+    dropChance: 0.12,
+    stayDurationSeconds: 12,
+    flickerDurationSeconds: 2,
+    flickerIntervalSeconds: 0.2,
+    pickupRadius: 18,
+    iconSize: 22,
+  },
+  highDamage: {
+    enabled: true,
+    dropChance: 0.1,
+    stayDurationSeconds: 12,
+    flickerDurationSeconds: 2,
+    flickerIntervalSeconds: 0.2,
+    pickupRadius: 18,
+    iconSize: 20,
+  },
+  chest: {
+    enabled: true,
+    dropChance: 1,
+    stayDurationSeconds: 30,
+    flickerDurationSeconds: 0,
+    flickerIntervalSeconds: 0.2,
+    pickupRadius: 22,
+    iconSize: 28,
+  },
+};
+
 export async function initializeRemoteGameConfiguration() {
   const [remoteDropConfig, remoteCoinRewards] = await Promise.all([
-    readRemoteAssetJson<DropConfig>("game/constants/drop-config.json"),
+    readRemoteAssetJson<Partial<DropConfig>>("game/constants/drop-config.json"),
     readRemoteAssetJson<CoinRewardConfig>("game/constants/coin-rewards.json"),
   ]);
-  dropConfig = remoteDropConfig;
+  dropConfig = { ...DEFAULT_DROP_CONFIG, ...remoteDropConfig };
   coinRewards = remoteCoinRewards;
 }

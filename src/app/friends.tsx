@@ -1,10 +1,10 @@
+import { SoundPressable as Pressable } from "@/components/ui/sound-pressable";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Image } from "expo-image";
 import { router } from "expo-router";
 import { useEffect, useMemo, useState } from "react";
 import {
     ActivityIndicator,
-    Pressable,
     ScrollView,
     StyleSheet,
     Text,

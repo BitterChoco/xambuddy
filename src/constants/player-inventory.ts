@@ -5,6 +5,7 @@ import {
   DEFAULT_HERO_ID,
   HEROES,
   PROFILE_BORDERS,
+  PROFILE_PICTURE_CHOICES,
 } from "@/constants/game-catalog";
 import { DEFAULT_ORB_SKIN_ID, ORB_SKINS } from "@/constants/orb-catalog";
 
@@ -13,6 +14,7 @@ const inventoryListeners = new Set<(inventory: PlayerInventory) => void>();
 
 export type PlayerInventory = {
   heroes: string[];
+  profilePictures: string[];
   skins: string[];
   equippedOrb: boolean;
   orbSkins: string[];
@@ -24,6 +26,7 @@ export type PlayerInventory = {
 
 export const DEFAULT_PLAYER_INVENTORY: PlayerInventory = {
   heroes: [],
+  profilePictures: [],
   skins: [],
   equippedOrb: false,
   orbSkins: [DEFAULT_ORB_SKIN_ID],
@@ -39,6 +42,13 @@ export function initializeDefaultPlayerInventory() {
     DEFAULT_PLAYER_INVENTORY.heroes.length,
     DEFAULT_HERO_ID,
   );
+  DEFAULT_PLAYER_INVENTORY.profilePictures.splice(
+    0,
+    DEFAULT_PLAYER_INVENTORY.profilePictures.length,
+    ...PROFILE_PICTURE_CHOICES.filter((picture) =>
+      DEFAULT_PLAYER_INVENTORY.heroes.includes(picture.id),
+    ).map((picture) => picture.id),
+  );
 }
 
 const validOrbSkinIds = new Set(ORB_SKINS.map((skin) => skin.id));
@@ -50,6 +60,7 @@ function normalizeInventory(value: unknown): PlayerInventory {
 
   const stored = value as {
     heroes?: unknown;
+    profilePictures?: unknown;
     skins?: unknown;
     equippedOrb?: unknown;
     orbSkins?: unknown;
@@ -59,6 +70,9 @@ function normalizeInventory(value: unknown): PlayerInventory {
     borders?: unknown;
   };
   const validHeroIds = new Set(HEROES.map((hero) => hero.id));
+  const validProfilePictureIds = new Set(
+    PROFILE_PICTURE_CHOICES.map((picture) => picture.id),
+  );
   const validSkinIds = new Set(
     HEROES.flatMap((hero) => hero.skins.map((skin) => `${hero.id}:${skin.id}`)),
   );
@@ -73,6 +87,19 @@ function normalizeInventory(value: unknown): PlayerInventory {
         (id): id is string => typeof id === "string" && validHeroIds.has(id),
       )
     : [];
+  const storedProfilePictures = Array.isArray(stored.profilePictures)
+    ? stored.profilePictures.filter(
+        (id): id is string =>
+          typeof id === "string" && validProfilePictureIds.has(id),
+      )
+    : [];
+  const ownedHeroes = Array.from(new Set([DEFAULT_HERO_ID, ...heroes]));
+  const profilePictures = Array.from(
+    new Set([
+      ...storedProfilePictures,
+      ...ownedHeroes.filter((heroId) => validProfilePictureIds.has(heroId)),
+    ]),
+  );
   const skins = Array.isArray(stored.skins)
     ? stored.skins.filter(
         (id): id is string => typeof id === "string" && validSkinIds.has(id),
@@ -112,7 +139,8 @@ function normalizeInventory(value: unknown): PlayerInventory {
       : "";
 
   return {
-    heroes: Array.from(new Set([DEFAULT_HERO_ID, ...heroes])),
+    heroes: ownedHeroes,
+    profilePictures,
     skins: Array.from(new Set(skins)),
     equippedOrb: stored.equippedOrb === true,
     orbSkins: ownedOrbSkins,

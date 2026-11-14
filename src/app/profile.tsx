@@ -1,4 +1,5 @@
 import { ProfileBorderOverlay } from "@/components/ui/profile-border-overlay";
+import { SoundPressable as Pressable } from "@/components/ui/sound-pressable";
 import {
     DEFAULT_PROFILE_BORDER,
     DEFAULT_PROFILE_PICTURE,
@@ -23,14 +24,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Image } from "expo-image";
 import { router } from "expo-router";
 import { useEffect, useMemo, useState } from "react";
-import {
-    Pressable,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TextInput,
-    View,
-} from "react-native";
+import { ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 const PROFILE_STORAGE_KEY = "wild-paw.player-profile";
@@ -81,7 +75,12 @@ export default function ProfileScreen() {
             setProfileName(parsed.name.trim().slice(0, 20));
           }
           const picture = parsed.picture ?? parsed.avatar;
-          if (isProfilePictureId(picture)) setProfilePicture(picture);
+          if (
+            isProfilePictureId(picture) &&
+            loadedInventory.profilePictures.includes(picture)
+          ) {
+            setProfilePicture(picture);
+          }
           if (
             parsed.border === "none" ||
             (typeof parsed.border === "string" &&
@@ -136,6 +135,13 @@ export default function ProfileScreen() {
           border.id === "none" || inventory.borders.includes(border.id),
       ),
     [inventory.borders],
+  );
+  const availableProfilePictures = useMemo(
+    () =>
+      PROFILE_PICTURE_CHOICES.filter((picture) =>
+        inventory.profilePictures.includes(picture.id),
+      ),
+    [inventory.profilePictures],
   );
 
   const selectBorder = (borderId: string) => {
@@ -309,7 +315,7 @@ export default function ProfileScreen() {
             <View style={styles.optionsPanel}>
               {profileTab === "picture" ? (
                 <View style={styles.optionGrid}>
-                  {PROFILE_PICTURE_CHOICES.map((picture) => {
+                  {availableProfilePictures.map((picture) => {
                     const selected = profilePicture === picture.id;
                     return (
                       <Pressable

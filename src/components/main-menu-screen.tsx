@@ -1,8 +1,8 @@
+import { SoundPressable as Pressable } from "@/components/ui/sound-pressable";
 import { Image } from "expo-image";
 import { useEffect, useState } from "react";
 import {
     Animated,
-    Pressable,
     StyleSheet,
     Text,
     View,

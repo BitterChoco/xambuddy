@@ -1,4 +1,5 @@
 import { ProfileBorderOverlay } from "@/components/ui/profile-border-overlay";
+import { SoundPressable as Pressable } from "@/components/ui/sound-pressable";
 import { getBuddy, getBuddyBonus } from "@/constants/buddy-catalog";
 import { awardCoins } from "@/constants/coin-wallet";
 import {
@@ -26,38 +27,6 @@ import {
   subscribeToSoundEffectsVolume,
 } from "@/constants/player-settings";
 import {
-  ARENA_HEIGHT,
-  ARENA_WIDTH,
-  BOSS_AREA_RADIUS,
-  BOSS_ATTACK_TELEGRAPH_DURATION,
-  BOSS_CHEST_CONFIG,
-  BOSS_CHEST_LIFETIME,
-  BOSS_CONFIGS,
-  BOSS_DASH_DURATION,
-  BOSS_ENTRANCE_DURATION,
-  BOSS_WARNING_DURATION,
-  MAX_ACTIVE_ENEMIES,
-  WAVES_PER_ARENA,
-  advanceBossProjectiles,
-  advanceEnemyPositions,
-  applyEnemyHit,
-  createBossEntrancePoint,
-  getArenaBossForWave,
-  getEnemyFacing,
-  getEnemyImageSource,
-  getEnemyScoreReward,
-  getWaveEnemyCount,
-  makeArenaBoss,
-  makeEnemy,
-  type BossAreaEffect,
-  type BossAttackPhase,
-  type BossPhase,
-  type BossProjectile,
-  type ConsumableDropConfig,
-  type Enemy,
-  type Vector,
-} from "@/game/enemy-system";
-import {
   createMultiplayerSocket,
   startLocalHostServer,
   stopLocalHostServer,
@@ -70,10 +39,8 @@ import { Image } from "expo-image";
 import { router } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Animated,
   BackHandler,
   Platform,
-  Pressable,
   StyleSheet,
   Text,
   View,
@@ -87,6 +54,83 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 
 const MULTIPLAYER_SOCKET_OPEN = 1;
+
+type Vector = {
+  x: number;
+  y: number;
+};
+
+type Enemy = {
+  id: number;
+  imageAsset: string;
+  x: number;
+  y: number;
+  radius: number;
+  health: number;
+  maxHealth: number;
+  speed: number;
+  damage: number;
+  color: string;
+  isBoss: boolean;
+  arenaBossId?: string;
+  scoreReward?: number;
+  hitFlashTimer?: number;
+  knockbackX?: number;
+  knockbackY?: number;
+  repositionTimer?: number;
+  repositionTarget?: Vector | null;
+};
+
+type EnemyDeathEffect = {
+  id: number;
+  imageAsset: string;
+  x: number;
+  y: number;
+  radius: number;
+  life: number;
+  isArenaBoss: boolean;
+};
+
+type ArenaBossPattern = "artillery" | "charger";
+type BossPhase = "idle" | "warning" | "entrance" | "active";
+type BossAttackPhase = "cooldown" | "telegraph" | "dash";
+type ArenaBossConfig = {
+  id: string;
+  name: string;
+  pattern: ArenaBossPattern;
+  color: string;
+  fallbackIcon: string;
+  /** Storage-release asset path; set when the boss portrait is uploaded. */
+  imageAsset: string | null;
+  health: number;
+  contactDamage: number;
+  projectileDamage: number;
+  areaDamage: number;
+  dashDamage: number;
+  scoreReward: number;
+};
+
+type BossProjectile = {
+  id: number;
+  x: number;
+  y: number;
+  target: Vector;
+  vx: number;
+  vy: number;
+  speed: number;
+  radius: number;
+  damage: number;
+  life: number;
+  color: string;
+};
+
+type BossAreaEffect = {
+  id: number;
+  x: number;
+  y: number;
+  radius: number;
+  life: number;
+};
 
 type Bullet = {
   id: number;
@@ -108,6 +152,7 @@ type GrenadeProjectile = {
   vx: number;
   vy: number;
   fuse: number;
+  elapsed: number;
 };
 
 type GrenadeExplosion = {
@@ -117,12 +162,11 @@ type GrenadeExplosion = {
   y: number;
   radius: number;
   life: number;
-  smokeLife?: number;
 };
 
 type ConsumableDrop = {
   id: number;
-  kind: DropKind | "chest";
+  kind: DropKind;
   x: number;
   y: number;
   life: number;
@@ -165,6 +209,7 @@ type PlayerState = {
   rapidFireTimer: number;
   highDamageTimer: number;
   facing: Vector;
+  visualFacing: -1 | 1;
   orbEquipped: boolean;
   orbSkinId: string;
   buddyId: string;
@@ -180,11 +225,6 @@ type PlayerState = {
   knockbackX: number;
   knockbackY: number;
   isDead: boolean;
-};
-
-type EnemyFadeEffect = {
-  enemy: Enemy;
-  opacity: Animated.Value;
 };
 
 type PlayerUpgradeStats = {
@@ -245,13 +285,13 @@ type GameState = {
   itemDrops: ConsumableDrop[];
   grenadeProjectiles: GrenadeProjectile[];
   grenadeExplosions: GrenadeExplosion[];
+  enemyDeathEffects: EnemyDeathEffect[];
   damageNumbers: DamageNumber[];
   score: number;
   wave: number;
   arenaBackgroundWave: number;
   waveCountdown: number;
   warpTransitionTimer: number;
-  warpFadeTimer: number;
   powerUpChoices: PowerUpChoice[];
   warpPending: boolean;
   enemiesToSpawn: number;
@@ -272,8 +312,6 @@ type GameState = {
   bossConfigId: string | null;
   bossPhase: BossPhase;
   bossPhaseTimer: number;
-  bossEntrancePoint: Vector | null;
-  bossChestPending: boolean;
   bossAttackPhase: BossAttackPhase;
   bossAttackTimer: number;
   bossTelegraphTarget: Vector | null;
@@ -283,25 +321,29 @@ type GameState = {
   bossAreaEffects: BossAreaEffect[];
 };
 
+const ARENA_WIDTH = 640;
+const ARENA_HEIGHT = 360;
 const PLAYER_RADIUS = 18;
 const MAX_HEALTH = 100;
 const PLAYER_SPEED = 140;
-const SPEED_BOOST_DURATION = 60;
+const SPEED_BOOST_DURATION = 30;
 const SPEED_BOOST_MULTIPLIER = 1.55;
-const RAPID_FIRE_DURATION = 60;
+const RAPID_FIRE_DURATION = 30;
 const NORMAL_FIRE_COOLDOWN = 0.22;
 const RAPID_FIRE_COOLDOWN = 0.11;
-const HIGH_DAMAGE_DURATION = 60;
+const HIGH_DAMAGE_DURATION = 30;
 const HIGH_DAMAGE_MULTIPLIER = 2;
 const DASH_COOLDOWN = 2.2;
 const BULLET_SPEED = 260;
 const GRENADE_SPEED = 250;
 const GRENADE_BLAST_RADIUS = 82;
-const GRENADE_DAMAGE = 45;
+const GRENADE_DAMAGE = 200;
+const ENEMY_DEATH_FADE_DURATION = 0.4;
 const GRENADE_MIN_RANGE = 70;
 const GRENADE_MAX_RANGE = 280;
 const GRENADE_RANGE_DRAG_DISTANCE = 64;
 const DEFAULT_GRENADE_RANGE = 200;
+const MAX_ACTIVE_ENEMIES = 18;
 const WAVE_BREAK_DURATION = 60;
 const REVIVE_DURATION = 5;
 const REVIVE_RANGE = 58;
@@ -314,6 +356,10 @@ const ORB_BEAM_DURATION = 0.16;
 const heartImage = getRemoteAssetSource("game/icons/health_1.png");
 const bootsFastImage = getRemoteAssetSource("game/icons/boots_fast_1.png");
 const bulletImage = getRemoteAssetSource("game/icons/bullet_1.png");
+const bulletProjectileImage = getRemoteAssetSource(
+  "game/weapon/weapon_1-2.png",
+);
+const bombImage = getRemoteAssetSource("game/icons/bomb_1.png");
 const dashImage = getRemoteAssetSource("game/icons/dash_1.png");
 const ghostImage = getRemoteAssetSource("game/icons/ghost_1.png");
 const coinImage = getRemoteAssetSource("game/icons/coin_1.png");
@@ -321,26 +367,31 @@ const trophyImage = getRemoteAssetSource("game/icons/trophy_1.png");
 const homeIcon = getRemoteAssetSource("game/icons/home_1.png");
 const playIcon = getRemoteAssetSource("game/icons/play_1.png");
 const pauseIcon = getRemoteAssetSource("game/icons/pause_1.png");
+const chestImage = getRemoteAssetSource("game/icons/chest_1.png");
 const fireballImage = getRemoteAssetSource("game/weapon/fireball_1.png");
 const smokeImage = getRemoteAssetSource("game/weapon/smoke_1.png");
-const actionItemBorderImage = getRemoteAssetSource(
-  "game/functions/item_border_1.png",
-);
-const orbLaserSound = getRemoteAssetSource(
-  "game/music/freesound_community-pulse_sound_try1-89547.mp3",
-);
-const playerShotSound = getRemoteAssetSource(
-  "game/music/yodguard-short-energy-beam-shot-3-482517.mp3",
-);
+const orbLaserSound = getRemoteAssetSource("game/sound/laser_1.mp3");
+const playerShotSound = getRemoteAssetSource("game/sound/shoot_1.mp3");
 const grenadeExplosionSound = getRemoteAssetSource(
-  "game/music/dragon-studio-explosion-sound-effect-425455.mp3",
+  "game/sound/explosion_1.mp3",
 );
-const bossChestImage = getRemoteAssetSource("game/icons/chest_1.png");
+const enemyHurtSounds = [
+  getRemoteAssetSource("game/sound/enemy_hurt_1.mp3"),
+  getRemoteAssetSource("game/sound/enemy_hurt_2.mp3"),
+  getRemoteAssetSource("game/sound/enemy_hurt_3.mp3"),
+];
+const enemyBossHurtSound = getRemoteAssetSource(
+  "game/sound/enemy_hurt_boss_1.mp3",
+);
+const playerHurtSounds = [
+  getRemoteAssetSource("game/sound/player_hurt_1.mp3"),
+  getRemoteAssetSource("game/sound/player_hurt_2.mp3"),
+  getRemoteAssetSource("game/sound/player_hurt_3.mp3"),
+];
+const PLAYER_HURT_SOUND_COOLDOWN_MS = 1000;
 
-function getConsumableDropConfig(
-  kind: ConsumableDrop["kind"],
-): ConsumableDropConfig {
-  return kind === "chest" ? BOSS_CHEST_CONFIG : dropConfig[kind];
+function getWaveEnemyCount(wave: number) {
+  return 4 + wave;
 }
 
 function getEnemiesRemainingInWave(game: GameState) {
@@ -369,13 +420,180 @@ function replaySoundEffect(
     .catch(() => undefined);
 }
 
+function replayExplosionWithVibration(
+  player: ReturnType<typeof createAudioPlayer> | null,
+  vibrationEnabled: boolean,
+  vibrationTimerRef: { current: ReturnType<typeof setInterval> | null },
+) {
+  if (!player) return;
+  if (vibrationTimerRef.current) {
+    clearInterval(vibrationTimerRef.current);
+    vibrationTimerRef.current = null;
+  }
+
+  void player
+    .seekTo(0)
+    .then(() => {
+      player.play();
+      if (!vibrationEnabled) return;
+
+      void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy).catch(
+        () => undefined,
+      );
+      vibrationTimerRef.current = setInterval(() => {
+        if (!player.playing) {
+          if (vibrationTimerRef.current) {
+            clearInterval(vibrationTimerRef.current);
+            vibrationTimerRef.current = null;
+          }
+          return;
+        }
+        void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(
+          () => undefined,
+        );
+      }, 240);
+    })
+    .catch(() => {
+      if (vibrationTimerRef.current) {
+        clearInterval(vibrationTimerRef.current);
+        vibrationTimerRef.current = null;
+      }
+    });
+}
+
 const arenaBackgrounds = [
   getRemoteAssetSource("game/arena/arena_1.png"),
   getRemoteAssetSource("game/arena/arena_2.png"),
   getRemoteAssetSource("game/arena/arena_3.png"),
   getRemoteAssetSource("game/arena/arena_4.jpg"),
 ];
+const ENEMY_SPRITE_ASSETS = {
+  weak: ["game/enemy/enemy_1-1.png", "game/enemy/enemy_1-2.png"],
+  elite: ["game/enemy/enemy_2-1.png", "game/enemy/enemy_2-2.png"],
+  boss: [
+    "game/enemy/enemy_3-1.png",
+    "game/enemy/enemy_3-2.png",
+    "game/enemy/enemy_3-3.png",
+  ],
+} as const;
+const WAVES_PER_ARENA = 10;
 const WARP_TRANSITION_DURATION = 5;
+const BOSS_WARNING_DURATION = 5;
+const BOSS_ENTRANCE_DURATION = 2.8;
+const BOSS_ATTACK_TELEGRAPH_DURATION = 1.35;
+const BOSS_DASH_DURATION = 0.72;
+const BOSS_DASH_SPEED = 520;
+const BOSS_AREA_RADIUS = 74;
+const BOSS_REPOSITION_INTERVAL = 5;
+const BOSS_REPOSITION_SPEED = 120;
+const BOSS_CONFIGS: ArenaBossConfig[] = [
+  {
+    id: "thorn-titan",
+    name: "Thorn Titan",
+    pattern: "artillery",
+    color: "#fb7185",
+    fallbackIcon: "♛",
+    // Example future path: "game/boss/thorn_titan.png"
+    imageAsset: null,
+    health: 5000,
+    contactDamage: 18,
+    projectileDamage: 38,
+    areaDamage: 46,
+    dashDamage: 0,
+    scoreReward: 1500,
+  },
+  {
+    id: "bloom-beast",
+    name: "Bloom Beast",
+    pattern: "charger",
+    color: "#c084fc",
+    fallbackIcon: "✿",
+    // Example future path: "game/boss/bloom_beast.png"
+    imageAsset: null,
+    health: 8000,
+    contactDamage: 14,
+    projectileDamage: 0,
+    areaDamage: 0,
+    dashDamage: 58,
+    scoreReward: 1800,
+  },
+];
+
+function getArenaBossForWave(wave: number): ArenaBossConfig {
+  const encounterIndex = Math.max(0, Math.floor(wave / WAVES_PER_ARENA) - 1);
+  return BOSS_CONFIGS[encounterIndex % BOSS_CONFIGS.length];
+}
+
+function createArtilleryBossPosition(currentPosition: Vector): Vector {
+  let nextPosition = currentPosition;
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    nextPosition = {
+      x: 90 + Math.random() * (ARENA_WIDTH - 180),
+      y: 120 + Math.random() * (ARENA_HEIGHT - 160),
+    };
+    if (
+      Math.hypot(
+        nextPosition.x - currentPosition.x,
+        nextPosition.y - currentPosition.y,
+      ) >= 100
+    ) {
+      break;
+    }
+  }
+  return nextPosition;
+}
+
+function getRandomEnemySpriteAsset(kind: keyof typeof ENEMY_SPRITE_ASSETS) {
+  const assets = ENEMY_SPRITE_ASSETS[kind];
+  return assets[Math.floor(Math.random() * assets.length)];
+}
+
+function getEnemySpriteSource(enemy: Enemy) {
+  return getRemoteAssetSource(enemy.imageAsset);
+}
+
+function getEnemyFacing(enemy: Enemy, target: { x: number } | null) {
+  if (!target) return 1;
+  return enemy.x < target.x ? 1 : -1;
+}
+
+function getPlayerVisualFacing(
+  currentFacing: -1 | 1,
+  horizontalMovement: number,
+) {
+  if (horizontalMovement > 0.12) return 1;
+  if (horizontalMovement < -0.12) return -1;
+  return currentFacing;
+}
+
+function getEnemyScoreReward(enemy: Enemy) {
+  return enemy.scoreReward ?? (enemy.isBoss ? 50 : 10);
+}
+
+function applyEnemyHit(enemy: Enemy, source: Vector, strength = 260): Enemy {
+  const directionX = enemy.x - source.x;
+  const directionY = enemy.y - source.y;
+  const distance = Math.hypot(directionX, directionY) || 1;
+  return {
+    ...enemy,
+    hitFlashTimer: 0.32,
+    knockbackX: (enemy.knockbackX ?? 0) + (directionX / distance) * strength,
+    knockbackY: (enemy.knockbackY ?? 0) + (directionY / distance) * strength,
+  };
+}
+
+function makeEnemyDeathEffect(enemy: Enemy): EnemyDeathEffect {
+  return {
+    id: enemy.id,
+    imageAsset: enemy.imageAsset,
+    x: enemy.x,
+    y: enemy.y,
+    radius: enemy.radius,
+    life: ENEMY_DEATH_FADE_DURATION,
+    isArenaBoss: !!enemy.arenaBossId,
+  };
+}
+
 const POWER_UPS: Omit<PowerUpChoice, "amount">[] = [
   {
     id: "damagePercent",
@@ -660,16 +878,17 @@ function makeEnemyDrops(
   enemy: Enemy,
   existingDrops: ConsumableDrop[] = [],
 ): ConsumableDrop[] {
-  const spawnedKinds = (Object.keys(dropConfig) as DropKind[]).filter(
-    (kind) => {
-      const config = dropConfig[kind];
-      return config.enabled && Math.random() < config.dropChance;
-    },
-  );
   const placedDrops: ConsumableDrop[] = [...existingDrops];
+  const spawnedKinds = (Object.keys(dropConfig) as DropKind[]).filter(
+    (kind) =>
+      kind !== "chest" &&
+      dropConfig[kind].enabled &&
+      Math.random() < dropConfig[kind].dropChance,
+  );
+  const newDrops: ConsumableDrop[] = [];
 
-  return spawnedKinds.map((kind) => {
-    const config = getConsumableDropConfig(kind);
+  for (const kind of spawnedKinds) {
+    const config = dropConfig[kind];
     let x = enemy.x;
     let y = enemy.y;
     let attempts = 0;
@@ -679,8 +898,7 @@ function makeEnemyDrops(
       placedDrops.some(
         (drop) =>
           Math.hypot(drop.x - x, drop.y - y) <=
-          (getConsumableDropConfig(drop.kind).iconSize + config.iconSize) / 2 +
-            4,
+          (dropConfig[drop.kind].iconSize + config.iconSize) / 2 + 4,
       )
     ) {
       attempts += 1;
@@ -690,17 +908,51 @@ function makeEnemyDrops(
       y = clamp(enemy.y + Math.sin(angle) * radius, 0, ARENA_HEIGHT);
     }
 
-    const nextDrop = {
+    const nextDrop: ConsumableDrop = {
       id: Date.now() + Math.random(),
       kind,
       x,
       y,
       life: config.stayDurationSeconds + config.flickerDurationSeconds,
     };
-
     placedDrops.push(nextDrop);
-    return nextDrop;
-  });
+    newDrops.push(nextDrop);
+  }
+
+  if (enemy.arenaBossId) {
+    const chestConfig = dropConfig.chest;
+    let x = enemy.x;
+    let y = enemy.y;
+    let attempts = 0;
+
+    while (
+      attempts < 24 &&
+      placedDrops.some(
+        (drop) =>
+          Math.hypot(drop.x - x, drop.y - y) <=
+          (dropConfig[drop.kind].iconSize + chestConfig.iconSize) / 2 + 4,
+      )
+    ) {
+      attempts += 1;
+      const angle = ((attempts - 1) * Math.PI) / 4;
+      const radius = 18 + Math.floor((attempts - 1) / 8) * 8;
+      x = clamp(enemy.x + Math.cos(angle) * radius, 0, ARENA_WIDTH);
+      y = clamp(enemy.y + Math.sin(angle) * radius, 0, ARENA_HEIGHT);
+    }
+
+    const chestDrop: ConsumableDrop = {
+      id: Date.now() + Math.random(),
+      kind: "chest",
+      x,
+      y,
+      life:
+        chestConfig.stayDurationSeconds + chestConfig.flickerDurationSeconds,
+    };
+    placedDrops.push(chestDrop);
+    newDrops.push(chestDrop);
+  }
+
+  return newDrops;
 }
 
 function advanceItemDrops(
@@ -711,10 +963,10 @@ function advanceItemDrops(
   const remainingDrops: ConsumableDrop[] = [];
   const damageNumbers: DamageNumber[] = [];
   let nextPlayer = { ...player };
-  let bossChestPickedUp = false;
+  let rewardPopupTriggered = false;
 
   for (const drop of drops) {
-    const config = getConsumableDropConfig(drop.kind);
+    const config = dropConfig[drop.kind];
     const life = drop.kind === "chest" ? drop.life : drop.life - delta;
     if (life <= 0) {
       continue;
@@ -724,9 +976,10 @@ function advanceItemDrops(
       !player.isDead &&
       Math.hypot(drop.x - player.x, drop.y - player.y) <= config.pickupRadius;
     if (touchingPlayer && drop.kind === "chest") {
-      bossChestPickedUp = true;
+      rewardPopupTriggered = true;
       continue;
     }
+
     if (touchingPlayer && drop.kind === "heart") {
       const heartConfig = dropConfig.heart;
       if (nextPlayer.health < player.maxHealth) {
@@ -843,7 +1096,7 @@ function advanceItemDrops(
     drops: remainingDrops,
     player: nextPlayer,
     damageNumbers,
-    bossChestPickedUp,
+    rewardPopupTriggered,
   };
 }
 
@@ -930,6 +1183,7 @@ function advanceGrenadeProjectiles(
 ) {
   const remainingProjectiles: GrenadeProjectile[] = [];
   const explosions: GrenadeExplosion[] = [];
+  const enemyDeathEffects: EnemyDeathEffect[] = [];
   const itemDrops: ConsumableDrop[] = [];
   const damageNumbers: DamageNumber[] = [];
   const nextEnemies = enemies.map((enemy) => ({ ...enemy }));
@@ -941,6 +1195,7 @@ function advanceGrenadeProjectiles(
       x: projectile.x + projectile.vx * GRENADE_SPEED * delta,
       y: projectile.y + projectile.vy * GRENADE_SPEED * delta,
       fuse: projectile.fuse - delta,
+      elapsed: projectile.elapsed + delta,
     };
 
     if (nextProjectile.fuse > 0) {
@@ -955,7 +1210,6 @@ function advanceGrenadeProjectiles(
       y: nextProjectile.y,
       radius: GRENADE_BLAST_RADIUS,
       life: 0.3,
-      smokeLife: 1.2,
     });
 
     for (const enemy of nextEnemies) {
@@ -971,11 +1225,11 @@ function advanceGrenadeProjectiles(
         continue;
       }
 
+      const hitEnemy = applyEnemyHit(enemy, nextProjectile, 420);
       enemy.health -= GRENADE_DAMAGE;
-      Object.assign(
-        enemy,
-        applyEnemyHit(enemy, { x: nextProjectile.x, y: nextProjectile.y }, 340),
-      );
+      enemy.knockbackX = hitEnemy.knockbackX;
+      enemy.knockbackY = hitEnemy.knockbackY;
+      enemy.hitFlashTimer = hitEnemy.hitFlashTimer;
       damageNumbers.push({
         id: Date.now() + Math.random(),
         x: enemy.x,
@@ -986,6 +1240,7 @@ function advanceGrenadeProjectiles(
       });
       if (enemy.health <= 0) {
         score += getEnemyScoreReward(enemy);
+        enemyDeathEffects.push(makeEnemyDeathEffect(enemy));
         itemDrops.push(...makeEnemyDrops(enemy, itemDrops));
       }
     }
@@ -995,10 +1250,94 @@ function advanceGrenadeProjectiles(
     projectiles: remainingProjectiles,
     enemies: nextEnemies.filter((enemy) => enemy.health > 0),
     explosions,
+    enemyDeathEffects,
     itemDrops,
     damageNumbers,
     score,
   };
+}
+
+function makeEnemy(wave: number, id: number): Enemy {
+  const isBoss = wave > 1 && wave % 3 === 0 && Math.random() > 0.6;
+  const bossBonus = isBoss ? 2.8 : 1;
+  const radius = isBoss ? 28 : 15 + Math.random() * 7;
+  const side = Math.floor(Math.random() * 4);
+  let x = 0;
+  let y = 0;
+
+  switch (side) {
+    case 0:
+      x = Math.random() * ARENA_WIDTH;
+      y = -radius;
+      break;
+    case 1:
+      x = ARENA_WIDTH + radius;
+      y = Math.random() * ARENA_HEIGHT;
+      break;
+    case 2:
+      x = Math.random() * ARENA_WIDTH;
+      y = ARENA_HEIGHT + radius;
+      break;
+    default:
+      x = -radius;
+      y = Math.random() * ARENA_HEIGHT;
+      break;
+  }
+
+  return {
+    id,
+    imageAsset: getRandomEnemySpriteAsset(isBoss ? "elite" : "weak"),
+    x,
+    y,
+    radius,
+    health: (isBoss ? 140 : 28) * bossBonus,
+    maxHealth: (isBoss ? 140 : 28) * bossBonus,
+    speed: (isBoss ? 26 : 44) * bossBonus,
+    damage: isBoss ? 14 : 8,
+    color: isBoss ? "#f97316" : "#34d399",
+    isBoss,
+  };
+}
+
+function makeArenaBoss(config: ArenaBossConfig, wave: number): Enemy {
+  const encounterNumber = Math.max(1, Math.floor(wave / WAVES_PER_ARENA));
+  const health = config.health + (encounterNumber - 1) * 250;
+  return {
+    id: Date.now() + Math.random(),
+    imageAsset: getRandomEnemySpriteAsset("boss"),
+    x: ARENA_WIDTH / 2,
+    y: -86,
+    radius: 42,
+    health,
+    maxHealth: health,
+    speed: 0,
+    damage: config.contactDamage,
+    color: config.color,
+    isBoss: true,
+    arenaBossId: config.id,
+    scoreReward: config.scoreReward,
+    repositionTimer: BOSS_REPOSITION_INTERVAL,
+    repositionTarget: null,
+  };
+}
+
+function distanceToSegment(point: Vector, start: Vector, end: Vector) {
+  const segmentX = end.x - start.x;
+  const segmentY = end.y - start.y;
+  const lengthSquared = segmentX * segmentX + segmentY * segmentY;
+  const t =
+    lengthSquared === 0
+      ? 0
+      : clamp(
+          ((point.x - start.x) * segmentX + (point.y - start.y) * segmentY) /
+            lengthSquared,
+          0,
+          1,
+        );
+  return Math.hypot(
+    point.x - (start.x + t * segmentX),
+    point.y - (start.y + t * segmentY),
+  );
 }
 
 function createPlayer(
@@ -1039,6 +1378,7 @@ function createPlayer(
     rapidFireTimer: 0,
     highDamageTimer: 0,
     facing: { x: 1, y: 0 },
+    visualFacing: -1,
     orbEquipped,
     orbSkinId,
     buddyId: getBuddy(buddyId)?.id ?? "",
@@ -1092,7 +1432,7 @@ function getBuddyPosition(player: PlayerState, animationTime = 0) {
     const radius = 18 + random * 14;
     return {
       x: Math.cos(angle) * radius,
-      y: 12 + Math.sin(angle) * radius * 0.55,
+      y: 22 + Math.sin(angle) * radius * 0.25,
     };
   };
   const current = waypoint(step);
@@ -1116,6 +1456,7 @@ function fireOrbAtNearestEnemy(
       score: 0,
       message: "",
       beam: null as OrbBeam | null,
+      deathEffect: null as EnemyDeathEffect | null,
     };
   }
 
@@ -1140,6 +1481,7 @@ function fireOrbAtNearestEnemy(
       score: 0,
       message: "",
       beam: null as OrbBeam | null,
+      deathEffect: null as EnemyDeathEffect | null,
     };
   }
 
@@ -1153,32 +1495,33 @@ function fireOrbAtNearestEnemy(
       (1 + player.upgrades.damagePercent / 100) *
       (criticalHit ? 1.5 : 1),
   );
-  target.health -= damage;
-  Object.assign(target, applyEnemyHit(target, orbPosition, 280));
+  const hitTarget = applyEnemyHit(target, orbPosition, 0);
+  hitTarget.health -= damage;
   damageNumbers.push({
     id: Date.now() + Math.random(),
-    x: target.x,
-    y: target.y - target.radius - 12,
+    x: hitTarget.x,
+    y: hitTarget.y - hitTarget.radius - 12,
     amount: damage,
     life: 0.75,
     target: "enemy",
   });
 
-  const defeated = target.health <= 0;
+  const defeated = hitTarget.health <= 0;
   if (defeated) {
-    itemDrops.push(...makeEnemyDrops(target, itemDrops));
+    itemDrops.push(...makeEnemyDrops(hitTarget, itemDrops));
   }
 
   return {
     player: { ...player, orbFireCooldown: ORB_ATTACK_COOLDOWN },
     enemies: defeated
-      ? enemies.filter((enemy) => enemy.id !== target.id)
-      : enemies,
-    score: defeated ? getEnemyScoreReward(target) : 0,
+      ? enemies.filter((enemy) => enemy.id !== hitTarget.id)
+      : enemies.map((enemy) => (enemy.id === hitTarget.id ? hitTarget : enemy)),
+    score: defeated ? getEnemyScoreReward(hitTarget) : 0,
+    deathEffect: defeated ? makeEnemyDeathEffect(hitTarget) : null,
     message: defeated
-      ? target.arenaBossId
-        ? `${BOSS_CONFIGS.find((boss) => boss.id === target.arenaBossId)?.name ?? "Boss"} defeated!`
-        : target.isBoss
+      ? hitTarget.arenaBossId
+        ? `${BOSS_CONFIGS.find((boss) => boss.id === hitTarget.arenaBossId)?.name ?? "Boss"} defeated!`
+        : hitTarget.isBoss
           ? "Boss defeated!"
           : "Plant down!"
       : "",
@@ -1188,8 +1531,8 @@ function fireOrbAtNearestEnemy(
       orbSkinId: player.orbSkinId,
       startX: orbPosition.x,
       startY: orbPosition.y,
-      endX: target.x,
-      endY: target.y,
+      endX: hitTarget.x,
+      endY: hitTarget.y,
       life: ORB_BEAM_DURATION,
     } satisfies OrbBeam,
   };
@@ -1225,6 +1568,7 @@ function createInitialGame(
     itemDrops: [],
     grenadeProjectiles: [],
     grenadeExplosions: [],
+    enemyDeathEffects: [],
     damageNumbers: [],
     pendingPlayerDamage: 0,
     playerDamageTimer: 0.45,
@@ -1233,7 +1577,6 @@ function createInitialGame(
     arenaBackgroundWave: 1,
     waveCountdown: WAVE_BREAK_DURATION,
     warpTransitionTimer: 0,
-    warpFadeTimer: 0,
     powerUpChoices: [],
     warpPending: false,
     enemiesToSpawn: getWaveEnemyCount(1),
@@ -1252,8 +1595,6 @@ function createInitialGame(
     bossConfigId: null,
     bossPhase: "idle",
     bossPhaseTimer: 0,
-    bossEntrancePoint: null,
-    bossChestPending: false,
     bossAttackPhase: "cooldown",
     bossAttackTimer: 0,
     bossTelegraphTarget: null,
@@ -1297,6 +1638,7 @@ function applyPlayerAction(
         ARENA_HEIGHT - player.radius,
       ),
       facing: dashDirection,
+      visualFacing: getPlayerVisualFacing(player.visualFacing, dashDirection.x),
       dashCooldown: dashCooldownDuration,
     };
     return {
@@ -1354,6 +1696,7 @@ function applyPlayerAction(
           y: player.y + grenadeDirection.y * (player.radius + 10),
           vx: grenadeDirection.x,
           vy: grenadeDirection.y,
+          elapsed: 0,
           fuse:
             Math.max(
               0.08,
@@ -1438,10 +1781,6 @@ export function WildPawGame({
     }
     return initial;
   });
-  const [enemyFadeEffects, setEnemyFadeEffects] = useState<EnemyFadeEffect[]>(
-    [],
-  );
-  const previousEnemiesRef = useRef(new Map<number, Enemy>());
   const [joystick, setJoystick] = useState({ x: 0, y: 0, active: false });
   const [aimDirection, setAimDirection] = useState<Vector>({ x: 1, y: 0 });
   const [earnedCoins, setEarnedCoins] = useState(0);
@@ -1474,8 +1813,6 @@ export function WildPawGame({
     () => multiplayerMode === "local-host" || multiplayerMode === "local-join",
   );
   const [isMultiplayerConnected, setIsMultiplayerConnected] = useState(false);
-  const [multiplayerConnectionError, setMultiplayerConnectionError] =
-    useState("");
   const [lobbyPlayers, setLobbyPlayers] = useState<
     {
       id: string;
@@ -1488,38 +1825,6 @@ export function WildPawGame({
       buddyId?: string;
     }[]
   >([]);
-
-  useEffect(() => {
-    const previousEnemies = previousEnemiesRef.current;
-    const currentEnemies = new Map(
-      game.enemies.map((enemy) => [enemy.id, enemy]),
-    );
-    const defeatedEnemies = Array.from(previousEnemies.values()).filter(
-      (enemy) => !currentEnemies.has(enemy.id),
-    );
-    previousEnemiesRef.current = currentEnemies;
-    if (defeatedEnemies.length === 0) return;
-
-    const newEffects = defeatedEnemies.map((enemy) => ({
-      enemy,
-      opacity: new Animated.Value(1),
-    }));
-    setEnemyFadeEffects((current) => [...current, ...newEffects]);
-    for (const effect of newEffects) {
-      Animated.timing(effect.opacity, {
-        toValue: 0,
-        duration: 480,
-        useNativeDriver: true,
-      }).start(({ finished }) => {
-        if (finished) {
-          setEnemyFadeEffects((current) =>
-            current.filter((entry) => entry.opacity !== effect.opacity),
-          );
-        }
-      });
-    }
-  }, [game.enemies]);
-
   const multiplayerReadinessRef = useRef(multiplayerReadiness);
   const { width, height } = useWindowDimensions();
   const hostAddressesToShare = useMemo(() => {
@@ -1589,10 +1894,8 @@ export function WildPawGame({
   const vibrationEnabledRef = useRef(true);
   const vibrationPreferenceLoadedRef = useRef(false);
   const lastDamageEventIdRef = useRef<number | null>(null);
+  const lastPlayerHurtSoundAtRef = useRef(0);
   const hasDownedPlayer = game.player.isDead || !!game.joinPlayer?.isDead;
-  const hasMovingArtilleryBoss = game.enemies.some(
-    (enemy) => !!enemy.arenaBossId && !!enemy.repositionTarget,
-  );
   const hasEquippedOrb =
     (game.player.orbEquipped && !game.player.isDead) ||
     (!!game.joinPlayer?.orbEquipped && !game.joinPlayer.isDead);
@@ -1631,12 +1934,29 @@ export function WildPawGame({
     const playerShotPlayer = createAudioPlayer(playerShotSound);
     const orbLaserPlayer = createAudioPlayer(orbLaserSound);
     const grenadeExplosionPlayer = createAudioPlayer(grenadeExplosionSound);
+    const enemyHurtPlayers = enemyHurtSounds.map((sound) =>
+      createAudioPlayer(sound),
+    );
+    const enemyBossHurtPlayer = createAudioPlayer(enemyBossHurtSound);
+    const playerHurtPlayers = playerHurtSounds.map((sound) =>
+      createAudioPlayer(sound),
+    );
     playerShotPlayer.volume = soundEffectsVolumeRef.current;
     orbLaserPlayer.volume = soundEffectsVolumeRef.current * 0.7;
     grenadeExplosionPlayer.volume = soundEffectsVolumeRef.current;
+    for (const player of enemyHurtPlayers) {
+      player.volume = soundEffectsVolumeRef.current;
+    }
+    enemyBossHurtPlayer.volume = soundEffectsVolumeRef.current;
+    for (const player of playerHurtPlayers) {
+      player.volume = soundEffectsVolumeRef.current;
+    }
     playerShotPlayerRef.current = playerShotPlayer;
     orbLaserPlayerRef.current = orbLaserPlayer;
     grenadeExplosionPlayerRef.current = grenadeExplosionPlayer;
+    enemyHurtPlayersRef.current = enemyHurtPlayers;
+    enemyBossHurtPlayerRef.current = enemyBossHurtPlayer;
+    playerHurtPlayersRef.current = playerHurtPlayers;
 
     return () => {
       playerShotPlayer.pause();
@@ -1645,9 +1965,22 @@ export function WildPawGame({
       orbLaserPlayer.remove();
       grenadeExplosionPlayer.pause();
       grenadeExplosionPlayer.remove();
+      for (const player of enemyHurtPlayers) {
+        player.pause();
+        player.remove();
+      }
+      enemyBossHurtPlayer.pause();
+      enemyBossHurtPlayer.remove();
+      for (const player of playerHurtPlayers) {
+        player.pause();
+        player.remove();
+      }
       playerShotPlayerRef.current = null;
       orbLaserPlayerRef.current = null;
       grenadeExplosionPlayerRef.current = null;
+      enemyHurtPlayersRef.current = [];
+      enemyBossHurtPlayerRef.current = null;
+      playerHurtPlayersRef.current = [];
     };
   }, []);
 
@@ -1663,6 +1996,15 @@ export function WildPawGame({
       if (grenadeExplosionPlayerRef.current) {
         grenadeExplosionPlayerRef.current.volume = volume;
       }
+      for (const player of enemyHurtPlayersRef.current) {
+        player.volume = volume;
+      }
+      if (enemyBossHurtPlayerRef.current) {
+        enemyBossHurtPlayerRef.current.volume = volume;
+      }
+      for (const player of playerHurtPlayersRef.current) {
+        player.volume = volume;
+      }
     });
     void getSoundEffectsVolume().then((volume) => {
       if (isMounted) {
@@ -1676,6 +2018,15 @@ export function WildPawGame({
         }
         if (grenadeExplosionPlayerRef.current) {
           grenadeExplosionPlayerRef.current.volume = volume;
+        }
+        for (const player of enemyHurtPlayersRef.current) {
+          player.volume = volume;
+        }
+        if (enemyBossHurtPlayerRef.current) {
+          enemyBossHurtPlayerRef.current.volume = volume;
+        }
+        for (const player of playerHurtPlayersRef.current) {
+          player.volume = volume;
         }
       }
     });
@@ -1732,6 +2083,34 @@ export function WildPawGame({
   }, [game.orbBeams, localPlayerId]);
 
   useEffect(() => {
+    const effects = game.enemyDeathEffects;
+    const currentIds = new Set(effects.map((effect) => effect.id));
+    if (knownEnemyDeathIdsRef.current === null) {
+      knownEnemyDeathIdsRef.current = currentIds;
+      return;
+    }
+
+    const newDeathEffects = effects.filter(
+      (effect) => !knownEnemyDeathIdsRef.current?.has(effect.id),
+    );
+    knownEnemyDeathIdsRef.current = currentIds;
+    if (!soundEffectsLoadedRef.current || soundEffectsVolumeRef.current <= 0) {
+      return;
+    }
+
+    for (const effect of newDeathEffects) {
+      if (effect.isArenaBoss) {
+        replaySoundEffect(enemyBossHurtPlayerRef.current);
+      } else if (enemyHurtPlayersRef.current.length > 0) {
+        const soundIndex = Math.floor(
+          Math.random() * enemyHurtPlayersRef.current.length,
+        );
+        replaySoundEffect(enemyHurtPlayersRef.current[soundIndex]);
+      }
+    }
+  }, [game.enemyDeathEffects]);
+
+  useEffect(() => {
     const explosions = game.grenadeExplosions;
     const currentIds = new Set(explosions.map((explosion) => explosion.id));
     if (knownGrenadeExplosionIdsRef.current === null) {
@@ -1745,14 +2124,35 @@ export function WildPawGame({
         explosion.playerId === localPlayerId,
     );
     knownGrenadeExplosionIdsRef.current = currentIds;
-    if (
-      explodedByLocalPlayer &&
-      soundEffectsLoadedRef.current &&
-      soundEffectsVolumeRef.current > 0
-    ) {
-      replaySoundEffect(grenadeExplosionPlayerRef.current);
+    if (explodedByLocalPlayer) {
+      replayExplosionWithVibration(
+        grenadeExplosionPlayerRef.current,
+        vibrationPreferenceLoadedRef.current && vibrationEnabledRef.current,
+        explosionVibrationTimerRef,
+      );
     }
   }, [game.grenadeExplosions, localPlayerId]);
+
+  useEffect(() => {
+    const effects = game.bossAreaEffects;
+    const currentIds = new Set(effects.map((effect) => effect.id));
+    if (knownBossAreaEffectIdsRef.current === null) {
+      knownBossAreaEffectIdsRef.current = currentIds;
+      return;
+    }
+
+    const hasNewExplosion = effects.some(
+      (effect) => !knownBossAreaEffectIdsRef.current?.has(effect.id),
+    );
+    knownBossAreaEffectIdsRef.current = currentIds;
+    if (!hasNewExplosion) return;
+
+    replayExplosionWithVibration(
+      grenadeExplosionPlayerRef.current,
+      vibrationPreferenceLoadedRef.current && vibrationEnabledRef.current,
+      explosionVibrationTimerRef,
+    );
+  }, [game.bossAreaEffects]);
 
   useEffect(() => {
     const localDamageEvent = [...game.damageNumbers]
@@ -1771,6 +2171,19 @@ export function WildPawGame({
     }
 
     lastDamageEventIdRef.current = localDamageEvent.id;
+    const now = Date.now();
+    if (
+      soundEffectsLoadedRef.current &&
+      soundEffectsVolumeRef.current > 0 &&
+      now - lastPlayerHurtSoundAtRef.current >= PLAYER_HURT_SOUND_COOLDOWN_MS &&
+      playerHurtPlayersRef.current.length > 0
+    ) {
+      const soundIndex = Math.floor(
+        Math.random() * playerHurtPlayersRef.current.length,
+      );
+      replaySoundEffect(playerHurtPlayersRef.current[soundIndex]);
+      lastPlayerHurtSoundAtRef.current = now;
+    }
     if (vibrationPreferenceLoadedRef.current && vibrationEnabledRef.current) {
       void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(
         () => undefined,
@@ -1779,12 +2192,7 @@ export function WildPawGame({
   }, [game.damageNumbers, localPlayerId]);
 
   useEffect(() => {
-    if (
-      !hasDownedPlayer &&
-      !hasEquippedOrb &&
-      !localPlayer.buddyId &&
-      !hasMovingArtilleryBoss
-    ) {
+    if (!hasDownedPlayer && !hasEquippedOrb && !localPlayer.buddyId) {
       return;
     }
 
@@ -1792,7 +2200,8 @@ export function WildPawGame({
     let lastUpdate = 0;
     const animateGhost = (timestamp: number) => {
       if (timestamp - lastUpdate >= 1000 / 30) {
-        setGhostAnimationTime(timestamp / 1000);
+        const animationTime = timestamp / 1000;
+        setGhostAnimationTime(animationTime);
         lastUpdate = timestamp;
       }
       animationFrame = requestAnimationFrame(animateGhost);
@@ -1800,12 +2209,7 @@ export function WildPawGame({
 
     animationFrame = requestAnimationFrame(animateGhost);
     return () => cancelAnimationFrame(animationFrame);
-  }, [
-    hasDownedPlayer,
-    hasEquippedOrb,
-    hasMovingArtilleryBoss,
-    localPlayer.buddyId,
-  ]);
+  }, [hasDownedPlayer, hasEquippedOrb, localPlayer.buddyId]);
 
   useEffect(() => {
     if (Platform.OS !== "android" || !game.isRunning) {
@@ -1924,7 +2328,12 @@ export function WildPawGame({
   const soundEffectsLoadedRef = useRef(false);
   const knownBulletIdsRef = useRef<Set<number> | null>(null);
   const knownOrbBeamIdsRef = useRef<Set<number> | null>(null);
+  const knownEnemyDeathIdsRef = useRef<Set<number> | null>(null);
   const knownGrenadeExplosionIdsRef = useRef<Set<number> | null>(null);
+  const knownBossAreaEffectIdsRef = useRef<Set<number> | null>(null);
+  const explosionVibrationTimerRef = useRef<ReturnType<
+    typeof setInterval
+  > | null>(null);
   const playerShotPlayerRef = useRef<ReturnType<
     typeof createAudioPlayer
   > | null>(null);
@@ -1934,6 +2343,22 @@ export function WildPawGame({
   const grenadeExplosionPlayerRef = useRef<ReturnType<
     typeof createAudioPlayer
   > | null>(null);
+  const enemyHurtPlayersRef = useRef<ReturnType<typeof createAudioPlayer>[]>(
+    [],
+  );
+  const enemyBossHurtPlayerRef = useRef<ReturnType<
+    typeof createAudioPlayer
+  > | null>(null);
+  const playerHurtPlayersRef = useRef<ReturnType<typeof createAudioPlayer>[]>(
+    [],
+  );
+
+  useEffect(() => () => {
+    if (explosionVibrationTimerRef.current) {
+      clearInterval(explosionVibrationTimerRef.current);
+      explosionVibrationTimerRef.current = null;
+    }
+  });
   const grenadePreview = game.grenadeAimPreview;
   const grenadePreviewPlayer = grenadePreview
     ? grenadePreview.playerId === "join"
@@ -2005,7 +2430,7 @@ export function WildPawGame({
       const powerUp = previous.powerUpChoices.find(
         (choice) => choice.id === powerUpId,
       );
-      if (!powerUp || !previous.warpPending) {
+      if (!powerUp) {
         return previous;
       }
 
@@ -2015,11 +2440,25 @@ export function WildPawGame({
         joinPlayer: previous.joinPlayer
           ? applyPowerUp(previous.joinPlayer, powerUp)
           : null,
+        wave: previous.wave + 1,
+        waveCountdown: 0,
+        warpTransitionTimer: WARP_TRANSITION_DURATION,
+        enemiesToSpawn: getWaveEnemyCount(previous.wave + 1),
+        spawnCooldown: 0,
+        bullets: [],
+        bossPhase: "idle",
+        bossPhaseTimer: 0,
+        bossConfigId: null,
+        bossAttackPhase: "cooldown",
+        bossAttackTimer: 0,
+        bossTelegraphTarget: null,
+        bossDashDirection: null,
+        bossDashHasHit: false,
+        bossProjectiles: [],
+        bossAreaEffects: [],
         powerUpChoices: [],
         warpPending: false,
-        warpTransitionTimer: WARP_TRANSITION_DURATION,
-        warpFadeTimer: 0,
-        message: "Warping to another location",
+        message: `${powerUp.name} selected! Warping to another location`,
       };
     });
   }, []);
@@ -2147,7 +2586,6 @@ export function WildPawGame({
 
     socket.onopen = () => {
       setIsMultiplayerConnected(true);
-      setMultiplayerConnectionError("");
       socket.send(
         JSON.stringify({
           type: "register",
@@ -2198,7 +2636,6 @@ export function WildPawGame({
             gameState?: GameState | null;
           };
           payload?: GameState;
-          message?: string;
           action?: string;
           powerUpId?: string;
           direction?: Vector;
@@ -2346,20 +2783,6 @@ export function WildPawGame({
           return;
         }
 
-        if (message.type === "error") {
-          setIsMultiplayerConnected(false);
-          setMultiplayerConnectionError(
-            message.message ?? "The host could not accept this connection.",
-          );
-          setGame((previous) => ({
-            ...previous,
-            message:
-              message.message ??
-              "Could not join this local lobby. Check the host address and try again.",
-          }));
-          return;
-        }
-
         if (message.type === "remote-sync" && message.payload) {
           if (multiplayerRole === "join") {
             setGame(message.payload);
@@ -2454,24 +2877,6 @@ export function WildPawGame({
       } catch {
         // ignore malformed multiplayer messages until the room state arrives
       }
-    };
-
-    socket.onerror = (error) => {
-      setIsMultiplayerConnected(false);
-      setMultiplayerConnectionError(
-        error.message ??
-          "Check both devices are on the same Wi-Fi or hotspot and try again.",
-      );
-      setGame((previous) => ({
-        ...previous,
-        message: error.message
-          ? `Local multiplayer connection failed: ${error.message}`
-          : "Local multiplayer connection failed. Check both devices are on the same Wi-Fi or hotspot.",
-      }));
-    };
-
-    socket.onclose = () => {
-      setIsMultiplayerConnected(false);
     };
 
     return () => {
@@ -2857,19 +3262,22 @@ export function WildPawGame({
           const facing = normalize(aimRef.current);
           const targetOrbSide =
             facing.x < -0.12 ? 1 : facing.x > 0.12 ? -1 : player.orbSide;
+          const knockbackX = player.knockbackX ?? 0;
+          const knockbackY = player.knockbackY ?? 0;
           if (
             movementRef.current.x === 0 &&
             movementRef.current.y === 0 &&
             Math.hypot(facing.x - player.facing.x, facing.y - player.facing.y) <
               0.01 &&
             Math.abs(targetOrbSide - player.orbSide) < 0.01 &&
-            player.hitFlashTimer <= 0 &&
-            Math.hypot(player.knockbackX, player.knockbackY) < 1
+            Math.hypot(knockbackX, knockbackY) < 1 &&
+            (player.hitFlashTimer ?? 0) <= 0
           ) {
             return previous;
           }
 
           const effectiveSpeed = getEffectivePlayerSpeed(player);
+          const knockbackDecay = Math.exp(-8 * delta);
           return {
             ...previous,
             joinPlayer: {
@@ -2878,24 +3286,28 @@ export function WildPawGame({
               rapidFireTimer: Math.max(0, player.rapidFireTimer - delta),
               highDamageTimer: Math.max(0, player.highDamageTimer - delta),
               orbFireCooldown: Math.max(0, player.orbFireCooldown - delta),
-              hitFlashTimer: Math.max(0, player.hitFlashTimer - delta),
-              knockbackX: player.knockbackX * Math.exp(-8 * delta),
-              knockbackY: player.knockbackY * Math.exp(-8 * delta),
+              hitFlashTimer: Math.max(0, (player.hitFlashTimer ?? 0) - delta),
+              knockbackX: knockbackX * knockbackDecay,
+              knockbackY: knockbackY * knockbackDecay,
               x: clamp(
                 player.x +
                   movement.x * effectiveSpeed * delta +
-                  player.knockbackX * delta,
+                  knockbackX * delta,
                 player.radius,
                 ARENA_WIDTH - player.radius,
               ),
               y: clamp(
                 player.y +
                   movement.y * effectiveSpeed * delta +
-                  player.knockbackY * delta,
+                  knockbackY * delta,
                 player.radius,
                 ARENA_HEIGHT - player.radius,
               ),
               facing,
+              visualFacing: getPlayerVisualFacing(
+                player.visualFacing,
+                movement.x,
+              ),
               orbSide: getOrbSideAfterDelta({ ...player, facing }, delta),
             },
           };
@@ -2923,9 +3335,12 @@ export function WildPawGame({
           rapidFireTimer: Math.max(0, previous.player.rapidFireTimer - delta),
           highDamageTimer: Math.max(0, previous.player.highDamageTimer - delta),
           orbFireCooldown: Math.max(0, previous.player.orbFireCooldown - delta),
-          hitFlashTimer: Math.max(0, previous.player.hitFlashTimer - delta),
-          knockbackX: previous.player.knockbackX * Math.exp(-8 * delta),
-          knockbackY: previous.player.knockbackY * Math.exp(-8 * delta),
+          hitFlashTimer: Math.max(
+            0,
+            (previous.player.hitFlashTimer ?? 0) - delta,
+          ),
+          knockbackX: previous.player.knockbackX ?? 0,
+          knockbackY: previous.player.knockbackY ?? 0,
         };
         let joinPlayer = previous.joinPlayer
           ? {
@@ -2948,14 +3363,15 @@ export function WildPawGame({
               ),
               hitFlashTimer: Math.max(
                 0,
-                previous.joinPlayer.hitFlashTimer - delta,
+                (previous.joinPlayer.hitFlashTimer ?? 0) - delta,
               ),
-              knockbackX: previous.joinPlayer.knockbackX * Math.exp(-8 * delta),
-              knockbackY: previous.joinPlayer.knockbackY * Math.exp(-8 * delta),
+              knockbackX: previous.joinPlayer.knockbackX ?? 0,
+              knockbackY: previous.joinPlayer.knockbackY ?? 0,
             }
           : null;
         const hostIsReviving = previous.reviveState?.reviverId === "host";
         const joinIsReviving = previous.reviveState?.reviverId === "join";
+        const knockbackDecay = Math.exp(-8 * delta);
         const moveVector = normalize(movementRef.current);
 
         if (!player.isDead && !hostIsReviving) {
@@ -2963,39 +3379,53 @@ export function WildPawGame({
           player.x = clamp(
             player.x +
               moveVector.x * effectiveSpeed * delta +
-              player.knockbackX * delta,
+              (player.knockbackX ?? 0) * delta,
             player.radius,
             ARENA_WIDTH - player.radius,
           );
           player.y = clamp(
             player.y +
               moveVector.y * effectiveSpeed * delta +
-              player.knockbackY * delta,
+              (player.knockbackY ?? 0) * delta,
             player.radius,
             ARENA_HEIGHT - player.radius,
           );
           player.facing = normalize(aimRef.current);
+          player.visualFacing = getPlayerVisualFacing(
+            player.visualFacing,
+            moveVector.x,
+          );
           player.orbSide = getOrbSideAfterDelta(player, delta);
         }
+        player.knockbackX = (player.knockbackX ?? 0) * knockbackDecay;
+        player.knockbackY = (player.knockbackY ?? 0) * knockbackDecay;
         if (joinPlayer && !joinPlayer.isDead && !joinIsReviving) {
           const guestMove = normalize(remoteInputRef.current.movement);
           const guestEffectiveSpeed = getEffectivePlayerSpeed(joinPlayer);
           joinPlayer.x = clamp(
             joinPlayer.x +
               guestMove.x * guestEffectiveSpeed * delta +
-              joinPlayer.knockbackX * delta,
+              (joinPlayer.knockbackX ?? 0) * delta,
             joinPlayer.radius,
             ARENA_WIDTH - joinPlayer.radius,
           );
           joinPlayer.y = clamp(
             joinPlayer.y +
               guestMove.y * guestEffectiveSpeed * delta +
-              joinPlayer.knockbackY * delta,
+              (joinPlayer.knockbackY ?? 0) * delta,
             joinPlayer.radius,
             ARENA_HEIGHT - joinPlayer.radius,
           );
           joinPlayer.facing = normalize(remoteInputRef.current.aim);
+          joinPlayer.visualFacing = getPlayerVisualFacing(
+            joinPlayer.visualFacing,
+            guestMove.x,
+          );
           joinPlayer.orbSide = getOrbSideAfterDelta(joinPlayer, delta);
+        }
+        if (joinPlayer) {
+          joinPlayer.knockbackX = (joinPlayer.knockbackX ?? 0) * knockbackDecay;
+          joinPlayer.knockbackY = (joinPlayer.knockbackY ?? 0) * knockbackDecay;
         }
 
         const grenadeAimPreview =
@@ -3018,28 +3448,21 @@ export function WildPawGame({
                 }
               : null;
 
-        if (previous.waveCountdown > 0) {
+        if (previous.waveCountdown > 0 || previous.warpTransitionTimer > 0) {
           const warpTransitionTimer = Math.max(
             0,
             previous.warpTransitionTimer - delta,
           );
-          const warpFadeTimer =
-            previous.warpTransitionTimer > 0
-              ? warpTransitionTimer === 0
-                ? WARP_TRANSITION_DURATION
-                : 0
-              : Math.max(0, previous.warpFadeTimer - delta);
           const arenaBackgroundWave =
-            previous.warpTransitionTimer <= 0 &&
-            previous.warpFadeTimer > WARP_TRANSITION_DURATION / 2 &&
-            warpFadeTimer <= WARP_TRANSITION_DURATION / 2
+            previous.warpTransitionTimer > WARP_TRANSITION_DURATION / 2 &&
+            warpTransitionTimer <= WARP_TRANSITION_DURATION / 2
               ? previous.wave
               : previous.arenaBackgroundWave;
           const waveCountdown =
-            previous.warpTransitionTimer > 0 ||
-            previous.warpFadeTimer > 0 ||
-            warpFadeTimer > 0
-              ? previous.waveCountdown
+            previous.warpTransitionTimer > 0
+              ? warpTransitionTimer > 0
+                ? previous.waveCountdown
+                : 0
               : Math.max(0, previous.waveCountdown - delta);
           let bullets = previous.bullets
             .map((bullet) => ({
@@ -3133,26 +3556,41 @@ export function WildPawGame({
               .map((explosion) => ({
                 ...explosion,
                 life: explosion.life - delta,
-                smokeLife: Math.max(0, (explosion.smokeLife ?? 0) - delta),
               }))
-              .filter(
-                (explosion) =>
-                  explosion.life > 0 || (explosion.smokeLife ?? 0) > 0,
-              ),
+              .filter((explosion) => explosion.life > 0),
             ...grenadeUpdate.explosions,
           ];
+          const enemyDeathEffects = [
+            ...previous.enemyDeathEffects
+              .map((effect) => ({ ...effect, life: effect.life - delta }))
+              .filter((effect) => effect.life > 0),
+            ...grenadeUpdate.enemyDeathEffects,
+          ];
           let itemDrops = previous.itemDrops;
+          let powerUpChoices = previous.powerUpChoices;
+          let warpPending = previous.warpPending;
+          let message = previous.message;
           if (!player.isDead) {
             const pickup = advanceItemDrops(itemDrops, player, delta);
             player = pickup.player;
             itemDrops = pickup.drops;
             damageNumbers.push(...pickup.damageNumbers);
+            if (pickup.rewardPopupTriggered) {
+              powerUpChoices = createPowerUpChoices();
+              warpPending = true;
+              message = "Choose your chest reward";
+            }
           }
           if (joinPlayer && !joinPlayer.isDead) {
             const pickup = advanceItemDrops(itemDrops, joinPlayer, delta);
             joinPlayer = pickup.player;
             itemDrops = pickup.drops;
             damageNumbers.push(...pickup.damageNumbers);
+            if (pickup.rewardPopupTriggered) {
+              powerUpChoices = createPowerUpChoices();
+              warpPending = true;
+              message = "Choose your chest reward";
+            }
           }
 
           return {
@@ -3173,21 +3611,25 @@ export function WildPawGame({
             itemDrops,
             grenadeProjectiles: grenadeUpdate.projectiles,
             grenadeExplosions,
+            enemyDeathEffects,
             damageNumbers,
+            powerUpChoices,
+            warpPending,
             arenaBackgroundWave,
             waveCountdown,
             warpTransitionTimer,
-            warpFadeTimer,
             fireCooldown,
             dashCooldown: Math.max(0, player.dashCooldown - delta),
             pendingPlayerDamage: 0,
             playerDamageTimer: Math.max(0, previous.playerDamageTimer - delta),
             message:
-              previous.warpTransitionTimer > 0
-                ? `Warping to another location · ${Math.ceil(warpTransitionTimer)}`
-                : waveCountdown > 0
-                  ? `Wave ${previous.wave} starts in ${Math.ceil(waveCountdown)}`
-                  : `Wave ${previous.wave} started!`,
+              powerUpChoices.length > 0
+                ? message
+                : warpTransitionTimer > 0
+                  ? `Warping to another location · ${Math.ceil(warpTransitionTimer)}`
+                  : waveCountdown > 0
+                    ? `Wave ${previous.wave} starts in ${Math.ceil(waveCountdown)}`
+                    : `Wave ${previous.wave} started!`,
           };
         }
 
@@ -3198,8 +3640,6 @@ export function WildPawGame({
         let message = previous.message;
         let bossPhase = previous.bossPhase;
         let bossPhaseTimer = previous.bossPhaseTimer;
-        let bossEntrancePoint = previous.bossEntrancePoint;
-        let bossChestPending = previous.bossChestPending;
         let bossConfigId = previous.bossConfigId;
         let bossAttackPhase = previous.bossAttackPhase;
         let bossAttackTimer = previous.bossAttackTimer;
@@ -3277,11 +3717,7 @@ export function WildPawGame({
                   target: { x: target.x, y: target.y },
                   vx: direction.x,
                   vy: direction.y,
-                  speed: Math.max(
-                    1,
-                    Math.hypot(target.x - arenaBoss.x, target.y - arenaBoss.y) /
-                      BOSS_ATTACK_TELEGRAPH_DURATION,
-                  ),
+                  speed: 210,
                   radius: 15,
                   damage: config.projectileDamage,
                   life: 5,
@@ -3344,44 +3780,210 @@ export function WildPawGame({
           }
         }
 
-        const enemyMovement = advanceEnemyPositions({
-          enemies: previous.enemies,
-          livingPlayers,
-          delta,
-          bossPhase,
-          previousBossPhase: previous.bossPhase,
-          bossPhaseTimer,
-          bossAttackPhase,
-          bossDashDirection,
-          bossDashHasHit,
-          bossEntrancePoint,
-          getDefenseMultiplier: (buddyId) =>
-            1 - getBuddyBonus(buddyId, "defense") / 100,
+        let enemies = previous.enemies.map((enemy) => {
+          const knockbackX = enemy.knockbackX ?? 0;
+          const knockbackY = enemy.knockbackY ?? 0;
+          const knockbackDecay = Math.exp(-8 * delta);
+          const applyHitMotion = (
+            nextEnemy: Enemy,
+            constrainToArena = true,
+          ): Enemy => {
+            const x = nextEnemy.x + knockbackX * delta;
+            const y = nextEnemy.y + knockbackY * delta;
+            return {
+              ...nextEnemy,
+              x: constrainToArena
+                ? clamp(x, enemy.radius, ARENA_WIDTH - enemy.radius)
+                : x,
+              y: constrainToArena
+                ? clamp(y, enemy.radius, ARENA_HEIGHT - enemy.radius)
+                : y,
+              knockbackX: knockbackX * knockbackDecay,
+              knockbackY: knockbackY * knockbackDecay,
+              hitFlashTimer: Math.max(0, (enemy.hitFlashTimer ?? 0) - delta),
+            };
+          };
+
+          if (enemy.arenaBossId) {
+            if (previous.bossPhase === "entrance") {
+              const progress = clamp(
+                1 - bossPhaseTimer / BOSS_ENTRANCE_DURATION,
+                0,
+                1,
+              );
+              const wiggle =
+                Math.sin((BOSS_ENTRANCE_DURATION - bossPhaseTimer) * 22) *
+                22 *
+                (1 - progress);
+              return applyHitMotion(
+                {
+                  ...enemy,
+                  x: ARENA_WIDTH / 2 + wiggle,
+                  y: -enemy.radius + (92 + enemy.radius) * progress,
+                },
+                false,
+              );
+            }
+            if (
+              bossPhase === "active" &&
+              bossAttackPhase === "dash" &&
+              bossDashDirection
+            ) {
+              const nextX = clamp(
+                enemy.x + bossDashDirection.x * BOSS_DASH_SPEED * delta,
+                enemy.radius,
+                ARENA_WIDTH - enemy.radius,
+              );
+              const nextY = clamp(
+                enemy.y + bossDashDirection.y * BOSS_DASH_SPEED * delta,
+                enemy.radius,
+                ARENA_HEIGHT - enemy.radius,
+              );
+              const start = { x: enemy.x, y: enemy.y };
+              const end = { x: nextX, y: nextY };
+              if (!bossDashHasHit) {
+                for (const candidate of livingPlayers) {
+                  if (
+                    distanceToSegment(candidate, start, end) <=
+                    enemy.radius + candidate.radius
+                  ) {
+                    const config = BOSS_CONFIGS.find(
+                      (boss) => boss.id === enemy.arenaBossId,
+                    );
+                    const damage =
+                      (config?.dashDamage ?? 50) *
+                      (1 - getBuddyBonus(candidate.buddyId, "defense") / 100);
+                    if (candidate.id === "host") bossDamageHost += damage;
+                    else bossDamageJoin += damage;
+                    bossDashHasHit = true;
+                    break;
+                  }
+                }
+              }
+              return applyHitMotion({ ...enemy, x: nextX, y: nextY });
+            }
+            const arenaBossConfig = BOSS_CONFIGS.find(
+              (boss) => boss.id === enemy.arenaBossId,
+            );
+            if (
+              bossPhase === "active" &&
+              arenaBossConfig?.pattern === "artillery"
+            ) {
+              let repositionTimer =
+                (enemy.repositionTimer ?? BOSS_REPOSITION_INTERVAL) - delta;
+              let repositionTarget = enemy.repositionTarget ?? null;
+              if (
+                repositionTimer <= 0 &&
+                !repositionTarget &&
+                bossAttackPhase === "cooldown"
+              ) {
+                repositionTarget = createArtilleryBossPosition(enemy);
+                repositionTimer = BOSS_REPOSITION_INTERVAL;
+              }
+
+              let x = enemy.x;
+              let y = enemy.y;
+              if (repositionTarget) {
+                const dx = repositionTarget.x - enemy.x;
+                const dy = repositionTarget.y - enemy.y;
+                const distance = Math.hypot(dx, dy);
+                const step = BOSS_REPOSITION_SPEED * delta;
+                if (distance <= step || distance === 0) {
+                  x = repositionTarget.x;
+                  y = repositionTarget.y;
+                  repositionTarget = null;
+                  repositionTimer = BOSS_REPOSITION_INTERVAL;
+                } else {
+                  const directionX = dx / distance;
+                  const directionY = dy / distance;
+                  const wiggle = Math.sin(timestamp * 0.018) * 11;
+                  x += directionX * step - directionY * wiggle * delta;
+                  y += directionY * step + directionX * wiggle * delta;
+                }
+              }
+              return applyHitMotion({
+                ...enemy,
+                x,
+                y,
+                repositionTimer,
+                repositionTarget,
+              });
+            }
+            return applyHitMotion(enemy);
+          }
+
+          const target = livingPlayers.reduce((closest, candidate) =>
+            Math.hypot(candidate.x - enemy.x, candidate.y - enemy.y) <
+            Math.hypot(closest.x - enemy.x, closest.y - enemy.y)
+              ? candidate
+              : closest,
+          );
+          const dx = target.x - enemy.x;
+          const dy = target.y - enemy.y;
+          const distance = Math.hypot(dx, dy) || 1;
+          const directionX = dx / distance;
+          const directionY = dy / distance;
+          const newX = enemy.x + directionX * enemy.speed * delta;
+          const newY = enemy.y + directionY * enemy.speed * delta;
+          return applyHitMotion({
+            ...enemy,
+            x: clamp(newX, enemy.radius, ARENA_WIDTH - enemy.radius),
+            y: clamp(newY, enemy.radius, ARENA_HEIGHT - enemy.radius),
+          });
         });
-        let enemies = enemyMovement.enemies;
-        bossDashHasHit = enemyMovement.dashHasHit;
-        bossDamageHost += enemyMovement.bossDamageHost;
-        bossDamageJoin += enemyMovement.bossDamageJoin;
 
         if (previous.bossPhase === "warning" && bossPhase === "entrance") {
           const config = BOSS_CONFIGS.find((boss) => boss.id === bossConfigId);
-          if (config && bossEntrancePoint) {
-            enemies.push(
-              makeArenaBoss(config, previous.wave, bossEntrancePoint),
-            );
-          }
+          if (config) enemies.push(makeArenaBoss(config, previous.wave));
         }
 
-        const projectileUpdate = advanceBossProjectiles({
-          projectiles: bossProjectiles,
-          livingPlayers,
-          delta,
-          getDefenseMultiplier: (buddyId) =>
-            1 - getBuddyBonus(buddyId, "defense") / 100,
-        });
-        bossProjectiles = projectileUpdate.projectiles;
-        bossDamageHost += projectileUpdate.damageHost;
-        bossDamageJoin += projectileUpdate.damageJoin;
+        const projectileHitIds = new Set<number>();
+        for (const projectile of bossProjectiles) {
+          const remainingDistance = Math.hypot(
+            projectile.target.x - projectile.x,
+            projectile.target.y - projectile.y,
+          );
+          const travelDistance = projectile.speed * delta;
+          const reachesTarget = remainingDistance <= travelDistance;
+          const start = { x: projectile.x, y: projectile.y };
+          const end = {
+            x: reachesTarget
+              ? projectile.target.x
+              : projectile.x + projectile.vx * travelDistance,
+            y: reachesTarget
+              ? projectile.target.y
+              : projectile.y + projectile.vy * travelDistance,
+          };
+          for (const candidate of livingPlayers) {
+            if (
+              distanceToSegment(candidate, start, end) <=
+              projectile.radius + candidate.radius
+            ) {
+              const damage =
+                projectile.damage *
+                (1 - getBuddyBonus(candidate.buddyId, "defense") / 100);
+              if (candidate.id === "host") bossDamageHost += damage;
+              else bossDamageJoin += damage;
+              projectileHitIds.add(projectile.id);
+              break;
+            }
+          }
+          if (projectileHitIds.has(projectile.id)) continue;
+          projectile.x = end.x;
+          projectile.y = end.y;
+          if (
+            reachesTarget ||
+            projectile.x < -projectile.radius ||
+            projectile.x > ARENA_WIDTH + projectile.radius ||
+            projectile.y < -projectile.radius ||
+            projectile.y > ARENA_HEIGHT + projectile.radius
+          ) {
+            projectileHitIds.add(projectile.id);
+          }
+        }
+        bossProjectiles = bossProjectiles.filter(
+          (projectile) => !projectileHitIds.has(projectile.id),
+        );
 
         let bullets = previous.bullets
           .map((bullet) => ({
@@ -3468,20 +4070,6 @@ export function WildPawGame({
           0,
           previous.warpTransitionTimer - delta,
         );
-        let warpFadeTimer =
-          previous.warpTransitionTimer > 0
-            ? warpTransitionTimer === 0
-              ? WARP_TRANSITION_DURATION
-              : 0
-            : Math.max(0, previous.warpFadeTimer - delta);
-        let arenaBackgroundWave = previous.arenaBackgroundWave;
-        if (
-          previous.warpTransitionTimer <= 0 &&
-          previous.warpFadeTimer > WARP_TRANSITION_DURATION / 2 &&
-          warpFadeTimer <= WARP_TRANSITION_DURATION / 2
-        ) {
-          arenaBackgroundWave = wave;
-        }
         let powerUpChoices = previous.powerUpChoices;
         let warpPending = previous.warpPending;
         let enemiesToSpawn = previous.enemiesToSpawn;
@@ -3496,20 +4084,17 @@ export function WildPawGame({
           .map((beam) => ({ ...beam, life: beam.life - delta }))
           .filter((beam) => beam.life > 0);
         let itemDrops = [...previous.itemDrops];
-        let grenadeExplosions: GrenadeExplosion[] = previous.grenadeExplosions
-          .map((explosion) => ({
-            ...explosion,
-            life: explosion.life - delta,
-            smokeLife: Math.max(0, (explosion.smokeLife ?? 0) - delta),
-          }))
-          .filter(
-            (explosion) => explosion.life > 0 || (explosion.smokeLife ?? 0) > 0,
-          );
+        let grenadeExplosions = previous.grenadeExplosions
+          .map((explosion) => ({ ...explosion, life: explosion.life - delta }))
+          .filter((explosion) => explosion.life > 0);
+        let enemyDeathEffects = previous.enemyDeathEffects
+          .map((effect) => ({ ...effect, life: effect.life - delta }))
+          .filter((effect) => effect.life > 0);
 
         const bulletHitIds = new Set<number>();
         const survivingEnemies: Enemy[] = [];
 
-        for (const enemy of enemies) {
+        for (let enemy of enemies) {
           let enemyHit = false;
           let enemyAlive = true;
 
@@ -3524,11 +4109,8 @@ export function WildPawGame({
             const radiusSum = bullet.radius + enemy.radius;
 
             if (hitDistanceSquared <= radiusSum * radiusSum) {
+              enemy = applyEnemyHit(enemy, bullet, enemy.isBoss ? 40 : 260);
               enemy.health -= bullet.damage;
-              Object.assign(
-                enemy,
-                applyEnemyHit(enemy, { x: bullet.x, y: bullet.y }, 250),
-              );
               bulletHitIds.add(bullet.id);
               enemyHit = true;
               damageNumbers.push({
@@ -3543,6 +4125,7 @@ export function WildPawGame({
               if (enemy.health <= 0) {
                 enemyAlive = false;
                 score += getEnemyScoreReward(enemy);
+                enemyDeathEffects.push(makeEnemyDeathEffect(enemy));
                 if (enemy.arenaBossId) {
                   const config = BOSS_CONFIGS.find(
                     (boss) => boss.id === enemy.arenaBossId,
@@ -3577,6 +4160,7 @@ export function WildPawGame({
         );
         enemies = grenadeUpdate.enemies;
         itemDrops.push(...grenadeUpdate.itemDrops);
+        enemyDeathEffects.push(...grenadeUpdate.enemyDeathEffects);
         grenadeExplosions = [...grenadeExplosions, ...grenadeUpdate.explosions];
         damageNumbers.push(...grenadeUpdate.damageNumbers);
         score += grenadeUpdate.score;
@@ -3592,6 +4176,9 @@ export function WildPawGame({
         score += hostOrbAttack.score;
         if (hostOrbAttack.message) message = hostOrbAttack.message;
         if (hostOrbAttack.beam) orbBeams.push(hostOrbAttack.beam);
+        if (hostOrbAttack.deathEffect) {
+          enemyDeathEffects.push(hostOrbAttack.deathEffect);
+        }
 
         if (joinPlayer) {
           const guestOrbAttack = fireOrbAtNearestEnemy(
@@ -3605,6 +4192,9 @@ export function WildPawGame({
           score += guestOrbAttack.score;
           if (guestOrbAttack.message) message = guestOrbAttack.message;
           if (guestOrbAttack.beam) orbBeams.push(guestOrbAttack.beam);
+          if (guestOrbAttack.deathEffect) {
+            enemyDeathEffects.push(guestOrbAttack.deathEffect);
+          }
         }
 
         if (wave > 1 && wave % 3 === 0 && bossSpawnedAtWave !== wave) {
@@ -3637,22 +4227,6 @@ export function WildPawGame({
           bossHealthMax = 0;
         }
 
-        const defeatedArenaBoss = previous.enemies.find(
-          (enemy) => enemy.arenaBossId,
-        );
-        const bossChestDropped =
-          !!defeatedArenaBoss &&
-          !enemies.some((enemy) => enemy.id === defeatedArenaBoss.id);
-        if (bossChestDropped && defeatedArenaBoss) {
-          itemDrops.push({
-            id: Date.now() + Math.random(),
-            kind: "chest",
-            x: clamp(defeatedArenaBoss.x, 28, ARENA_WIDTH - 28),
-            y: clamp(defeatedArenaBoss.y, 28, ARENA_HEIGHT - 28),
-            life: BOSS_CHEST_LIFETIME,
-          });
-        }
-
         if (
           spawnCooldown <= 0 &&
           enemiesToSpawn > 0 &&
@@ -3671,9 +4245,6 @@ export function WildPawGame({
         ) => {
           if (!currentPlayer || currentPlayer.isDead) return currentPlayer;
           let damageTaken = arenaBossDamage;
-          let impulseX = 0;
-          let impulseY = 0;
-          const canApplyKnockback = currentPlayer.hitFlashTimer <= 0;
           for (const enemy of enemies) {
             const dx = currentPlayer.x - enemy.x;
             const dy = currentPlayer.y - enemy.y;
@@ -3687,44 +4258,9 @@ export function WildPawGame({
                   enemy.damage *
                   (1 - getBuddyBonus(currentPlayer.buddyId, "defense") / 100) *
                   delta;
-                if (canApplyKnockback) {
-                  const distance = Math.hypot(dx, dy) || 1;
-                  impulseX += (dx / distance) * 300;
-                  impulseY += (dy / distance) * 300;
-                }
               }
             }
           }
-          if (
-            arenaBossDamage > 0 &&
-            canApplyKnockback &&
-            impulseX === 0 &&
-            impulseY === 0
-          ) {
-            const source = enemies.reduce<Enemy | null>(
-              (nearest, enemy) =>
-                !nearest ||
-                Math.hypot(
-                  enemy.x - currentPlayer.x,
-                  enemy.y - currentPlayer.y,
-                ) <
-                  Math.hypot(
-                    nearest.x - currentPlayer.x,
-                    nearest.y - currentPlayer.y,
-                  )
-                  ? enemy
-                  : nearest,
-              null,
-            );
-            if (source) {
-              const dx = currentPlayer.x - source.x;
-              const dy = currentPlayer.y - source.y;
-              const distance = Math.hypot(dx, dy) || 1;
-              impulseX = (dx / distance) * 320;
-              impulseY = (dy / distance) * 320;
-            }
-          }
-          const wasHurt = damageTaken > 0;
           let health = clamp(
             currentPlayer.health - damageTaken,
             0,
@@ -3739,6 +4275,9 @@ export function WildPawGame({
               ? previous.playerDamageTimer
               : currentPlayer.damageTimer) - delta,
           );
+          let hitFlashTimer = currentPlayer.hitFlashTimer;
+          let knockbackX = currentPlayer.knockbackX;
+          let knockbackY = currentPlayer.knockbackY;
           if (damageTimer === 0 && pendingDamage >= 1) {
             damageNumbers.push({
               id: Date.now() + Math.random(),
@@ -3749,6 +4288,30 @@ export function WildPawGame({
               target: "player",
               playerId: currentPlayer.id,
             });
+            const nearestEnemy = enemies.reduce<Enemy | null>(
+              (closest, enemy) =>
+                !closest ||
+                Math.hypot(
+                  enemy.x - currentPlayer.x,
+                  enemy.y - currentPlayer.y,
+                ) <
+                  Math.hypot(
+                    closest.x - currentPlayer.x,
+                    closest.y - currentPlayer.y,
+                  )
+                  ? enemy
+                  : closest,
+              null,
+            );
+            if (nearestEnemy) {
+              const direction = normalize({
+                x: currentPlayer.x - nearestEnemy.x,
+                y: currentPlayer.y - nearestEnemy.y,
+              });
+              knockbackX += direction.x * 150;
+              knockbackY += direction.y * 150;
+            }
+            hitFlashTimer = 0.32;
             pendingDamage = 0;
             damageTimer = 0.45;
           }
@@ -3764,30 +4327,35 @@ export function WildPawGame({
             isDead,
             pendingDamage,
             damageTimer,
-            hitFlashTimer: wasHurt ? 1 : currentPlayer.hitFlashTimer,
-            knockbackX:
-              currentPlayer.knockbackX + (canApplyKnockback ? impulseX : 0),
-            knockbackY:
-              currentPlayer.knockbackY + (canApplyKnockback ? impulseY : 0),
+            hitFlashTimer,
+            knockbackX,
+            knockbackY,
           };
         };
         player = damageOnePlayer(player, true, bossDamageHost) ?? player;
         joinPlayer = damageOnePlayer(joinPlayer, false, bossDamageJoin);
 
-        let bossChestPickedUp = false;
         if (!player.isDead) {
           const pickup = advanceItemDrops(itemDrops, player, delta);
           player = pickup.player;
           itemDrops = pickup.drops;
           damageNumbers.push(...pickup.damageNumbers);
-          bossChestPickedUp ||= pickup.bossChestPickedUp;
+          if (pickup.rewardPopupTriggered) {
+            powerUpChoices = createPowerUpChoices();
+            warpPending = true;
+            message = "Choose your chest reward";
+          }
         }
         if (joinPlayer && !joinPlayer.isDead) {
           const pickup = advanceItemDrops(itemDrops, joinPlayer, delta);
           joinPlayer = pickup.player;
           itemDrops = pickup.drops;
           damageNumbers.push(...pickup.damageNumbers);
-          bossChestPickedUp ||= pickup.bossChestPickedUp;
+          if (pickup.rewardPopupTriggered) {
+            powerUpChoices = createPowerUpChoices();
+            warpPending = true;
+            message = "Choose your chest reward";
+          }
         }
 
         let reviveState = previous.reviveState;
@@ -3876,11 +4444,9 @@ export function WildPawGame({
         const advanceWaveAfterClear = () => {
           wave += 1;
           waveCountdown = WAVE_BREAK_DURATION;
-          const isNewArena = (wave - 1) % WAVES_PER_ARENA === 0;
           warpTransitionTimer = 0;
-          warpFadeTimer = 0;
-          powerUpChoices = isNewArena ? createPowerUpChoices() : [];
-          warpPending = isNewArena;
+          powerUpChoices = [];
+          warpPending = false;
           enemiesToSpawn = getWaveEnemyCount(wave);
           bullets = [];
           spawnCooldown = 0;
@@ -3888,8 +4454,6 @@ export function WildPawGame({
           bossHealthMax = 0;
           bossPhase = "idle";
           bossPhaseTimer = 0;
-          bossEntrancePoint = null;
-          bossChestPending = false;
           bossConfigId = null;
           bossAttackPhase = "cooldown";
           bossAttackTimer = 0;
@@ -3898,12 +4462,14 @@ export function WildPawGame({
           bossDashHasHit = false;
           bossProjectiles = [];
           bossAreaEffects = [];
-          message = isNewArena
-            ? "Choose a power-up before warping"
-            : `Wave ${wave - 1} cleared! Prepare for wave ${wave}`;
+          message = `Wave ${wave - 1} cleared! Prepare for wave ${wave}`;
         };
 
-        if (enemies.length === 0 && enemiesToSpawn === 0) {
+        if (
+          enemies.length === 0 &&
+          enemiesToSpawn === 0 &&
+          !previous.warpPending
+        ) {
           const majorBossAlive = enemies.some((enemy) => enemy.arenaBossId);
           const majorBossWasDefeated =
             previous.bossPhase === "active" &&
@@ -3916,7 +4482,6 @@ export function WildPawGame({
             const config = getArenaBossForWave(previous.wave);
             bossPhase = "warning";
             bossPhaseTimer = BOSS_WARNING_DURATION;
-            bossEntrancePoint = createBossEntrancePoint();
             bossConfigId = config.id;
             bossName = config.name;
             bossSpawnedAtWave = previous.wave;
@@ -3929,25 +4494,30 @@ export function WildPawGame({
             bossProjectiles = [];
             bossAreaEffects = [];
             message = `WARNING! ${config.name} is coming!`;
+          } else if (
+            majorBossWasDefeated &&
+            previous.wave % WAVES_PER_ARENA === 0
+          ) {
+            waveCountdown = 0;
+            warpPending = true;
+            bossPhase = "idle";
+            bossPhaseTimer = 0;
+            bossConfigId = null;
+            bossHealth = 0;
+            bossHealthMax = 0;
+            bossAttackPhase = "cooldown";
+            bossAttackTimer = 0;
+            bossTelegraphTarget = null;
+            bossDashDirection = null;
+            bossDashHasHit = false;
+            bossProjectiles = [];
+            bossAreaEffects = [];
+            message = "Boss defeated! Collect the chest to warp";
           } else if (majorBossWasDefeated) {
             bossHealth = 0;
             bossHealthMax = 0;
-            if (defeatedArenaBoss) {
-              bossPhase = "idle";
-              bossPhaseTimer = 0;
-              bossChestPending = true;
-              message = "Boss defeated! Pick up the reward chest!";
-              if (bossChestPickedUp) {
-                advanceWaveAfterClear();
-              }
-            } else {
-              advanceWaveAfterClear();
-            }
-          } else if (
-            previous.bossPhase === "idle" &&
-            (!bossChestPending || bossChestPickedUp)
-          ) {
-            bossChestPending = false;
+            advanceWaveAfterClear();
+          } else if (previous.bossPhase === "idle") {
             advanceWaveAfterClear();
           }
         }
@@ -3966,6 +4536,7 @@ export function WildPawGame({
           heals: player.heals,
           grenadeProjectiles: grenadeUpdate.projectiles,
           grenadeExplosions,
+          enemyDeathEffects,
           damageNumbers,
           pendingPlayerDamage,
           playerDamageTimer,
@@ -3973,8 +4544,6 @@ export function WildPawGame({
           wave,
           waveCountdown,
           warpTransitionTimer,
-          warpFadeTimer,
-          arenaBackgroundWave,
           powerUpChoices,
           warpPending,
           enemiesToSpawn,
@@ -3993,8 +4562,6 @@ export function WildPawGame({
           bossConfigId,
           bossPhase,
           bossPhaseTimer,
-          bossEntrancePoint,
-          bossChestPending,
           bossAttackPhase,
           bossAttackTimer,
           bossTelegraphTarget,
@@ -4249,11 +4816,6 @@ export function WildPawGame({
   const arenaBoss = game.enemies.find(
     (enemy) => enemy.arenaBossId === game.bossConfigId,
   );
-  const bossWarningPulse =
-    0.9 +
-    (Math.sin((BOSS_WARNING_DURATION - game.bossPhaseTimer) * Math.PI * 3) +
-      1) *
-      0.3;
   const bossTelegraphDistance =
     arenaBoss && game.bossTelegraphTarget
       ? Math.hypot(
@@ -4319,29 +4881,16 @@ export function WildPawGame({
                 Connected to host. Waiting for the match to start.
               </Text>
             )}
-            {!!multiplayerConnectionError && (
-              <Text
-                style={[styles.lobbyEmptyText, styles.lobbyConnectionError]}
-              >
-                {multiplayerConnectionError}
-              </Text>
-            )}
 
             <View style={styles.lobbyPlayerList}>
               <Text style={styles.lobbySectionTitle}>
                 PLAYERS · {displayedPlayers.length}/2
               </Text>
               {displayedPlayers.length === 0 ? (
-                <Text
-                  style={[
-                    styles.lobbyEmptyText,
-                    !!multiplayerConnectionError && styles.lobbyConnectionError,
-                  ]}
-                >
-                  {multiplayerConnectionError ||
-                    (isMultiplayerConnected
-                      ? "Waiting for lobby details..."
-                      : "Connecting to lobby...")}
+                <Text style={styles.lobbyEmptyText}>
+                  {isMultiplayerConnected
+                    ? "Waiting for lobby details..."
+                    : "Connecting to lobby..."}
                 </Text>
               ) : (
                 displayedPlayers.map((player) => {
@@ -4433,49 +4982,45 @@ export function WildPawGame({
               <View
                 pointerEvents="none"
                 accessibilityLiveRegion="assertive"
-                accessibilityLabel={`${game.bossName} will enter from this point in ${Math.ceil(game.bossPhaseTimer)} seconds`}
-                style={[
-                  styles.bossWarningMarker,
-                  {
-                    left: (game.bossEntrancePoint?.x ?? ARENA_WIDTH / 2) - 30,
-                    top: (game.bossEntrancePoint?.y ?? 42) - 44,
-                    transform: [{ scale: bossWarningPulse }],
-                  },
-                ]}
+                accessibilityLabel={`${game.bossName} is coming in ${Math.ceil(game.bossPhaseTimer)} seconds`}
+                style={styles.bossWarningOverlay}
               >
-                <Text style={styles.bossWarningMark}>!</Text>
-              </View>
-            )}
-
-            {(game.bossPhase === "entrance" || game.bossPhase === "active") &&
-              arenaBossConfig && (
-                <View pointerEvents="none" style={styles.bossBarWrap}>
-                  <Text style={styles.bossLabel}>
-                    {arenaBossConfig.name} ·{" "}
-                    {arenaBossConfig.pattern.toUpperCase()}
-                  </Text>
-                  <View style={styles.bossBarOuter}>
-                    <View
+                {Array.from({ length: 5 }, (_, index) => {
+                  const sideIndex = (index + (game.wave % 4)) % 4;
+                  const sides = [
+                    { x: 0.15 + ((game.wave + index) % 3) * 0.2, y: -0.08 },
+                    { x: 0.2 + ((game.wave + index * 2) % 3) * 0.2, y: 1.08 },
+                    { x: -0.12, y: 0.15 + ((game.wave + index * 3) % 3) * 0.2 },
+                    { x: 1.12, y: 0.15 + ((game.wave + index * 2) % 3) * 0.2 },
+                  ];
+                  const point = sides[sideIndex];
+                  return (
+                    <Text
+                      key={`${game.wave}-${index}`}
                       style={[
-                        styles.bossBarInner,
+                        styles.bossWarningMarker,
                         {
-                          width: `${Math.max(
-                            0,
-                            (game.bossHealth /
-                              Math.max(1, game.bossHealthMax)) *
-                              100,
-                          )}%`,
-                          backgroundColor: arenaBossConfig?.color,
+                          left: point.x * ARENA_WIDTH,
+                          top: point.y * ARENA_HEIGHT,
+                          transform: [{ scale: 1 + (index % 2) * 0.2 }],
                         },
                       ]}
-                    />
-                  </View>
-                  <Text style={styles.bossHealthText}>
-                    {Math.ceil(game.bossHealth).toLocaleString()} /{" "}
-                    {Math.ceil(game.bossHealthMax).toLocaleString()}
-                  </Text>
-                </View>
-              )}
+                    >
+                      !
+                    </Text>
+                  );
+                })}
+                <Text style={styles.bossWarningEyebrow}>
+                  WAVE {game.wave} CLEARED
+                </Text>
+                <Text style={styles.bossWarningTitle}>BOSS INCOMING!</Text>
+                <Text style={styles.bossWarningName}>{game.bossName}</Text>
+                <Text style={styles.bossWarningCountdown}>
+                  {Math.ceil(game.bossPhaseTimer)}
+                </Text>
+                <Text style={styles.bossWarningHint}>GET READY TO FIGHT</Text>
+              </View>
+            )}
 
             {game.bossPhase === "active" &&
               game.bossAttackPhase === "telegraph" &&
@@ -4547,28 +5092,31 @@ export function WildPawGame({
               )}
 
             {game.bossAreaEffects.map((effect) => (
-              <Image
+              <View
                 key={effect.id}
                 pointerEvents="none"
-                source={smokeImage}
-                style={[
-                  styles.bossAreaImpactImage,
-                  {
-                    left: effect.x - effect.radius,
-                    top: effect.y - effect.radius,
-                    width: effect.radius * 2,
-                    height: effect.radius * 2,
-                    opacity: Math.min(1, effect.life / 2),
-                  },
-                ]}
-                contentFit="contain"
-              />
+                style={StyleSheet.absoluteFill}
+              >
+                <Image
+                  source={smokeImage}
+                  style={[
+                    styles.bossAreaImpactImage,
+                    {
+                      left: effect.x - effect.radius,
+                      top: effect.y - effect.radius,
+                      width: effect.radius * 2,
+                      height: effect.radius * 2,
+                      opacity: Math.min(1, effect.life / 2),
+                    },
+                  ]}
+                  contentFit="contain"
+                />
+              </View>
             ))}
 
             {game.bossProjectiles.map((projectile) => {
               const projectileAngle =
-                Math.atan2(projectile.vy, projectile.vx) - Math.PI / 2;
-              const visualRadius = projectile.radius * 1.6;
+                Math.atan2(projectile.vy, projectile.vx) + Math.PI / 2;
 
               return (
                 <Image
@@ -4578,11 +5126,22 @@ export function WildPawGame({
                   style={[
                     styles.bossProjectileImage,
                     {
-                      left: projectile.x - visualRadius,
-                      top: projectile.y - visualRadius,
-                      width: visualRadius * 2,
-                      height: visualRadius * 2,
-                      transform: [{ rotate: `${projectileAngle}rad` }],
+                      left: projectile.x - projectile.radius,
+                      top: projectile.y - projectile.radius,
+                      width: projectile.radius * 2,
+                      height: projectile.radius * 2,
+                      opacity: clamp(
+                        Math.hypot(
+                          projectile.target.x - projectile.x,
+                          projectile.target.y - projectile.y,
+                        ) / 56,
+                        0,
+                        1,
+                      ),
+                      transform: [
+                        { rotate: `${projectileAngle}rad` },
+                        { scaleY: -1 },
+                      ],
                     },
                   ]}
                   contentFit="contain"
@@ -4728,124 +5287,57 @@ export function WildPawGame({
             )}
 
             {game.bullets.map((bullet) => (
-              <View
+              <Image
                 key={bullet.id}
+                pointerEvents="none"
+                source={bulletProjectileImage}
+                contentFit="contain"
                 style={[
                   styles.bullet,
                   {
-                    left: bullet.x - bullet.radius,
-                    top: bullet.y - bullet.radius,
+                    left: bullet.x - 12,
+                    top: bullet.y - 9,
+                    transform: [
+                      { rotate: `${Math.atan2(bullet.vy, bullet.vx)}rad` },
+                    ],
                   },
                 ]}
               />
             ))}
 
             {game.grenadeExplosions.map((explosion) => (
-              <View key={explosion.id} pointerEvents="none">
-                {explosion.life > 0 && (
-                  <View
-                    style={[
-                      styles.grenadeExplosion,
-                      {
-                        left: explosion.x - explosion.radius,
-                        top: explosion.y - explosion.radius,
-                        width: explosion.radius * 2,
-                        height: explosion.radius * 2,
-                        opacity: Math.min(1, explosion.life / 0.3),
-                      },
-                    ]}
-                  />
-                )}
-                {(explosion.smokeLife ?? 0) > 0 && (
-                  <Image
-                    source={smokeImage}
-                    style={[
-                      styles.bossAreaImpactImage,
-                      {
-                        left: explosion.x - explosion.radius,
-                        top: explosion.y - explosion.radius,
-                        width: explosion.radius * 2,
-                        height: explosion.radius * 2,
-                        opacity: Math.min(1, (explosion.smokeLife ?? 0) / 1.2),
-                      },
-                    ]}
-                    contentFit="contain"
-                  />
-                )}
-              </View>
-            ))}
-
-            {game.grenadeProjectiles.map((projectile) => (
               <View
-                key={projectile.id}
+                key={explosion.id}
                 pointerEvents="none"
                 style={[
-                  styles.grenadeProjectile,
+                  styles.grenadeExplosion,
                   {
-                    left: projectile.x - 9,
-                    top: projectile.y - 9,
+                    left: explosion.x - explosion.radius,
+                    top: explosion.y - explosion.radius,
+                    width: explosion.radius * 2,
+                    height: explosion.radius * 2,
+                    opacity: explosion.life / 0.3,
                   },
                 ]}
               />
             ))}
 
-            {enemyFadeEffects.map(({ enemy, opacity }) => {
-              const isArenaBoss = !!enemy.arenaBossId;
-              const targets = [game.player, game.joinPlayer].filter(
-                (candidate): candidate is PlayerState => !!candidate,
-              );
-              const target = targets.reduce<PlayerState | null>(
-                (closest, candidate) =>
-                  !closest ||
-                  Math.hypot(candidate.x - enemy.x, candidate.y - enemy.y) <
-                    Math.hypot(closest.x - enemy.x, closest.y - enemy.y)
-                    ? candidate
-                    : closest,
-                null,
-              );
-
-              return (
-                <Animated.View
-                  key={`defeated-${enemy.id}`}
-                  pointerEvents="none"
-                  style={[
-                    styles.enemy,
-                    isArenaBoss && styles.arenaBossEnemy,
-                    {
-                      left: enemy.x - enemy.radius,
-                      top: enemy.y - enemy.radius,
-                      width: enemy.radius * 2,
-                      height: enemy.radius * 2,
-                      opacity,
-                      transform: [
-                        {
-                          scale: opacity.interpolate({
-                            inputRange: [0, 1],
-                            outputRange: [0.82, 1],
-                          }),
-                        },
-                      ],
-                    },
-                  ]}
-                >
-                  <Image
-                    pointerEvents="none"
-                    source={getEnemyImageSource(enemy)}
-                    style={[
-                      styles.enemySprite,
-                      enemy.hitFlashTimer && enemy.hitFlashTimer > 0
-                        ? styles.hitFlashTint
-                        : undefined,
-                      {
-                        transform: [{ scaleX: getEnemyFacing(enemy, target) }],
-                      },
-                    ]}
-                    contentFit="contain"
-                    accessibilityLabel="Defeated enemy fading away"
-                  />
-                </Animated.View>
-              );
-            })}
+            {game.grenadeProjectiles.map((projectile) => (
+              <Image
+                key={projectile.id}
+                pointerEvents="none"
+                source={bombImage}
+                contentFit="contain"
+                style={[
+                  styles.grenadeProjectile,
+                  {
+                    left: projectile.x - 12,
+                    top: projectile.y - 12,
+                    transform: [{ rotate: `${projectile.elapsed * 2}rad` }],
+                  },
+                ]}
+              />
+            ))}
 
             {game.enemies.map((enemy) => {
               const bossConfig = enemy.arenaBossId
@@ -4857,10 +5349,6 @@ export function WildPawGame({
               const entranceRotation =
                 game.bossPhase === "entrance" && isArenaBoss
                   ? Math.sin(entranceElapsed * 22) * 0.1
-                  : 0;
-              const repositionRotation =
-                isArenaBoss && enemy.repositionTarget
-                  ? Math.sin(ghostAnimationTime * 22 + enemy.id) * 0.1
                   : 0;
               const targets = [game.player, game.joinPlayer].filter(
                 (candidate): candidate is PlayerState => !!candidate,
@@ -4878,36 +5366,59 @@ export function WildPawGame({
                 null,
               );
               const enemyFacing = getEnemyFacing(enemy, target);
+              const isElite = enemy.isBoss && !isArenaBoss;
+              const healthBarWidth = isArenaBoss ? 116 : 44;
+              const healthBarHeight = isArenaBoss ? 12 : 10;
+              const isHitFlashOn =
+                (enemy.hitFlashTimer ?? 0) > 0 &&
+                Math.floor((enemy.hitFlashTimer ?? 0) * 24) % 2 === 0;
 
               return (
                 <View key={enemy.id}>
-                  {!isArenaBoss && (
+                  <View
+                    style={[
+                      styles.enemyHealthBarOuter,
+                      isArenaBoss && styles.arenaBossHealthBar,
+                      isElite && styles.eliteEnemyHealthBar,
+                      {
+                        left: clamp(
+                          enemy.x - healthBarWidth / 2,
+                          2,
+                          ARENA_WIDTH - healthBarWidth - 2,
+                        ),
+                        top: clamp(
+                          enemy.y - enemy.radius - healthBarHeight - 8,
+                          2,
+                          ARENA_HEIGHT - healthBarHeight - 2,
+                        ),
+                        width: healthBarWidth,
+                      },
+                    ]}
+                  >
                     <View
                       style={[
-                        styles.enemyHealthBarOuter,
+                        styles.enemyHealthBarInner,
+                        isArenaBoss && styles.arenaBossHealthFill,
+                        isElite && styles.eliteEnemyHealthFill,
                         {
-                          left: enemy.x - 22,
-                          top: enemy.y - enemy.radius - 13,
-                          width: 44,
+                          width: `${Math.max(
+                            0,
+                            (enemy.health / enemy.maxHealth) * 100,
+                          )}%`,
                         },
                       ]}
+                    />
+                    <Text
+                      style={[
+                        styles.enemyHealthText,
+                        isArenaBoss && styles.arenaBossHealthText,
+                      ]}
                     >
-                      <View
-                        style={[
-                          styles.enemyHealthBarInner,
-                          {
-                            width: `${Math.max(
-                              0,
-                              (enemy.health / enemy.maxHealth) * 100,
-                            )}%`,
-                          },
-                        ]}
-                      />
-                      <Text style={styles.enemyHealthText}>
-                        {Math.ceil(enemy.health)}
-                      </Text>
-                    </View>
-                  )}
+                      {isArenaBoss
+                        ? `${bossConfig.name} · ${Math.ceil(enemy.health).toLocaleString()}`
+                        : Math.ceil(enemy.health)}
+                    </Text>
+                  </View>
 
                   <View
                     style={[
@@ -4918,23 +5429,17 @@ export function WildPawGame({
                         top: enemy.y - enemy.radius,
                         width: enemy.radius * 2,
                         height: enemy.radius * 2,
-                        opacity: 1,
-                        transform: [
-                          {
-                            rotate: `${entranceRotation + repositionRotation}rad`,
-                          },
-                        ],
+                        opacity: enemy.isBoss ? 1 : 0.88,
+                        transform: [{ rotate: `${entranceRotation}rad` }],
                       },
                     ]}
                   >
                     <Image
                       pointerEvents="none"
-                      source={getEnemyImageSource(enemy)}
+                      source={getEnemySpriteSource(enemy)}
                       style={[
                         styles.enemySprite,
-                        enemy.hitFlashTimer && enemy.hitFlashTimer > 0
-                          ? styles.hitFlashTint
-                          : undefined,
+                        isHitFlashOn && styles.enemyHitFlash,
                         {
                           transform: [{ scaleX: enemyFacing }],
                         },
@@ -4953,8 +5458,27 @@ export function WildPawGame({
               );
             })}
 
+            {game.enemyDeathEffects.map((effect) => (
+              <Image
+                key={effect.id}
+                pointerEvents="none"
+                source={getRemoteAssetSource(effect.imageAsset)}
+                contentFit="contain"
+                style={[
+                  styles.enemyDeathSprite,
+                  {
+                    left: effect.x - effect.radius,
+                    top: effect.y - effect.radius,
+                    width: effect.radius * 2,
+                    height: effect.radius * 2,
+                    opacity: effect.life / ENEMY_DEATH_FADE_DURATION,
+                  },
+                ]}
+              />
+            ))}
+
             {game.itemDrops.map((drop) => {
-              const dropItemConfig = getConsumableDropConfig(drop.kind);
+              const dropItemConfig = dropConfig[drop.kind];
               const dropAge = Math.max(
                 0,
                 dropItemConfig.stayDurationSeconds +
@@ -4987,13 +5511,11 @@ export function WildPawGame({
                 drop.kind === "rapidFire" ||
                 drop.kind === "highDamage";
               const dropBorderStyle =
-                drop.kind === "chest"
-                  ? styles.chestDropBorder
-                  : drop.kind === "heart"
-                    ? null
-                    : isBuffDrop
-                      ? styles.buffDropBorder
-                      : styles.consumableDropBorder;
+                drop.kind === "heart"
+                  ? null
+                  : isBuffDrop
+                    ? styles.buffDropBorder
+                    : styles.consumableDropBorder;
 
               return (
                 <View
@@ -5012,15 +5534,18 @@ export function WildPawGame({
                     },
                   ]}
                 >
-                  {drop.kind === "chest" ? (
+                  {drop.kind === "grenade" ? (
                     <Image
-                      source={bossChestImage}
+                      source={bombImage}
                       contentFit="contain"
                       style={styles.consumableDropImage}
-                      accessibilityLabel="Boss reward chest"
                     />
-                  ) : drop.kind === "grenade" ? (
-                    <Text style={styles.grenadeDropIcon}>💣</Text>
+                  ) : drop.kind === "chest" ? (
+                    <Image
+                      source={chestImage}
+                      contentFit="contain"
+                      style={styles.consumableDropImage}
+                    />
                   ) : drop.kind === "rapidFire" ? (
                     <Image
                       source={bulletImage}
@@ -5103,8 +5628,8 @@ export function WildPawGame({
                   styles.orbCompanion,
                   {
                     left:
-                      getOrbPosition(game.player, ghostAnimationTime).x - 16,
-                    top: getOrbPosition(game.player, ghostAnimationTime).y - 16,
+                      getOrbPosition(game.player, ghostAnimationTime).x - 10,
+                    top: getOrbPosition(game.player, ghostAnimationTime).y - 10,
                   },
                 ]}
               />
@@ -5119,9 +5644,9 @@ export function WildPawGame({
                   styles.buddyCompanion,
                   {
                     left:
-                      getBuddyPosition(game.player, ghostAnimationTime).x - 16,
+                      getBuddyPosition(game.player, ghostAnimationTime).x - 12,
                     top:
-                      getBuddyPosition(game.player, ghostAnimationTime).y - 16,
+                      getBuddyPosition(game.player, ghostAnimationTime).y - 12,
                     transform: [
                       {
                         translateY: Math.sin(ghostAnimationTime * 8) * 1.5,
@@ -5136,10 +5661,10 @@ export function WildPawGame({
               style={[
                 styles.player,
                 {
-                  left: game.player.x - game.player.radius,
-                  top: game.player.y - game.player.radius,
-                  width: game.player.radius * 2,
-                  height: game.player.radius * 2,
+                  left: game.player.x - game.player.radius * 1.3,
+                  top: game.player.y - game.player.radius * 1.3,
+                  width: game.player.radius * 2.6,
+                  height: game.player.radius * 2.6,
                   shadowColor: game.player.skinColor,
                   opacity: game.player.isDead ? 0.45 : 1,
                 },
@@ -5152,15 +5677,30 @@ export function WildPawGame({
                 source={getSkinImage(game.player.hero, game.player.skinId)}
                 style={[
                   styles.playerImage,
-                  game.player.hitFlashTimer > 0 && styles.hitFlashTint,
+                  game.player.hitFlashTimer > 0 &&
+                    Math.floor(game.player.hitFlashTimer * 24) % 2 === 0 &&
+                    styles.playerHitFlash,
+                  {
+                    transform: [
+                      { scaleX: game.player.visualFacing > 0 ? -1 : 1 },
+                    ],
+                  },
                 ]}
                 contentFit="contain"
               />
               <View
                 pointerEvents="none"
                 style={[
-                  styles.playerAimIndicator,
+                  styles.playerAimArrow,
                   {
+                    left:
+                      game.player.radius * 1.3 +
+                      hostAimDirection.x * game.player.radius * 1.35 -
+                      5,
+                    top:
+                      game.player.radius * 1.3 +
+                      hostAimDirection.y * game.player.radius * 1.35 -
+                      6,
                     transform: [
                       {
                         rotate: `${Math.atan2(hostAimDirection.y, hostAimDirection.x)}rad`,
@@ -5169,7 +5709,6 @@ export function WildPawGame({
                   },
                 ]}
               />
-              <View style={styles.playerFacing} />
             </View>
 
             {game.player.isDead && (
@@ -5221,10 +5760,10 @@ export function WildPawGame({
                       {
                         left:
                           getOrbPosition(game.joinPlayer, ghostAnimationTime)
-                            .x - 16,
+                            .x - 10,
                         top:
                           getOrbPosition(game.joinPlayer, ghostAnimationTime)
-                            .y - 16,
+                            .y - 10,
                       },
                     ]}
                   />
@@ -5239,10 +5778,10 @@ export function WildPawGame({
                       {
                         left:
                           getBuddyPosition(game.joinPlayer, ghostAnimationTime)
-                            .x - 16,
+                            .x - 12,
                         top:
                           getBuddyPosition(game.joinPlayer, ghostAnimationTime)
-                            .y - 16,
+                            .y - 12,
                         transform: [
                           {
                             translateY:
@@ -5257,10 +5796,10 @@ export function WildPawGame({
                   style={[
                     styles.player,
                     {
-                      left: game.joinPlayer.x - game.joinPlayer.radius,
-                      top: game.joinPlayer.y - game.joinPlayer.radius,
-                      width: game.joinPlayer.radius * 2,
-                      height: game.joinPlayer.radius * 2,
+                      left: game.joinPlayer.x - game.joinPlayer.radius * 1.3,
+                      top: game.joinPlayer.y - game.joinPlayer.radius * 1.3,
+                      width: game.joinPlayer.radius * 2.6,
+                      height: game.joinPlayer.radius * 2.6,
                       shadowColor: game.joinPlayer.skinColor,
                       opacity: game.joinPlayer.isDead ? 0.45 : 1,
                     },
@@ -5276,15 +5815,33 @@ export function WildPawGame({
                     )}
                     style={[
                       styles.playerImage,
-                      game.joinPlayer.hitFlashTimer > 0 && styles.hitFlashTint,
+                      game.joinPlayer.hitFlashTimer > 0 &&
+                        Math.floor(game.joinPlayer.hitFlashTimer * 24) % 2 ===
+                          0 &&
+                        styles.playerHitFlash,
+                      {
+                        transform: [
+                          {
+                            scaleX: game.joinPlayer.visualFacing > 0 ? -1 : 1,
+                          },
+                        ],
+                      },
                     ]}
                     contentFit="contain"
                   />
                   <View
                     pointerEvents="none"
                     style={[
-                      styles.playerAimIndicator,
+                      styles.playerAimArrow,
                       {
+                        left:
+                          game.joinPlayer.radius * 1.3 +
+                          joinAimDirection.x * game.joinPlayer.radius * 1.35 -
+                          5,
+                        top:
+                          game.joinPlayer.radius * 1.3 +
+                          joinAimDirection.y * game.joinPlayer.radius * 1.35 -
+                          6,
                         transform: [
                           {
                             rotate: `${Math.atan2(joinAimDirection.y, joinAimDirection.x)}rad`,
@@ -5293,7 +5850,6 @@ export function WildPawGame({
                       },
                     ]}
                   />
-                  <View style={styles.playerFacing} />
                 </View>
               </>
             )}
@@ -5795,20 +6351,7 @@ export function WildPawGame({
               <View style={styles.actionStack}>
                 <View style={styles.actionTopRow}>
                   <GestureDetector gesture={fireHoldGesture}>
-                    <View
-                      style={[
-                        styles.fireButton,
-                        selectedWeapon === "gun"
-                          ? styles.fireButtonGunSelected
-                          : styles.fireButtonBombSelected,
-                      ]}
-                    >
-                      <Image
-                        pointerEvents="none"
-                        source={actionItemBorderImage}
-                        contentFit="contain"
-                        style={styles.actionItemBorder}
-                      />
+                    <View style={styles.fireButton}>
                       {selectedWeapon === "gun" ? (
                         <Image
                           pointerEvents="none"
@@ -5817,15 +6360,12 @@ export function WildPawGame({
                           style={styles.fireButtonBackgroundIcon}
                         />
                       ) : (
-                        <Text
+                        <Image
                           pointerEvents="none"
-                          style={[
-                            styles.fireButtonBackgroundIcon,
-                            styles.fireButtonBombIcon,
-                          ]}
-                        >
-                          💣
-                        </Text>
+                          source={bombImage}
+                          contentFit="contain"
+                          style={styles.fireButtonBackgroundIcon}
+                        />
                       )}
                       <Text
                         pointerEvents="none"
@@ -5858,12 +6398,6 @@ export function WildPawGame({
                       ]}
                     >
                       <Image
-                        pointerEvents="none"
-                        source={actionItemBorderImage}
-                        contentFit="contain"
-                        style={styles.actionItemBorder}
-                      />
-                      <Image
                         source={bulletImage}
                         contentFit="contain"
                         style={styles.gunButtonIcon}
@@ -5885,18 +6419,16 @@ export function WildPawGame({
                         styles.weaponButton,
                         styles.actionCircleButton,
                         selectedWeapon === "grenade" &&
-                          styles.grenadeButtonSelected,
+                          styles.weaponButtonSelected,
                         localPlayer.grenades <= 0 &&
                           styles.weaponButtonDisabled,
                       ]}
                     >
                       <Image
-                        pointerEvents="none"
-                        source={actionItemBorderImage}
+                        source={bombImage}
                         contentFit="contain"
-                        style={styles.actionItemBorder}
+                        style={styles.grenadeButtonIcon}
                       />
-                      <Text style={styles.grenadeButtonIcon}>💣</Text>
                       <View pointerEvents="none" style={styles.itemCountBadge}>
                         <Text style={styles.itemCountBadgeText}>
                           x{localPlayer.grenades}
@@ -5916,12 +6448,6 @@ export function WildPawGame({
                         localPlayer.heals <= 0 && styles.weaponButtonDisabled,
                       ]}
                     >
-                      <Image
-                        pointerEvents="none"
-                        source={actionItemBorderImage}
-                        contentFit="contain"
-                        style={styles.actionItemBorder}
-                      />
                       <Image
                         source={heartImage}
                         contentFit="contain"
@@ -5954,12 +6480,6 @@ export function WildPawGame({
                           styles.dashButtonDisabled,
                       ]}
                     >
-                      <Image
-                        pointerEvents="none"
-                        source={actionItemBorderImage}
-                        contentFit="contain"
-                        style={styles.actionItemBorder}
-                      />
                       <View
                         pointerEvents="none"
                         style={styles.dashCooldownFillTrack}
@@ -6031,192 +6551,183 @@ export function WildPawGame({
               )}
             </View>
           )}
-        {game.powerUpChoices.length > 0 &&
-          game.warpPending &&
-          game.isRunning && (
-            <View style={styles.powerUpOverlay}>
-              <View style={styles.powerUpBackdrop}>
-                <View
-                  style={[
-                    styles.powerUpPanel,
-                    height < 440 && styles.powerUpPanelCompact,
-                  ]}
-                >
-                  <Text style={styles.powerUpEyebrow}>
-                    WAVE {game.wave - 1} CLEARED · TEAM POWER-UP
-                  </Text>
-                  <Text style={styles.powerUpTitle}>Choose your upgrade</Text>
+        {game.powerUpChoices.length > 0 && game.isRunning && (
+          <View style={styles.powerUpOverlay}>
+            <View style={styles.powerUpBackdrop}>
+              <View
+                style={[
+                  styles.powerUpPanel,
+                  height < 440 && styles.powerUpPanelCompact,
+                ]}
+              >
+                <Text style={styles.powerUpEyebrow}>
+                  CHEST REWARD · TEAM POWER-UP
+                </Text>
+                <Text style={styles.powerUpTitle}>Choose your upgrade</Text>
 
-                  <View style={styles.powerUpCards}>
-                    {game.powerUpChoices.map((choice, index) => {
-                      const isSelected = selectedPowerUp?.id === choice.id;
-                      const currentStats = getPreviewStats(localPlayer, null);
-                      const projectedStats = getPreviewStats(
-                        localPlayer,
-                        choice,
-                      );
-                      return (
-                        <Pressable
-                          key={choice.id}
-                          accessibilityRole="button"
-                          accessibilityState={{ selected: isSelected }}
-                          accessibilityLabel={`${choice.name}, ${choice.description}, ${getPowerUpBonusText(choice)}`}
-                          onPress={() =>
-                            setPowerUpSelection({
-                              choiceKey: powerUpChoiceKey,
-                              id: choice.id,
-                            })
-                          }
-                          style={[
-                            styles.powerUpCard,
-                            height < 440 && styles.powerUpCardCompact,
-                            isSelected && styles.powerUpCardSelected,
-                          ]}
-                        >
-                          <Text style={styles.powerUpCardIndex}>
-                            POWER-UP {index + 1}
+                <View style={styles.powerUpCards}>
+                  {game.powerUpChoices.map((choice, index) => {
+                    const isSelected = selectedPowerUp?.id === choice.id;
+                    const currentStats = getPreviewStats(localPlayer, null);
+                    const projectedStats = getPreviewStats(localPlayer, choice);
+                    return (
+                      <Pressable
+                        key={choice.id}
+                        accessibilityRole="button"
+                        accessibilityState={{ selected: isSelected }}
+                        accessibilityLabel={`${choice.name}, ${choice.description}, ${getPowerUpBonusText(choice)}`}
+                        onPress={() =>
+                          setPowerUpSelection({
+                            choiceKey: powerUpChoiceKey,
+                            id: choice.id,
+                          })
+                        }
+                        style={[
+                          styles.powerUpCard,
+                          height < 440 && styles.powerUpCardCompact,
+                          isSelected && styles.powerUpCardSelected,
+                        ]}
+                      >
+                        <Text style={styles.powerUpCardIndex}>
+                          POWER-UP {index + 1}
+                        </Text>
+                        <Text numberOfLines={1} style={styles.powerUpCardTitle}>
+                          {choice.name}
+                        </Text>
+                        <Text style={styles.powerUpCardBonus}>
+                          {getPowerUpBonusText(choice)}
+                        </Text>
+                        {isSelected && (
+                          <Text style={styles.powerUpPreviewLabel}>
+                            SELECTED
                           </Text>
-                          <Text
-                            numberOfLines={1}
-                            style={styles.powerUpCardTitle}
-                          >
-                            {choice.name}
-                          </Text>
-                          <Text style={styles.powerUpCardBonus}>
-                            {getPowerUpBonusText(choice)}
-                          </Text>
-                          {isSelected && (
-                            <Text style={styles.powerUpPreviewLabel}>
-                              SELECTED
+                        )}
+
+                        <View style={styles.powerUpCardStats}>
+                          <View style={styles.powerUpCardStatsHeader}>
+                            <Text
+                              style={[
+                                styles.powerUpCardStatHeading,
+                                styles.powerUpCardStatName,
+                              ]}
+                            >
+                              STAT
                             </Text>
-                          )}
-
-                          <View style={styles.powerUpCardStats}>
-                            <View style={styles.powerUpCardStatsHeader}>
-                              <Text
-                                style={[
-                                  styles.powerUpCardStatHeading,
-                                  styles.powerUpCardStatName,
-                                ]}
-                              >
-                                STAT
+                            <Text style={styles.powerUpCardStatHeading}>
+                              CURRENT → NEW
+                            </Text>
+                            <Text
+                              style={[
+                                styles.powerUpCardStatHeading,
+                                styles.powerUpCardStatBonus,
+                              ]}
+                            >
+                              BONUS
+                            </Text>
+                          </View>
+                          {[
+                            {
+                              title: "BASE STATS",
+                              labels: ["MAX HEALTH", "DAMAGE", "DEFENSE"],
+                            },
+                            {
+                              title: "ADVANCED STATS",
+                              labels: ["FIRE RATE", "SPEED", "CRIT"],
+                            },
+                          ].map((section) => (
+                            <View key={section.title}>
+                              <Text style={styles.powerUpCardSectionTitle}>
+                                {section.title}
                               </Text>
-                              <Text style={styles.powerUpCardStatHeading}>
-                                CURRENT → NEW
-                              </Text>
-                              <Text
-                                style={[
-                                  styles.powerUpCardStatHeading,
-                                  styles.powerUpCardStatBonus,
-                                ]}
-                              >
-                                BONUS
-                              </Text>
-                            </View>
-                            {[
-                              {
-                                title: "BASE STATS",
-                                labels: ["MAX HEALTH", "DAMAGE", "DEFENSE"],
-                              },
-                              {
-                                title: "ADVANCED STATS",
-                                labels: ["FIRE RATE", "SPEED", "CRIT"],
-                              },
-                            ].map((section) => (
-                              <View key={section.title}>
-                                <Text style={styles.powerUpCardSectionTitle}>
-                                  {section.title}
-                                </Text>
-                                {section.labels.map((label, rowIndex) => {
-                                  const current = currentStats.find(
-                                    (stat) => stat.label === label,
-                                  );
-                                  const projected = projectedStats.find(
-                                    (stat) => stat.label === label,
-                                  );
-                                  if (!current || !projected) return null;
-                                  const bonus = getPowerUpStatBonus(
-                                    localPlayer,
-                                    choice,
-                                    label,
-                                  );
-                                  return (
-                                    <View
-                                      key={label}
+                              {section.labels.map((label, rowIndex) => {
+                                const current = currentStats.find(
+                                  (stat) => stat.label === label,
+                                );
+                                const projected = projectedStats.find(
+                                  (stat) => stat.label === label,
+                                );
+                                if (!current || !projected) return null;
+                                const bonus = getPowerUpStatBonus(
+                                  localPlayer,
+                                  choice,
+                                  label,
+                                );
+                                return (
+                                  <View
+                                    key={label}
+                                    style={[
+                                      styles.powerUpCardStatRow,
+                                      rowIndex % 2 === 0 &&
+                                        styles.powerUpStatRowAlternate,
+                                    ]}
+                                  >
+                                    <Text
+                                      numberOfLines={1}
                                       style={[
-                                        styles.powerUpCardStatRow,
-                                        rowIndex % 2 === 0 &&
-                                          styles.powerUpStatRowAlternate,
+                                        styles.powerUpCardStatName,
+                                        styles.powerUpStatLabel,
                                       ]}
                                     >
-                                      <Text
-                                        numberOfLines={1}
-                                        style={[
-                                          styles.powerUpCardStatName,
-                                          styles.powerUpStatLabel,
-                                        ]}
-                                      >
-                                        {label}
-                                      </Text>
-                                      <Text
-                                        numberOfLines={1}
-                                        style={styles.powerUpCardStatCurrent}
-                                      >
-                                        {current.value} → {projected.value}
-                                      </Text>
-                                      <Text
-                                        style={[
-                                          styles.powerUpStatBonus,
-                                          styles.powerUpCardStatBonus,
-                                          bonus === "—" &&
-                                            styles.powerUpStatBonusEmpty,
-                                        ]}
-                                      >
-                                        {bonus}
-                                      </Text>
-                                    </View>
-                                  );
-                                })}
-                              </View>
-                            ))}
-                          </View>
-                        </Pressable>
-                      );
-                    })}
-                  </View>
-
-                  <Text style={styles.powerUpTeamNote}>
-                    The selected upgrade applies to both players in co-op.
-                  </Text>
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityState={{ disabled: !selectedPowerUp }}
-                    disabled={!selectedPowerUp}
-                    onPress={() =>
-                      selectedPowerUp &&
-                      confirmPowerUpSelection(selectedPowerUp)
-                    }
-                    style={[
-                      styles.powerUpConfirmButton,
-                      !selectedPowerUp && styles.powerUpConfirmButtonDisabled,
-                    ]}
-                  >
-                    <Text style={styles.powerUpConfirmText}>
-                      {multiplayerRole === "join"
-                        ? "CHOOSE FOR TEAM & WARP"
-                        : "CHOOSE & CONTINUE TO WARP"}
-                    </Text>
-                  </Pressable>
+                                      {label}
+                                    </Text>
+                                    <Text
+                                      numberOfLines={1}
+                                      style={styles.powerUpCardStatCurrent}
+                                    >
+                                      {current.value} → {projected.value}
+                                    </Text>
+                                    <Text
+                                      style={[
+                                        styles.powerUpStatBonus,
+                                        styles.powerUpCardStatBonus,
+                                        bonus === "—" &&
+                                          styles.powerUpStatBonusEmpty,
+                                      ]}
+                                    >
+                                      {bonus}
+                                    </Text>
+                                  </View>
+                                );
+                              })}
+                            </View>
+                          ))}
+                        </View>
+                      </Pressable>
+                    );
+                  })}
                 </View>
+
+                <Text style={styles.powerUpTeamNote}>
+                  The selected upgrade applies to both players in co-op.
+                </Text>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityState={{ disabled: !selectedPowerUp }}
+                  disabled={!selectedPowerUp}
+                  onPress={() =>
+                    selectedPowerUp && confirmPowerUpSelection(selectedPowerUp)
+                  }
+                  style={[
+                    styles.powerUpConfirmButton,
+                    !selectedPowerUp && styles.powerUpConfirmButtonDisabled,
+                  ]}
+                >
+                  <Text style={styles.powerUpConfirmText}>
+                    {multiplayerRole === "join"
+                      ? "CHOOSE FOR TEAM"
+                      : "CHOOSE POWER-UP"}
+                  </Text>
+                </Pressable>
               </View>
             </View>
-          )}
-        {game.warpFadeTimer > 0 && game.isRunning && (
+          </View>
+        )}
+        {game.warpTransitionTimer > 0 && game.isRunning && (
           <View
             pointerEvents="none"
             style={[
               styles.warpTransitionOverlay,
-              { opacity: getWarpFadeOpacity(game.warpFadeTimer) },
+              { opacity: getWarpFadeOpacity(game.warpTransitionTimer) },
             ]}
           />
         )}
@@ -6314,10 +6825,6 @@ const styles = StyleSheet.create({
     fontSize: 14,
     paddingVertical: 10,
   },
-  lobbyConnectionError: {
-    color: "#fca5a5",
-    fontWeight: "800",
-  },
   lobbyPlayerRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -6400,6 +6907,94 @@ const styles = StyleSheet.create({
     ...StyleSheet.absoluteFill,
     alignItems: "center",
     justifyContent: "center",
+    zIndex: 1,
+  },
+  arena: {
+    position: "relative",
+    width: ARENA_WIDTH,
+    height: ARENA_HEIGHT,
+    backgroundColor: "transparent",
+    borderRadius: 0,
+    borderWidth: 0,
+    borderColor: "#2b5d46",
+    overflow: "hidden",
+    shadowColor: "#000",
+    shadowOpacity: 0,
+    shadowRadius: 0,
+    shadowOffset: { width: 0, height: 0 },
+  },
+  player: {
+    position: "absolute",
+    justifyContent: "center",
+    alignItems: "center",
+    overflow: "visible",
+  },
+  playerImage: {
+    width: "100%",
+    height: "100%",
+  },
+  playerHitFlash: {
+    tintColor: "#ef4444",
+  },
+  playerAimArrow: {
+    position: "absolute",
+    width: 0,
+    height: 0,
+    borderTopWidth: 6,
+    borderBottomWidth: 6,
+    borderLeftWidth: 10,
+    borderTopColor: "transparent",
+    borderBottomColor: "transparent",
+    borderLeftColor: "#fef3c7",
+    zIndex: 3,
+  },
+  playerGhost: {
+    position: "absolute",
+    width: GHOST_SIZE,
+    height: GHOST_SIZE,
+    opacity: 0.95,
+    zIndex: 5,
+  },
+  playerDownLabel: {
+    position: "absolute",
+    zIndex: 6,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 999,
+    backgroundColor: "rgba(127, 29, 29, 0.95)",
+    color: "#fff",
+    fontSize: 9,
+    fontWeight: "900",
+    letterSpacing: 0.6,
+  },
+  reviveTimerLabel: {
+    position: "absolute",
+    zIndex: 7,
+    minWidth: 42,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderRadius: 999,
+    backgroundColor: "rgba(22, 101, 52, 0.95)",
+    color: "#fff",
+    fontSize: 11,
+    fontWeight: "900",
+    textAlign: "center",
+  },
+  orbCompanion: {
+    position: "absolute",
+    width: 20,
+    height: 20,
+    zIndex: 2,
+  },
+  buddyCompanion: {
+    position: "absolute",
+    width: 24,
+    height: 24,
+    zIndex: 2,
+  },
+  orbLaser: {
+    position: "absolute",
+    height: 14,
     zIndex: 1,
   },
   hud: {
@@ -6749,18 +7344,18 @@ const styles = StyleSheet.create({
   },
   bossBarWrap: {
     position: "absolute",
-    top: 2,
-    left: "30%",
-    right: "30%",
+    top: 12,
+    left: "25%",
+    right: "25%",
     alignItems: "center",
     zIndex: 18,
   },
   bossLabel: {
-    color: "#fff1f2",
-    fontSize: 8,
+    color: "#ef4444",
+    fontSize: 11,
     fontWeight: "900",
-    marginBottom: 1,
-    letterSpacing: 0.8,
+    marginBottom: 4,
+    letterSpacing: 1.2,
     textTransform: "uppercase",
     textShadowColor: "rgba(0,0,0,0.9)",
     textShadowOffset: { width: 0, height: 2 },
@@ -6768,11 +7363,11 @@ const styles = StyleSheet.create({
   },
   bossBarOuter: {
     width: "100%",
-    height: 6,
+    height: 13,
     backgroundColor: "rgba(15, 23, 42, 0.92)",
     borderRadius: 999,
     overflow: "hidden",
-    borderWidth: 1,
+    borderWidth: 1.5,
     borderColor: "#fb7185",
   },
   bossBarInner: {
@@ -6780,30 +7375,71 @@ const styles = StyleSheet.create({
     backgroundColor: "#ef4444",
   },
   bossHealthText: {
-    marginTop: 0,
+    marginTop: 2,
     color: "#ffe4e6",
-    fontSize: 6,
+    fontSize: 8,
     fontWeight: "900",
     textShadowColor: "rgba(0,0,0,0.9)",
     textShadowRadius: 3,
   },
-  bossWarningMarker: {
-    position: "absolute",
-    width: 60,
-    height: 88,
+  bossWarningOverlay: {
+    ...StyleSheet.absoluteFill,
     alignItems: "center",
     justifyContent: "center",
+    paddingHorizontal: 18,
+    backgroundColor: "transparent",
     zIndex: 25,
   },
-  bossWarningMark: {
-    color: "#ff172a",
-    fontSize: 76,
-    lineHeight: 84,
+  bossWarningMarker: {
+    position: "absolute",
+    color: "#ef4444",
+    fontSize: 44,
     fontWeight: "900",
+    lineHeight: 44,
     textAlign: "center",
-    textShadowColor: "#7f1d1d",
-    textShadowOffset: { width: 0, height: 4 },
-    textShadowRadius: 15,
+    textShadowColor: "rgba(0, 0, 0, 0.9)",
+    textShadowOffset: { width: 0, height: 2 },
+    textShadowRadius: 8,
+  },
+  bossWarningEyebrow: {
+    color: "#fecdd3",
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 2,
+  },
+  bossWarningTitle: {
+    marginTop: 4,
+    color: "#fff",
+    fontSize: 30,
+    fontWeight: "900",
+    letterSpacing: 1.5,
+    textAlign: "center",
+    textShadowColor: "#dc2626",
+    textShadowOffset: { width: 0, height: 2 },
+    textShadowRadius: 12,
+  },
+  bossWarningName: {
+    marginTop: 3,
+    color: "#ef4444",
+    fontSize: 18,
+    fontWeight: "900",
+    letterSpacing: 1,
+    textAlign: "center",
+  },
+  bossWarningCountdown: {
+    marginTop: 2,
+    color: "#fff",
+    fontSize: 42,
+    fontWeight: "900",
+    textShadowColor: "rgba(0, 0, 0, 0.9)",
+    textShadowOffset: { width: 0, height: 2 },
+    textShadowRadius: 8,
+  },
+  bossWarningHint: {
+    color: "#ffe4e6",
+    fontSize: 9,
+    fontWeight: "900",
+    letterSpacing: 2,
   },
   bossTelegraphLayer: {
     ...StyleSheet.absoluteFill,
@@ -6849,7 +7485,7 @@ const styles = StyleSheet.create({
     borderWidth: 3,
     borderColor: "#fff1f2",
     shadowOpacity: 0.95,
-    shadowRadius: 14,
+    shadowRadius: 24,
     zIndex: 12,
   },
   arenaBossEnemy: {
@@ -6860,141 +7496,22 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 0 },
     elevation: 12,
   },
-  arenaBossImage: {
-    ...StyleSheet.absoluteFill,
-    width: "100%",
-    height: "100%",
-  },
-  arenaBossFallback: {
-    color: "#fff1f2",
-    fontSize: 46,
-    fontWeight: "900",
-    textShadowColor: "rgba(0,0,0,0.8)",
-    textShadowRadius: 8,
-  },
   arenaBossHealthBar: {
     height: 12,
-    borderColor: "#fb7185",
+    borderColor: "#a855f7",
     zIndex: 10,
   },
   arenaBossHealthFill: {
-    backgroundColor: "#e11d48",
+    backgroundColor: "#9333ea",
   },
-  badge: {
-    color: "#a7f3d0",
-    fontSize: 12,
-    fontWeight: "700",
-    letterSpacing: 1.2,
-    textTransform: "uppercase",
+  arenaBossHealthText: {
+    color: "#ef4444",
   },
-  arena: {
-    position: "relative",
-    width: ARENA_WIDTH,
-    height: ARENA_HEIGHT,
-    backgroundColor: "transparent",
-    borderRadius: 0,
-    borderWidth: 0,
-    borderColor: "#2b5d46",
-    overflow: "hidden",
-    shadowColor: "#000",
-    shadowOpacity: 0,
-    shadowRadius: 0,
-    shadowOffset: { width: 0, height: 0 },
+  eliteEnemyHealthBar: {
+    borderColor: "#c2410c",
   },
-  player: {
-    position: "absolute",
-    borderRadius: 999,
-    borderWidth: 2,
-    borderColor: "rgba(236, 254, 255, 0.9)",
-    justifyContent: "center",
-    alignItems: "center",
-    backgroundColor: "rgba(255, 255, 255, 0.12)",
-    shadowOpacity: 0.45,
-    shadowRadius: 18,
-    shadowOffset: { width: 0, height: 0 },
-    overflow: "visible",
-  },
-  orbCompanion: {
-    position: "absolute",
-    width: 32,
-    height: 32,
-    zIndex: 2,
-  },
-  buddyCompanion: {
-    position: "absolute",
-    width: 32,
-    height: 32,
-    zIndex: 2,
-  },
-  orbLaser: {
-    position: "absolute",
-    height: 14,
-    zIndex: 1,
-  },
-  playerImage: {
-    width: "100%",
-    height: "100%",
-    borderRadius: 999,
-  },
-  hitFlashTint: {
-    tintColor: "#ef4444",
-  },
-  playerAimIndicator: {
-    position: "absolute",
-    width: 22,
-    height: 3,
-    borderRadius: 999,
-    backgroundColor: "#fef3c7",
-    left: "50%",
-    top: "50%",
-    marginLeft: -2,
-    marginTop: -1.5,
-    transformOrigin: "left center",
-    shadowColor: "#fef3c7",
-    shadowOpacity: 0.9,
-    shadowRadius: 6,
-  },
-  playerFacing: {
-    position: "absolute",
-    width: 12,
-    height: 12,
-    backgroundColor: "#fef3c7",
-    borderRadius: 999,
-    right: -6,
-    top: "50%",
-    marginTop: -6,
-  },
-  playerGhost: {
-    position: "absolute",
-    width: GHOST_SIZE,
-    height: GHOST_SIZE,
-    opacity: 0.95,
-    zIndex: 5,
-  },
-  playerDownLabel: {
-    position: "absolute",
-    zIndex: 6,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 999,
-    backgroundColor: "rgba(127, 29, 29, 0.95)",
-    color: "#fff",
-    fontSize: 9,
-    fontWeight: "900",
-    letterSpacing: 0.6,
-  },
-  reviveTimerLabel: {
-    position: "absolute",
-    zIndex: 7,
-    minWidth: 42,
-    paddingHorizontal: 7,
-    paddingVertical: 3,
-    borderRadius: 999,
-    backgroundColor: "rgba(22, 101, 52, 0.95)",
-    color: "#fff",
-    fontSize: 11,
-    fontWeight: "900",
-    textAlign: "center",
+  eliteEnemyHealthFill: {
+    backgroundColor: "#f97316",
   },
   enemy: {
     position: "absolute",
@@ -7011,13 +7528,12 @@ const styles = StyleSheet.create({
     width: "100%",
     height: "100%",
   },
-  bossAreaImpactImage: {
+  enemyDeathSprite: {
     position: "absolute",
-    zIndex: 11,
+    zIndex: 5,
   },
-  bossProjectileImage: {
-    position: "absolute",
-    zIndex: 12,
+  enemyHitFlash: {
+    tintColor: "#ef4444",
   },
   enemyHealthText: {
     position: "absolute",
@@ -7092,20 +7608,8 @@ const styles = StyleSheet.create({
   consumableDropBorder: {
     borderColor: "#4ade80",
   },
-  chestDropBorder: {
-    borderWidth: 2,
-    borderColor: "#facc15",
-    backgroundColor: "rgba(120, 53, 15, 0.88)",
-    shadowColor: "#facc15",
-    shadowOpacity: 0.9,
-    shadowRadius: 12,
-  },
   buffDropBorder: {
     borderColor: "#60a5fa",
-  },
-  grenadeDropIcon: {
-    fontSize: 15,
-    lineHeight: 18,
   },
   rapidFireDropBadge: {
     position: "absolute",
@@ -7152,9 +7656,23 @@ const styles = StyleSheet.create({
     textShadowRadius: 3,
   },
   healNumber: {
+    left: 0,
+    right: 0,
+    top: 0,
+    bottom: 0,
+    width: "100%",
+    height: "100%",
     color: "#4ade80",
     textShadowColor: "rgba(0, 0, 0, 0.95)",
     textShadowRadius: 6,
+  },
+  bossAreaImpactImage: {
+    position: "absolute",
+    zIndex: 11,
+  },
+  bossProjectileImage: {
+    position: "absolute",
+    zIndex: 12,
   },
   consumablePickupNumber: {
     width: 152,
@@ -7529,27 +8047,13 @@ const styles = StyleSheet.create({
   },
   bullet: {
     position: "absolute",
-    width: 10,
-    height: 10,
-    borderRadius: 999,
-    backgroundColor: "#ff2bd6",
-    borderWidth: 2,
-    borderColor: "#fff",
-    shadowColor: "#ff2bd6",
-    shadowOpacity: 0.9,
-    shadowRadius: 8,
+    width: 24,
+    height: 18,
   },
   grenadeProjectile: {
     position: "absolute",
-    width: 18,
-    height: 18,
-    borderRadius: 999,
-    backgroundColor: "#ff8c00",
-    borderWidth: 2,
-    borderColor: "#fff",
-    shadowColor: "#ff4500",
-    shadowOpacity: 1,
-    shadowRadius: 10,
+    width: 24,
+    height: 24,
     zIndex: 4,
   },
   grenadeExplosion: {
@@ -7703,46 +8207,19 @@ const styles = StyleSheet.create({
     width: 84,
     height: 84,
     borderRadius: 999,
-    borderWidth: 0,
-    borderColor: "transparent",
+    borderWidth: 2,
+    borderColor: "#7dd3fc",
     justifyContent: "center",
     alignItems: "center",
-  },
-  fireButtonGunSelected: {
-    shadowColor: "#38bdf8",
-    shadowOpacity: 0.95,
-    shadowRadius: 18,
-    shadowOffset: { width: 0, height: 0 },
-    elevation: 14,
-  },
-  fireButtonBombSelected: {
-    shadowColor: "#fb923c",
-    shadowOpacity: 0.95,
-    shadowRadius: 18,
-    shadowOffset: { width: 0, height: 0 },
-    elevation: 14,
-  },
-  actionItemBorder: {
-    position: "absolute",
-    left: "-6%",
-    top: 0,
-    width: "112%",
-    height: "100%",
-    zIndex: 0,
+    shadowColor: "#7dd3fc",
+    shadowOpacity: 0.18,
+    shadowRadius: 8,
   },
   fireButtonBackgroundIcon: {
     position: "absolute",
     width: 56,
     height: 56,
     opacity: 0.55,
-  },
-  fireButtonBombIcon: {
-    color: "#fff",
-    fontSize: 48,
-    lineHeight: 56,
-    textAlign: "center",
-    textShadowColor: "rgba(0, 0, 0, 0.8)",
-    textShadowRadius: 4,
   },
   fireButtonLabel: {
     position: "relative",
@@ -7795,16 +8272,14 @@ const styles = StyleSheet.create({
     minWidth: 54,
     paddingHorizontal: 0,
     borderRadius: 999,
-    borderWidth: 0,
-    borderColor: "transparent",
   },
   gunButtonIcon: {
     width: 32,
     height: 32,
   },
   grenadeButtonIcon: {
-    fontSize: 24,
-    lineHeight: 30,
+    width: 30,
+    height: 30,
   },
   healButtonIcon: {
     width: 30,
@@ -7831,20 +8306,9 @@ const styles = StyleSheet.create({
     fontWeight: "900",
   },
   weaponButtonSelected: {
-    backgroundColor: "rgba(14, 116, 144, 0.35)",
-    shadowColor: "#38bdf8",
-    shadowOpacity: 0.95,
-    shadowRadius: 13,
-    shadowOffset: { width: 0, height: 0 },
-    elevation: 12,
-  },
-  grenadeButtonSelected: {
-    backgroundColor: "rgba(154, 52, 18, 0.4)",
-    shadowColor: "#fb923c",
-    shadowOpacity: 0.95,
-    shadowRadius: 13,
-    shadowOffset: { width: 0, height: 0 },
-    elevation: 12,
+    backgroundColor: "rgba(71, 85, 105, 0.62)",
+    borderColor: "#4ade80",
+    borderWidth: 3,
   },
   weaponButtonDisabled: {
     opacity: 0.45,

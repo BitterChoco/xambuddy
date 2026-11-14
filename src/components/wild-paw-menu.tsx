@@ -4,11 +4,16 @@ import {
 } from "@/components/hero-selection-screen";
 import { MainMenuScreen } from "@/components/main-menu-screen";
 import { ProfileBorderOverlay } from "@/components/ui/profile-border-overlay";
+import { SoundPressable as Pressable } from "@/components/ui/sound-pressable";
 import { getBuddy } from "@/constants/buddy-catalog";
 import {
   getCoinBalance,
   subscribeToCoinBalance,
 } from "@/constants/coin-wallet";
+import {
+  getDiamondBalance,
+  subscribeToDiamondBalance,
+} from "@/constants/diamond-wallet";
 import {
   DEFAULT_HERO_ID,
   DEFAULT_PROFILE_BORDER,
@@ -44,7 +49,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Image } from "expo-image";
 import { router, useFocusEffect, type Href } from "expo-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import { StyleSheet, Text, TextInput, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 const heroes = HEROES;
@@ -70,6 +75,7 @@ function normalizeLocalHostAddress(value: string) {
 const buttonImage = getRemoteAssetSource("game/functions/button_1.png");
 const menuBackground = require("@/assets/images/background_1.png");
 const coinImage = getRemoteAssetSource("game/icons/coin_1.png");
+const diamondImage = getRemoteAssetSource("game/icons/diamond_1.png");
 const PROFILE_STORAGE_KEY = "wild-paw.player-profile";
 const shopImage = getRemoteAssetSource("game/icons/shop_1.png");
 const calendarImage = getRemoteAssetSource("game/icons/calendar_1.png");
@@ -88,6 +94,20 @@ function CoinBalanceBadge({ balance }: { balance: number }) {
         style={styles.coinBalanceIcon}
         contentFit="contain"
         accessibilityLabel="Coins"
+      />
+      <Text style={styles.coinBalanceText}>{balance.toLocaleString()}</Text>
+    </View>
+  );
+}
+
+function DiamondBalanceBadge({ balance }: { balance: number }) {
+  return (
+    <View style={[styles.coinBalanceBadge, styles.diamondBalanceBadge]}>
+      <Image
+        source={diamondImage}
+        style={styles.coinBalanceIcon}
+        contentFit="contain"
+        accessibilityLabel="Diamonds"
       />
       <Text style={styles.coinBalanceText}>{balance.toLocaleString()}</Text>
     </View>
@@ -309,6 +329,7 @@ export function WildPawMenu() {
   const [inventoryLoaded, setInventoryLoaded] = useState(false);
   const [selectionTab, setSelectionTab] = useState<HeroSelectionTab>("hero");
   const [coinBalance, setCoinBalance] = useState(0);
+  const [diamondBalance, setDiamondBalance] = useState(0);
   const [playerXp, setPlayerXp] = useState(0);
   const [profileName, setProfileName] = useState("Player 1");
   const [profilePicture, setProfilePicture] = useState<ProfilePictureId>(
@@ -338,6 +359,21 @@ export function WildPawMenu() {
         if (isMounted) {
           setCoinBalance(balance);
         }
+      })
+      .catch(() => undefined);
+
+    return () => {
+      isMounted = false;
+      unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    let isMounted = true;
+    const unsubscribe = subscribeToDiamondBalance(setDiamondBalance);
+    void getDiamondBalance()
+      .then((balance) => {
+        if (isMounted) setDiamondBalance(balance);
       })
       .catch(() => undefined);
 
@@ -415,7 +451,10 @@ export function WildPawMenu() {
             setMultiplayerName(savedName);
           }
           const savedPicture = parsed.picture ?? parsed.avatar;
-          if (isProfilePictureId(savedPicture)) {
+          if (
+            isProfilePictureId(savedPicture) &&
+            ownedInventory.profilePictures.includes(savedPicture)
+          ) {
             setProfilePicture(savedPicture);
           }
           if (
@@ -1025,6 +1064,7 @@ export function WildPawMenu() {
   const renderHeroSelector = () => (
     <HeroSelectionScreen
       coinBalance={coinBalance}
+      diamondBalance={diamondBalance}
       hero={hero}
       ownedHeroes={ownedHeroes}
       selectedHero={selectedHero}
@@ -1066,7 +1106,10 @@ export function WildPawMenu() {
             : renderHeroSelector()}
       {screen !== "hero" && (
         <View pointerEvents="box-none" style={styles.coinBalancePosition}>
-          <CoinBalanceBadge balance={coinBalance} />
+          <View style={styles.currencyBalanceGroup}>
+            <DiamondBalanceBadge balance={diamondBalance} />
+            <CoinBalanceBadge balance={coinBalance} />
+          </View>
           {screen === "main" && (
             <View style={styles.menuShortcutStack}>
               <View style={styles.menuShortcutGroup}>
@@ -1160,6 +1203,14 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(5, 18, 14, 0.9)",
     zIndex: 30,
   },
+  diamondBalanceBadge: {
+    borderColor: "rgba(103, 232, 249, 0.55)",
+  },
+  currencyBalanceGroup: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
   coinBalancePosition: {
     position: "absolute",
     top: 10,
@@ -1168,12 +1219,12 @@ const styles = StyleSheet.create({
     alignItems: "flex-end",
   },
   menuShortcutStack: {
-    alignItems: "center",
+    alignItems: "flex-end",
     gap: 8,
     marginTop: 10,
   },
   menuShortcutGroup: {
-    alignItems: "center",
+    alignItems: "flex-end",
     gap: 8,
   },
   menuShortcutTile: {

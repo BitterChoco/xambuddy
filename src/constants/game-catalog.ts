@@ -1,7 +1,7 @@
 import {
-  getRemoteAssetSource,
-  hasRemoteAsset,
-  readRemoteAssetJson,
+    getRemoteAssetSource,
+    hasRemoteAsset,
+    readRemoteAssetJson,
 } from "@/services/remote-assets";
 
 export type BundledImage =
@@ -22,6 +22,7 @@ export type ProfileBorderRecord = {
   id: string;
   name: string;
   image?: string | null;
+  rarity?: ItemRarity;
   color?: string;
   width?: number;
   source?: BundledImage;
@@ -131,6 +132,10 @@ export async function initializeRemoteGameCatalogs() {
     PROFILE_BORDERS.length,
     ...borders.items.map((border) => ({
       ...border,
+      rarity:
+        border.rarity && ITEM_RARITIES.includes(border.rarity)
+          ? border.rarity
+          : "common",
       source: border.image
         ? getRemoteAssetSource(`game/profile/border/${border.image}`)
         : undefined,
