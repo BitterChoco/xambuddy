@@ -22,9 +22,12 @@ import {
   type ProfilePictureId,
 } from "@/constants/player-profile";
 import {
+  DEFAULT_BATTLE_CONTROLS,
+  getBattleControlSettings,
   getSoundEffectsVolume,
   getVibrationEnabled,
   subscribeToSoundEffectsVolume,
+  type BattleControlSettings,
 } from "@/constants/player-settings";
 import {
   createMultiplayerSocket,
@@ -344,7 +347,8 @@ const GRENADE_MAX_RANGE = 280;
 const GRENADE_RANGE_DRAG_DISTANCE = 64;
 const DEFAULT_GRENADE_RANGE = 200;
 const MAX_ACTIVE_ENEMIES = 18;
-const WAVE_BREAK_DURATION = 60;
+const REGULAR_WAVE_COUNTDOWN_DURATION = 3;
+const BOSS_WAVE_COUNTDOWN_DURATION = 60;
 const REVIVE_DURATION = 5;
 const REVIVE_RANGE = 58;
 const REVIVE_HEALTH = 50;
@@ -477,6 +481,11 @@ const ENEMY_SPRITE_ASSETS = {
   ],
 } as const;
 const WAVES_PER_ARENA = 10;
+function getWaveCountdownDuration(wave: number) {
+  return wave % WAVES_PER_ARENA === 0
+    ? BOSS_WAVE_COUNTDOWN_DURATION
+    : REGULAR_WAVE_COUNTDOWN_DURATION;
+}
 const WARP_TRANSITION_DURATION = 5;
 const BOSS_WARNING_DURATION = 5;
 const BOSS_ENTRANCE_DURATION = 2.8;
@@ -1575,7 +1584,7 @@ function createInitialGame(
     score: 0,
     wave: 1,
     arenaBackgroundWave: 1,
-    waveCountdown: WAVE_BREAK_DURATION,
+    waveCountdown: getWaveCountdownDuration(1),
     warpTransitionTimer: 0,
     powerUpChoices: [],
     warpPending: false,
@@ -1782,6 +1791,8 @@ export function WildPawGame({
     return initial;
   });
   const [joystick, setJoystick] = useState({ x: 0, y: 0, active: false });
+  const [battleControlSettings, setBattleControlSettings] =
+    useState<BattleControlSettings>(DEFAULT_BATTLE_CONTROLS);
   const [aimDirection, setAimDirection] = useState<Vector>({ x: 1, y: 0 });
   const [earnedCoins, setEarnedCoins] = useState(0);
   const [earnedXp, setEarnedXp] = useState(0);
@@ -1827,6 +1838,29 @@ export function WildPawGame({
   >([]);
   const multiplayerReadinessRef = useRef(multiplayerReadiness);
   const { width, height } = useWindowDimensions();
+  const controlPositionStyle = (
+    controlId: "joystick" | "fire" | "gun" | "grenade" | "heal" | "dash",
+    controlWidth: number,
+    controlHeight: number,
+  ) => {
+    const control = battleControlSettings.controls[controlId];
+    const centerX = Math.max(
+      (controlWidth * control.size) / 2,
+      Math.min(width - (controlWidth * control.size) / 2, width * control.x),
+    );
+    const centerY = Math.max(
+      (controlHeight * control.size) / 2,
+      Math.min(height - (controlHeight * control.size) / 2, height * control.y),
+    );
+    return {
+      left: centerX - controlWidth / 2,
+      top: centerY - controlHeight / 2,
+      width: controlWidth,
+      height: controlHeight,
+      opacity: control.opacity,
+      transform: [{ scale: control.size }],
+    };
+  };
   const hostAddressesToShare = useMemo(() => {
     const addresses: { address: string; interfaceName: string }[] = [];
 
@@ -1916,6 +1950,23 @@ export function WildPawGame({
       REVIVE_RANGE
       ? otherPlayer
       : null;
+  const isBossCountdownWave = game.wave % WAVES_PER_ARENA === 0;
+  const hasJoinedPlayer = lobbyPlayers.some(
+    (player) => player.role === "guest",
+  );
+  const canHostSkipWave =
+    multiplayerRole === "host" &&
+    (!hasJoinedPlayer || multiplayerReadiness.join);
+
+  useEffect(() => {
+    let isMounted = true;
+    void getBattleControlSettings().then((settings) => {
+      if (isMounted) setBattleControlSettings(settings);
+    });
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   useEffect(() => {
     let isMounted = true;
@@ -2284,12 +2335,6 @@ export function WildPawGame({
     : isReviveRequested
       ? REVIVE_DURATION
       : 0;
-  const hasJoinedPlayer = lobbyPlayers.some(
-    (player) => player.role === "guest",
-  );
-  const canHostSkipWave =
-    multiplayerRole === "host" &&
-    (!hasJoinedPlayer || multiplayerReadiness.join);
   const arenaScale = useMemo(() => {
     return Math.max(0.1, Math.min(width / ARENA_WIDTH, height / ARENA_HEIGHT));
   }, [width, height]);
@@ -2441,7 +2486,7 @@ export function WildPawGame({
           ? applyPowerUp(previous.joinPlayer, powerUp)
           : null,
         wave: previous.wave + 1,
-        waveCountdown: 0,
+        waveCountdown: getWaveCountdownDuration(previous.wave + 1),
         warpTransitionTimer: WARP_TRANSITION_DURATION,
         enemiesToSpawn: getWaveEnemyCount(previous.wave + 1),
         spawnCooldown: 0,
@@ -2484,7 +2529,7 @@ export function WildPawGame({
     [applyPowerUpAndStartWarp, multiplayerRole],
   );
 
-  const skipWaveCooldown = useCallback(
+  const skipWaveCountdown = useCallback(
     (broadcast = true) => {
       setGame((previous) =>
         previous.waveCountdown > 0 && previous.powerUpChoices.length === 0
@@ -2498,13 +2543,8 @@ export function WildPawGame({
 
       if (broadcast && isLocalMultiplayer && multiplayerRole === "host") {
         const socket = multiplayerSocketRef.current;
-        if (socket && socket.readyState === MULTIPLAYER_SOCKET_OPEN) {
-          socket.send(
-            JSON.stringify({
-              type: "command",
-              action: "skip-wave",
-            }),
-          );
+        if (socket?.readyState === MULTIPLAYER_SOCKET_OPEN) {
+          socket.send(JSON.stringify({ type: "command", action: "skip-wave" }));
         }
       }
     },
@@ -2830,7 +2870,7 @@ export function WildPawGame({
         }
 
         if (message.type === "room-command" && message.action === "skip-wave") {
-          skipWaveCooldown(false);
+          skipWaveCountdown(false);
           return;
         }
 
@@ -2899,7 +2939,7 @@ export function WildPawGame({
     orbEquipped,
     orbSkinId,
     buddyId,
-    skipWaveCooldown,
+    skipWaveCountdown,
     resetGameLocally,
     applyPowerUpAndStartWarp,
   ]);
@@ -3177,7 +3217,7 @@ export function WildPawGame({
     }
   };
 
-  const selectWeapon = (weapon: "gun" | "grenade") => {
+  const selectWeapon = useCallback((weapon: "gun" | "grenade") => {
     selectedWeaponRef.current = weapon;
     setSelectedWeapon(weapon);
     setIsFireHeld(false);
@@ -3185,7 +3225,7 @@ export function WildPawGame({
       grenadeAimRef.current.active = false;
       setGrenadeAim(null);
     }
-  };
+  }, []);
 
   const cancelGrenadeThrow = () => {
     if (!grenadeAimRef.current.active) return;
@@ -3460,9 +3500,7 @@ export function WildPawGame({
               : previous.arenaBackgroundWave;
           const waveCountdown =
             previous.warpTransitionTimer > 0
-              ? warpTransitionTimer > 0
-                ? previous.waveCountdown
-                : 0
+              ? previous.waveCountdown
               : Math.max(0, previous.waveCountdown - delta);
           let bullets = previous.bullets
             .map((bullet) => ({
@@ -4443,7 +4481,7 @@ export function WildPawGame({
 
         const advanceWaveAfterClear = () => {
           wave += 1;
-          waveCountdown = WAVE_BREAK_DURATION;
+          waveCountdown = getWaveCountdownDuration(wave);
           warpTransitionTimer = 0;
           powerUpChoices = [];
           warpPending = false;
@@ -4582,8 +4620,8 @@ export function WildPawGame({
   }, [isFireHeld, isLocalMultiplayer, multiplayerRole, reviveTarget]);
 
   const updateJoystick = (x: number, y: number) => {
-    const dx = x - 42;
-    const dy = y - 42;
+    const dx = x - 45;
+    const dy = y - 45;
     const distance = Math.hypot(dx, dy);
     const maxRadius = 30;
     const limitedX = distance > maxRadius ? (dx / distance) * maxRadius : dx;
@@ -4719,11 +4757,14 @@ export function WildPawGame({
           !isOverGrenadeCancel(event.absoluteX, event.absoluteY)
         ) {
           sendPlayerAction("grenade", finalAim.direction, finalAim.range);
+          if (localPlayer.grenades <= 1) {
+            selectWeapon("gun");
+          }
         }
       }
       setIsFireHeld(false);
     },
-    [isOverGrenadeCancel, sendPlayerAction],
+    [isOverGrenadeCancel, localPlayer.grenades, selectWeapon, sendPlayerAction],
   );
 
   const endJoystickTouch = () => {
@@ -4737,24 +4778,17 @@ export function WildPawGame({
     onUpdate: (event) => updateJoystick(event.x, event.y),
     onFinalize: endJoystickTouch,
   });
-  const waveCountdownGesture = useTapGesture({
+  const waveReadyGesture = useTapGesture({
     runOnJS: true,
     simultaneousWith: joystickGesture,
     onActivate: () => {
-      if (isLocalPlayerReviving || localPlayer.isDead) {
+      if (
+        multiplayerRole !== "join" ||
+        isLocalPlayerReviving ||
+        localPlayer.isDead
+      ) {
         return;
       }
-      if (!isLocalMultiplayer) {
-        skipWaveCooldown();
-        return;
-      }
-      if (multiplayerRole === "host") {
-        if (canHostSkipWave) {
-          skipWaveCooldown();
-        }
-        return;
-      }
-
       const nextValue = !multiplayerReadiness.join;
       multiplayerReadinessRef.current = {
         ...multiplayerReadinessRef.current,
@@ -4773,6 +4807,22 @@ export function WildPawGame({
             ready: nextValue,
           }),
         );
+      }
+    },
+  });
+  const waveSkipGesture = useTapGesture({
+    runOnJS: true,
+    simultaneousWith: joystickGesture,
+    onActivate: () => {
+      if (!isBossCountdownWave || isLocalPlayerReviving || localPlayer.isDead) {
+        return;
+      }
+      if (!isLocalMultiplayer) {
+        skipWaveCountdown();
+        return;
+      }
+      if (multiplayerRole === "host" && canHostSkipWave) {
+        skipWaveCountdown();
       }
     },
   });
@@ -5170,50 +5220,71 @@ export function WildPawGame({
                     PREPARATION
                   </Text>
 
-                  <GestureDetector gesture={waveCountdownGesture}>
-                    <View
-                      accessible
-                      accessibilityRole="button"
-                      accessibilityState={{
-                        disabled:
-                          isLocalPlayerReviving ||
-                          localPlayer.isDead ||
-                          (multiplayerRole === "host" && !canHostSkipWave),
-                      }}
-                      accessibilityLabel={
-                        multiplayerRole === "host"
-                          ? canHostSkipWave
-                            ? "Start wave"
-                            : "Waiting for player to get ready"
-                          : multiplayerRole === "join"
-                            ? "Mark ready for next wave"
-                            : "Start wave"
-                      }
-                      pointerEvents="auto"
-                      style={[
-                        styles.waveCountdownSkipButton,
-                        (isLocalPlayerReviving ||
-                          localPlayer.isDead ||
-                          (multiplayerRole === "host" && !canHostSkipWave)) &&
-                          styles.waveCountdownSkipButtonDisabled,
-                      ]}
-                    >
-                      <Text
-                        pointerEvents="none"
-                        style={styles.waveCountdownSkipText}
-                      >
-                        {multiplayerRole === "host"
-                          ? canHostSkipWave
-                            ? "START WAVE!"
-                            : "WAITING FOR READY"
-                          : multiplayerRole === "join"
-                            ? multiplayerReadiness.join
-                              ? "READY!"
-                              : "READY"
-                            : "START WAVE!"}
-                      </Text>
-                    </View>
-                  </GestureDetector>
+                  {isBossCountdownWave &&
+                    isLocalMultiplayer &&
+                    multiplayerRole === "join" && (
+                      <GestureDetector gesture={waveReadyGesture}>
+                        <View
+                          accessible
+                          accessibilityRole="button"
+                          accessibilityState={{
+                            disabled:
+                              isLocalPlayerReviving || localPlayer.isDead,
+                          }}
+                          accessibilityLabel={
+                            multiplayerReadiness.join
+                              ? "Cancel ready status"
+                              : "Mark ready for next wave"
+                          }
+                          pointerEvents="auto"
+                          style={[
+                            styles.waveCountdownReadyButton,
+                            (isLocalPlayerReviving || localPlayer.isDead) &&
+                              styles.waveCountdownReadyButtonDisabled,
+                          ]}
+                        >
+                          <Text
+                            pointerEvents="none"
+                            style={styles.waveCountdownReadyText}
+                          >
+                            {multiplayerReadiness.join ? "READY!" : "READY"}
+                          </Text>
+                        </View>
+                      </GestureDetector>
+                    )}
+                  {isBossCountdownWave &&
+                    (!isLocalMultiplayer || multiplayerRole === "host") && (
+                      <GestureDetector gesture={waveSkipGesture}>
+                        <View
+                          accessible
+                          accessibilityRole="button"
+                          accessibilityState={{
+                            disabled:
+                              isLocalPlayerReviving ||
+                              localPlayer.isDead ||
+                              (isLocalMultiplayer && !canHostSkipWave),
+                          }}
+                          accessibilityLabel={
+                            isLocalMultiplayer && !canHostSkipWave
+                              ? "Waiting for player to get ready"
+                              : "Skip boss countdown and start wave"
+                          }
+                          style={[
+                            styles.waveCountdownSkipButton,
+                            (isLocalPlayerReviving ||
+                              localPlayer.isDead ||
+                              (isLocalMultiplayer && !canHostSkipWave)) &&
+                              styles.waveCountdownSkipButtonDisabled,
+                          ]}
+                        >
+                          <Text style={styles.waveCountdownSkipText}>
+                            {isLocalMultiplayer && !canHostSkipWave
+                              ? "WAITING FOR READY"
+                              : "START BOSS"}
+                          </Text>
+                        </View>
+                      </GestureDetector>
+                    )}
                 </View>
               )}
 
@@ -6331,191 +6402,242 @@ export function WildPawGame({
           !game.isPaused &&
           !localPlayer.isDead &&
           !isLocalPlayerReviving && (
-            <View style={styles.controls}>
-              <GestureDetector gesture={joystickGesture}>
-                <View style={styles.joystickPad}>
-                  <View
-                    style={[
-                      styles.joystickStick,
-                      {
-                        transform: [
-                          { translateX: joystick.x * 20 },
-                          { translateY: joystick.y * 20 },
-                        ],
-                      },
-                    ]}
-                  />
-                </View>
-              </GestureDetector>
+            <View pointerEvents="box-none" style={styles.controls}>
+              <View
+                style={[
+                  styles.joystickControl,
+                  controlPositionStyle("joystick", 90, 90),
+                ]}
+              >
+                <GestureDetector gesture={joystickGesture}>
+                  <View style={styles.joystickPad}>
+                    <View
+                      style={[
+                        styles.joystickStick,
+                        {
+                          transform: [
+                            { translateX: joystick.x * 20 },
+                            { translateY: joystick.y * 20 },
+                          ],
+                        },
+                      ]}
+                    />
+                  </View>
+                </GestureDetector>
+              </View>
 
-              <View style={styles.actionStack}>
-                <View style={styles.actionTopRow}>
+              <View pointerEvents="box-none" style={styles.actionStack}>
+                <View pointerEvents="box-none" style={styles.actionTopRow}>
                   <GestureDetector gesture={fireHoldGesture}>
-                    <View style={styles.fireButton}>
-                      {selectedWeapon === "gun" ? (
-                        <Image
+                    <View
+                      style={[
+                        styles.fireButtonFrame,
+                        controlPositionStyle("fire", 84, 84),
+                      ]}
+                    >
+                      <View style={styles.fireButton}>
+                        {selectedWeapon === "gun" ? (
+                          <Image
+                            pointerEvents="none"
+                            source={bulletImage}
+                            contentFit="contain"
+                            style={styles.fireButtonBackgroundIcon}
+                          />
+                        ) : (
+                          <Image
+                            pointerEvents="none"
+                            source={bombImage}
+                            contentFit="contain"
+                            style={styles.fireButtonBackgroundIcon}
+                          />
+                        )}
+                        <Text
                           pointerEvents="none"
-                          source={bulletImage}
-                          contentFit="contain"
-                          style={styles.fireButtonBackgroundIcon}
-                        />
-                      ) : (
-                        <Image
-                          pointerEvents="none"
-                          source={bombImage}
-                          contentFit="contain"
-                          style={styles.fireButtonBackgroundIcon}
-                        />
-                      )}
-                      <Text
-                        pointerEvents="none"
-                        style={[
-                          styles.buttonText,
-                          styles.fireButtonLabel,
-                          selectedWeapon === "grenade" &&
-                            styles.grenadeFireButtonText,
-                        ]}
-                      >
-                        {selectedWeapon === "gun" ? "FIRE" : "HOLD\nTHROW"}
-                      </Text>
+                          style={[
+                            styles.buttonText,
+                            styles.fireButtonLabel,
+                            selectedWeapon === "grenade" &&
+                              styles.grenadeFireButtonText,
+                          ]}
+                        >
+                          {selectedWeapon === "gun" ? "FIRE" : "HOLD\nTHROW"}
+                        </Text>
+                      </View>
                     </View>
                   </GestureDetector>
                 </View>
-                <View style={styles.secondaryRow}>
+                <View pointerEvents="box-none" style={[styles.secondaryRow]}>
                   <GestureDetector gesture={gunSelectGesture}>
-                    <Pressable
-                      accessibilityRole="button"
-                      accessibilityLabel="Select gun"
-                      accessibilityState={{
-                        selected: selectedWeapon === "gun",
-                      }}
-                      onPress={() => selectWeapon("gun")}
+                    <View
                       style={[
-                        styles.secondaryButton,
-                        styles.weaponButton,
-                        styles.actionCircleButton,
-                        selectedWeapon === "gun" && styles.weaponButtonSelected,
+                        styles.actionButtonFrame,
+                        controlPositionStyle("gun", 54, 54),
                       ]}
                     >
-                      <Image
-                        source={bulletImage}
-                        contentFit="contain"
-                        style={styles.gunButtonIcon}
-                      />
-                    </Pressable>
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel="Select gun"
+                        accessibilityState={{
+                          selected: selectedWeapon === "gun",
+                        }}
+                        onPress={() => selectWeapon("gun")}
+                        style={[
+                          styles.secondaryButton,
+                          styles.weaponButton,
+                          styles.actionCircleButton,
+                          selectedWeapon === "gun" &&
+                            styles.weaponButtonSelected,
+                        ]}
+                      >
+                        <Image
+                          source={bulletImage}
+                          contentFit="contain"
+                          style={styles.gunButtonIcon}
+                        />
+                      </Pressable>
+                    </View>
                   </GestureDetector>
                   <GestureDetector gesture={grenadeSelectGesture}>
-                    <Pressable
-                      accessibilityRole="button"
-                      accessibilityLabel={`Select grenade, ${localPlayer.grenades} remaining`}
-                      accessibilityState={{
-                        selected: selectedWeapon === "grenade",
-                        disabled: localPlayer.grenades <= 0,
-                      }}
-                      disabled={localPlayer.grenades <= 0}
-                      onPress={() => selectWeapon("grenade")}
+                    <View
                       style={[
-                        styles.secondaryButton,
-                        styles.weaponButton,
-                        styles.actionCircleButton,
-                        selectedWeapon === "grenade" &&
-                          styles.weaponButtonSelected,
-                        localPlayer.grenades <= 0 &&
-                          styles.weaponButtonDisabled,
+                        styles.actionButtonFrame,
+                        controlPositionStyle("grenade", 54, 54),
                       ]}
                     >
-                      <Image
-                        source={bombImage}
-                        contentFit="contain"
-                        style={styles.grenadeButtonIcon}
-                      />
-                      <View pointerEvents="none" style={styles.itemCountBadge}>
-                        <Text style={styles.itemCountBadgeText}>
-                          x{localPlayer.grenades}
-                        </Text>
-                      </View>
-                    </Pressable>
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel={`Select grenade, ${localPlayer.grenades} remaining`}
+                        accessibilityState={{
+                          selected: selectedWeapon === "grenade",
+                          disabled: localPlayer.grenades <= 0,
+                        }}
+                        disabled={localPlayer.grenades <= 0}
+                        onPress={() => selectWeapon("grenade")}
+                        style={[
+                          styles.secondaryButton,
+                          styles.weaponButton,
+                          styles.actionCircleButton,
+                          selectedWeapon === "grenade" &&
+                            styles.weaponButtonSelected,
+                          localPlayer.grenades <= 0 &&
+                            styles.weaponButtonDisabled,
+                        ]}
+                      >
+                        <Image
+                          source={bombImage}
+                          contentFit="contain"
+                          style={styles.grenadeButtonIcon}
+                        />
+                        <View
+                          pointerEvents="none"
+                          style={styles.itemCountBadge}
+                        >
+                          <Text style={styles.itemCountBadgeText}>
+                            x{localPlayer.grenades}
+                          </Text>
+                        </View>
+                      </Pressable>
+                    </View>
                   </GestureDetector>
                   <GestureDetector gesture={healGesture}>
                     <View
-                      accessible
-                      accessibilityRole="button"
-                      accessibilityLabel={`Use heal, ${localPlayer.heals} remaining`}
-                      accessibilityState={{ disabled: localPlayer.heals <= 0 }}
                       style={[
-                        styles.secondaryButton,
-                        styles.actionCircleButton,
-                        localPlayer.heals <= 0 && styles.weaponButtonDisabled,
+                        styles.actionButtonFrame,
+                        controlPositionStyle("heal", 54, 54),
                       ]}
                     >
-                      <Image
-                        source={heartImage}
-                        contentFit="contain"
-                        style={styles.healButtonIcon}
-                      />
-                      <View pointerEvents="none" style={styles.itemCountBadge}>
-                        <Text style={styles.itemCountBadgeText}>
-                          x{localPlayer.heals}
-                        </Text>
+                      <View
+                        accessible
+                        accessibilityRole="button"
+                        accessibilityLabel={`Use heal, ${localPlayer.heals} remaining`}
+                        accessibilityState={{
+                          disabled: localPlayer.heals <= 0,
+                        }}
+                        style={[
+                          styles.secondaryButton,
+                          styles.actionCircleButton,
+                          localPlayer.heals <= 0 && styles.weaponButtonDisabled,
+                        ]}
+                      >
+                        <Image
+                          source={heartImage}
+                          contentFit="contain"
+                          style={styles.healButtonIcon}
+                        />
+                        <View
+                          pointerEvents="none"
+                          style={styles.itemCountBadge}
+                        >
+                          <Text style={styles.itemCountBadgeText}>
+                            x{localPlayer.heals}
+                          </Text>
+                        </View>
                       </View>
                     </View>
                   </GestureDetector>
                   <GestureDetector gesture={dashGesture}>
                     <View
-                      accessible
-                      accessibilityRole="button"
-                      accessibilityLabel={
-                        localPlayer.dashCooldown > 0
-                          ? `Dash cooling down: ${localPlayer.dashCooldown.toFixed(1)} seconds remaining`
-                          : "Dash ready"
-                      }
-                      accessibilityState={{
-                        disabled: localPlayer.dashCooldown > 0,
-                      }}
                       style={[
-                        styles.secondaryButton,
-                        styles.actionCircleButton,
-                        styles.dashButton,
-                        localPlayer.dashCooldown > 0 &&
-                          styles.dashButtonDisabled,
+                        styles.actionButtonFrame,
+                        controlPositionStyle("dash", 54, 54),
                       ]}
                     >
                       <View
-                        pointerEvents="none"
-                        style={styles.dashCooldownFillTrack}
+                        accessible
+                        accessibilityRole="button"
+                        accessibilityLabel={
+                          localPlayer.dashCooldown > 0
+                            ? `Dash cooling down: ${localPlayer.dashCooldown.toFixed(1)} seconds remaining`
+                            : "Dash ready"
+                        }
+                        accessibilityState={{
+                          disabled: localPlayer.dashCooldown > 0,
+                        }}
+                        style={[
+                          styles.secondaryButton,
+                          styles.actionCircleButton,
+                          styles.dashButton,
+                          localPlayer.dashCooldown > 0 &&
+                            styles.dashButtonDisabled,
+                        ]}
                       >
                         <View
-                          style={[
-                            styles.dashCooldownFill,
-                            {
-                              width: `${Math.min(
-                                100,
-                                Math.max(
-                                  0,
-                                  (localPlayer.dashCooldown / DASH_COOLDOWN) *
-                                    100,
-                                ),
-                              )}%`,
-                            },
-                          ]}
-                        />
-                      </View>
-                      {localPlayer.dashCooldown > 0 ? (
-                        <Text
                           pointerEvents="none"
-                          style={styles.dashCooldownText}
+                          style={styles.dashCooldownFillTrack}
                         >
-                          {`${localPlayer.dashCooldown.toFixed(1)}s`}
-                        </Text>
-                      ) : (
-                        <Image
-                          pointerEvents="none"
-                          source={dashImage}
-                          contentFit="contain"
-                          tintColor="#fff"
-                          style={styles.dashReadyIcon}
-                        />
-                      )}
+                          <View
+                            style={[
+                              styles.dashCooldownFill,
+                              {
+                                width: `${Math.min(
+                                  100,
+                                  Math.max(
+                                    0,
+                                    (localPlayer.dashCooldown / DASH_COOLDOWN) *
+                                      100,
+                                  ),
+                                )}%`,
+                              },
+                            ]}
+                          />
+                        </View>
+                        {localPlayer.dashCooldown > 0 ? (
+                          <Text
+                            pointerEvents="none"
+                            style={styles.dashCooldownText}
+                          >
+                            {`${localPlayer.dashCooldown.toFixed(1)}s`}
+                          </Text>
+                        ) : (
+                          <Image
+                            pointerEvents="none"
+                            source={dashImage}
+                            contentFit="contain"
+                            tintColor="#fff"
+                            style={styles.dashReadyIcon}
+                          />
+                        )}
+                      </View>
                     </View>
                   </GestureDetector>
                 </View>
@@ -7983,7 +8105,7 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
     textAlign: "center",
   },
-  waveCountdownSkipButton: {
+  waveCountdownReadyButton: {
     marginTop: 4,
     minWidth: 136,
     minHeight: 40,
@@ -7998,11 +8120,33 @@ const styles = StyleSheet.create({
     zIndex: 20,
     elevation: 20,
   },
-  waveCountdownSkipButtonDisabled: {
+  waveCountdownReadyButtonDisabled: {
     opacity: 0.5,
   },
-  waveCountdownSkipText: {
+  waveCountdownReadyText: {
     color: "#fff",
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 1,
+  },
+  waveCountdownSkipButton: {
+    marginTop: 4,
+    minWidth: 136,
+    minHeight: 40,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(190, 242, 100, 0.85)",
+    backgroundColor: "rgba(54, 83, 20, 0.82)",
+    zIndex: 20,
+    elevation: 20,
+  },
+  waveCountdownSkipButtonDisabled: { opacity: 0.5 },
+  waveCountdownSkipText: {
+    color: "#ecfccb",
     fontSize: 10,
     fontWeight: "900",
     letterSpacing: 1,
@@ -8148,20 +8292,20 @@ const styles = StyleSheet.create({
     fontSize: 16,
   },
   controls: {
-    position: "absolute",
-    left: 10,
-    right: 10,
-    bottom: 34,
+    ...StyleSheet.absoluteFill,
     zIndex: 1,
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "flex-end",
+  },
+  joystickControl: {
+    position: "absolute",
+    width: 90,
+    height: 90,
+  },
+  actionStack: {
+    ...StyleSheet.absoluteFill,
   },
   joystickPad: {
     width: 90,
     height: 90,
-    marginLeft: 30,
-    marginBottom: 6,
     borderRadius: 999,
     backgroundColor: "rgba(15, 23, 42, 0.6)",
     borderWidth: 2,
@@ -8179,17 +8323,18 @@ const styles = StyleSheet.create({
     left: 28,
     top: 28,
   },
-  actionStack: {
-    flex: 1,
-    marginLeft: 12,
-    marginRight: 20,
-    alignItems: "flex-end",
-  },
   actionTopRow: {
-    flexDirection: "row",
+    ...StyleSheet.absoluteFill,
+  },
+  fireButtonFrame: {
+    position: "absolute",
     alignItems: "center",
-    gap: 10,
-    marginBottom: 10,
+    justifyContent: "center",
+  },
+  actionButtonFrame: {
+    position: "absolute",
+    alignItems: "center",
+    justifyContent: "center",
   },
   pauseButtonTop: {
     backgroundColor: "rgba(15, 23, 42, 0.58)",
@@ -8239,9 +8384,7 @@ const styles = StyleSheet.create({
     lineHeight: 12,
   },
   secondaryRow: {
-    flexDirection: "row",
-    gap: 8,
-    justifyContent: "flex-end",
+    ...StyleSheet.absoluteFill,
   },
   secondaryButton: {
     position: "relative",

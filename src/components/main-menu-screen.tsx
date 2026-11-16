@@ -2,11 +2,11 @@ import { SoundPressable as Pressable } from "@/components/ui/sound-pressable";
 import { Image } from "expo-image";
 import { useEffect, useState } from "react";
 import {
-    Animated,
-    StyleSheet,
-    Text,
-    View,
-    useWindowDimensions,
+  Animated,
+  StyleSheet,
+  Text,
+  View,
+  useWindowDimensions,
 } from "react-native";
 
 import type { BundledImage } from "@/constants/game-catalog";
@@ -240,7 +240,7 @@ export function MainMenuScreen({
             pressed && styles.buttonPressed,
           ]}
         >
-          <Text style={styles.heroButtonText}>CHOOSE HERO</Text>
+          <Text style={styles.heroButtonText}>LOADOUT</Text>
         </Pressable>
       </View>
 

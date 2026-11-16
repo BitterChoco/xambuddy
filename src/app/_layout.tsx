@@ -4,16 +4,16 @@ import { initializeRemoteGameCatalogs } from "@/constants/game-catalog";
 import { initializeRemoteGameConfiguration } from "@/constants/game-configuration";
 import { initializeDefaultPlayerInventory } from "@/constants/player-inventory";
 import {
-  getMusicVolume,
-  subscribeToMusicVolume,
+    getMusicVolume,
+    subscribeToMusicVolume,
 } from "@/constants/player-settings";
 import { initializeRemoteStorePricing } from "@/constants/store-pricing";
 import "@/global.css";
 import {
-  createInitialAssetLoadingState,
-  getRemoteAssetSource,
-  loadRemoteAssets,
-  type AssetLoadingState,
+    createInitialAssetLoadingState,
+    getRemoteAssetSource,
+    loadRemoteAssets,
+    type AssetLoadingState,
 } from "@/services/remote-assets";
 import { createAudioPlayer, setAudioModeAsync } from "expo-audio";
 import { Image } from "expo-image";
@@ -23,7 +23,7 @@ import * as ScreenOrientation from "expo-screen-orientation";
 import * as SplashScreen from "expo-splash-screen";
 import { StatusBar } from "expo-status-bar";
 import { useEffect, useRef, useState } from "react";
-import { Platform, Text, View } from "react-native";
+import { BackHandler, Platform, Text, View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 
 const loadingScreenImage = require("@/assets/images/loading_screen.jpg");
@@ -68,6 +68,15 @@ export default function RootLayout() {
   const isInternetUnavailable =
     networkState.isConnected === false ||
     networkState.isInternetReachable === false;
+
+  useEffect(() => {
+    if (Platform.OS !== "android") return;
+    const subscription = BackHandler.addEventListener(
+      "hardwareBackPress",
+      () => true,
+    );
+    return () => subscription.remove();
+  }, []);
 
   useEffect(() => {
     let isMounted = true;
@@ -217,6 +226,7 @@ export default function RootLayout() {
               screenOptions={{
                 headerShown: false,
                 animation: "none",
+                gestureEnabled: false,
                 contentStyle: { backgroundColor: "#06150f" },
               }}
             ></Stack>
