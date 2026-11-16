@@ -19,6 +19,13 @@ import {
 } from "@/services/redeem-codes";
 import { getRemoteAssetSource } from "@/services/remote-assets";
 import {
+  claimAdReward,
+  getAdState,
+  loadAdRewards,
+  type AdReward,
+  type AdState,
+} from "@/services/watch-ads";
+import {
   claimLoginReward,
   getLoginRoadmapState,
   loadLoginRewards,
@@ -48,6 +55,47 @@ export default function EventScreen() {
   );
   const [weeklyMessage, setWeeklyMessage] = useState("");
   const [isClaimingWeekly, setIsClaimingWeekly] = useState(false);
+  const [adRewards, setAdRewards] = useState<AdReward[]>([]);
+  const [adState, setAdState] = useState<AdState | null>(null);
+  const [adMessage, setAdMessage] = useState("");
+  const [isClaimingAd, setIsClaimingAd] = useState(false);
+
+  useEffect(() => {
+    let isMounted = true;
+    void loadAdRewards()
+      .then(async (rewards) => {
+        const state = await getAdState();
+        if (!isMounted) return;
+        setAdRewards(rewards);
+        setAdState(state);
+      })
+      .catch(() => undefined);
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  const claimAd = async () => {
+    if (isClaimingAd) return;
+    setIsClaimingAd(true);
+    try {
+      const { state, outcome } = await claimAdReward(adRewards);
+      setAdState(state);
+      setAdMessage(
+        outcome === "claimed"
+          ? "Reward sent to your email. Open the mailbox to claim it."
+          : outcome === "dismissed"
+            ? "Watch the full ad to earn the reward."
+            : outcome === "unavailable"
+              ? "No ad is available right now. Please try again later."
+              : "",
+      );
+    } catch {
+      setAdMessage("Could not claim your reward. Please try again.");
+    } finally {
+      setIsClaimingAd(false);
+    }
+  };
 
   useEffect(() => {
     let isMounted = true;
@@ -291,6 +339,88 @@ export default function EventScreen() {
                     )}
                   </View>
                 )}
+                {adRewards.length > 0 && adState && (
+                  <View style={styles.weeklyPanel}>
+                    <Text style={styles.eventBadgeText}>WATCH ADS REWARDS</Text>
+                    <Text style={styles.adHint}>
+                      Claim in order. Resets every day.
+                    </Text>
+                    <ScrollView
+                      horizontal
+                      showsHorizontalScrollIndicator={false}
+                      contentContainerStyle={styles.roadmapRow}
+                    >
+                      {adRewards.map((reward, index) => {
+                        const completed = index < adState.claimedCount;
+                        const canClaim = index === adState.claimedCount;
+                        return (
+                          <View key={reward.slot} style={styles.roadmapStep}>
+                            {index > 0 && (
+                              <View
+                                style={[
+                                  styles.roadmapLine,
+                                  completed && styles.roadmapLineDone,
+                                ]}
+                              />
+                            )}
+                            <Pressable
+                              accessibilityRole="button"
+                              accessibilityLabel={`Ad reward ${reward.slot}, ${completed ? "collected" : canClaim ? "tap to watch and claim" : "locked"}`}
+                              accessibilityState={{ disabled: !canClaim }}
+                              disabled={!canClaim || isClaimingAd}
+                              onPress={() => void claimAd()}
+                              style={styles.roadmapNodeWrap}
+                            >
+                              <View
+                                style={[
+                                  styles.roadmapNode,
+                                  completed && styles.roadmapNodeDone,
+                                  canClaim && styles.roadmapNodeActive,
+                                ]}
+                              >
+                                <Text
+                                  style={[
+                                    styles.roadmapNodeText,
+                                    completed && styles.roadmapNodeTextDone,
+                                  ]}
+                                >
+                                  {completed
+                                    ? "✓"
+                                    : canClaim
+                                      ? "▶"
+                                      : reward.slot}
+                                </Text>
+                              </View>
+                              <Text style={styles.roadmapDay}>
+                                {canClaim ? "CLAIM" : `AD ${reward.slot}`}
+                              </Text>
+                              {reward.rewards.map((item) => (
+                                <View
+                                  key={item.id}
+                                  style={styles.roadmapReward}
+                                >
+                                  <Image
+                                    source={weeklyRewardIcons[item.id]}
+                                    style={styles.roadmapRewardIcon}
+                                    contentFit="contain"
+                                  />
+                                  <Text style={styles.roadmapAmount}>
+                                    {item.amount.toLocaleString()}
+                                  </Text>
+                                </View>
+                              ))}
+                            </Pressable>
+                          </View>
+                        );
+                      })}
+                    </ScrollView>
+                    {!!adMessage && (
+                      <Text style={[styles.feedback, styles.successMessage]}>
+                        {adMessage}
+                      </Text>
+                    )}
+                  </View>
+                )}
                 <View style={styles.featuredEvent}>
                   <View style={styles.eventBadge}>
                     <Text style={styles.eventBadgeText}>
@@ -510,6 +640,7 @@ const styles = StyleSheet.create({
     borderColor: "rgba(163, 230, 53, 0.35)",
     backgroundColor: "rgba(15, 35, 25, 0.94)",
   },
+  adHint: { marginTop: 4, color: "#94a3b8", fontSize: 10 },
   roadmapRow: {
     alignItems: "flex-start",
     paddingTop: 12,
