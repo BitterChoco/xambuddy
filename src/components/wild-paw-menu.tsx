@@ -43,6 +43,7 @@ import {
 } from "@/constants/player-inventory";
 import { getLocalHostAddresses } from "@/services/local-host-address";
 import {
+  getLastProbeError,
   probeLocalServer,
   startLocalHostServer,
 } from "@/services/local-multiplayer-network";
@@ -732,7 +733,7 @@ export function WildPawMenu() {
             const address = addresses[nextAddressIndex];
             nextAddressIndex += 1;
             try {
-              if (await probeLocalServer(address, 1000)) {
+              if (await probeLocalServer(address, 1500, 1)) {
                 discovered.push({
                   id: `host-${address}`,
                   name: `Local host ${address}`,
@@ -855,8 +856,9 @@ export function WildPawMenu() {
         },
       });
     } catch {
+      const reason = getLastProbeError();
       setHostScanMessage(
-        `Can't reach ${normalized}:8765. Make sure the host app is open on the same Wi-Fi network.`,
+        `Can't reach ${normalized}:8765${reason ? ` (${reason})` : ""}. Make sure the host has started the match and both phones are on the same Wi-Fi network.`,
       );
     }
   };

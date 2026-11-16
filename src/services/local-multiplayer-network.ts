@@ -6,6 +6,10 @@ export async function startLocalHostServer(): Promise<void> {
 
 export function stopLocalHostServer() {}
 
+export function getLastProbeError() {
+  return "";
+}
+
 export async function probeLocalServer(
   address: string,
   timeoutMs = 1800,

@@ -61,6 +61,11 @@ const rooms = new Map<string, LobbyRoom>();
 const connections = new Set<ClientConnection>();
 let server: ReturnType<typeof TcpSocket.createServer> | null = null;
 let serverStopTimer: ReturnType<typeof setTimeout> | null = null;
+let lastProbeError = "";
+
+export function getLastProbeError() {
+  return lastProbeError;
+}
 
 function send(client: ClientConnection, message: unknown) {
   client.send(message);
@@ -385,16 +390,21 @@ export function stopLocalHostServer() {
 
 export function probeLocalServer(
   address: string,
-  timeoutMs = 1800,
+  timeoutMs = 2500,
+  attempts = 2,
 ): Promise<boolean> {
   return new Promise((resolve) => {
     let settled = false;
     let buffer = "";
+    let reason = "";
     const socket = TcpSocket.createConnection(
       { host: address, port: PORT, connectTimeout: timeoutMs },
       () => socket.write('{"type":"health"}\n'),
     );
-    const timeout = setTimeout(() => finish(false), timeoutMs + 250);
+    const timeout = setTimeout(() => {
+      reason ||= "timed out";
+      finish(false);
+    }, timeoutMs + 250);
 
     const finish = (isOnline: boolean) => {
       if (settled) {
@@ -403,7 +413,16 @@ export function probeLocalServer(
       settled = true;
       clearTimeout(timeout);
       socket.destroy();
-      resolve(isOnline);
+      if (isOnline) {
+        lastProbeError = "";
+        resolve(true);
+      } else if (attempts > 1) {
+        // One retry covers Wi-Fi power-save wake-up delays.
+        void probeLocalServer(address, timeoutMs, attempts - 1).then(resolve);
+      } else {
+        lastProbeError = reason || "connection closed";
+        resolve(false);
+      }
     };
 
     socket.setEncoding("utf8");
@@ -423,7 +442,10 @@ export function probeLocalServer(
         finish(false);
       }
     });
-    socket.on("error", () => finish(false));
+    socket.on("error", (error) => {
+      reason = error?.message ?? "connection error";
+      finish(false);
+    });
     socket.on("close", () => finish(false));
   });
 }
