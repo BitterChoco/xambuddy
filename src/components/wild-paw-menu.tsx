@@ -48,6 +48,7 @@ import {
 } from "@/services/local-multiplayer-network";
 import { useMailbox } from "@/services/mailbox";
 import { getRemoteAssetSource } from "@/services/remote-assets";
+import { useHasClaimableLoginReward } from "@/services/weekly-login";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Image } from "expo-image";
 import { router, useFocusEffect, type Href } from "expo-router";
@@ -136,6 +137,7 @@ function ProfilePicture({
   onStorePress: () => void;
   onSettingsPress: () => void;
 }) {
+  const hasLoginReward = useHasClaimableLoginReward();
   return (
     <View style={styles.profileRail}>
       <Pressable
@@ -182,6 +184,7 @@ function ProfilePicture({
         onPress={() => router.push("/event" as Href)}
         style={styles.profileMenuIconTile}
       >
+        {hasLoginReward && <NewBadge />}
         <Image
           source={calendarImage}
           style={styles.profileMenuIcon}

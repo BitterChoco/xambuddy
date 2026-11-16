@@ -3,59 +3,62 @@ import { Image } from "expo-image";
 import { router, useLocalSearchParams } from "expo-router";
 import { useEffect, useMemo, useState } from "react";
 import {
-    ScrollView,
-    StyleSheet,
-    Text,
-    useWindowDimensions,
-    View,
+  ScrollView,
+  StyleSheet,
+  Text,
+  useWindowDimensions,
+  View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { BUDDIES, getBuddyBonusSummary } from "@/constants/buddy-catalog";
 import {
-    awardCoins,
-    getCoinBalance,
-    spendCoins,
-    subscribeToCoinBalance,
+  awardCoins,
+  getCoinBalance,
+  spendCoins,
+  subscribeToCoinBalance,
 } from "@/constants/coin-wallet";
 import {
-    getDiamondBalance,
-    subscribeToDiamondBalance,
+  awardDiamonds,
+  getDiamondBalance,
+  spendDiamonds,
+  subscribeToDiamondBalance,
 } from "@/constants/diamond-wallet";
 import {
-    DEFAULT_HERO_ID,
-    getHeroImage,
-    getRarityCardImage,
-    getSkinImage,
-    HEROES,
-    ITEM_RARITIES,
-    PROFILE_BORDERS,
-    PROFILE_PICTURE_CHOICES,
-    type BundledImage,
-    type ItemRarity,
+  DEFAULT_HERO_ID,
+  getHeroImage,
+  getRarityCardImage,
+  getSkinImage,
+  HEROES,
+  ITEM_RARITIES,
+  PROFILE_BORDERS,
+  PROFILE_PICTURE_CHOICES,
+  type BundledImage,
+  type ItemRarity,
 } from "@/constants/game-catalog";
 import {
-    DEFAULT_ORB_SKIN_ID,
-    getOrbRarityColor,
-    ORB_SKINS,
+  DEFAULT_ORB_SKIN_ID,
+  getOrbRarityColor,
+  ORB_SKINS,
 } from "@/constants/orb-catalog";
 import {
-    getPlayerLevelProgress,
-    getPlayerXp,
-    subscribeToPlayerXp,
+  getPlayerLevelProgress,
+  getPlayerXp,
+  subscribeToPlayerXp,
 } from "@/constants/player-experience";
 import {
-    DEFAULT_PLAYER_INVENTORY,
-    loadPlayerInventory,
-    savePlayerInventory,
-    type PlayerInventory,
+  DEFAULT_PLAYER_INVENTORY,
+  loadPlayerInventory,
+  savePlayerInventory,
+  type PlayerInventory,
 } from "@/constants/player-inventory";
 import {
-    getBuddyPricing,
-    getHeroPricing,
-    getOrbPricing,
-    getProfileBorderPricing,
-    getSkinPricing,
+  getBuddyPricing,
+  getHeroPricing,
+  getOrbPricing,
+  getProfileBorderPricing,
+  getSkinPricing,
+  type StoreCurrency,
 } from "@/constants/store-pricing";
 import { getRemoteAssetSource } from "@/services/remote-assets";
 
@@ -65,7 +68,12 @@ const coinIcon = getRemoteAssetSource("game/icons/coin_1.png");
 const diamondIcon = getRemoteAssetSource("game/icons/diamond_1.png");
 
 type StoreTab = "hero" | "skin" | "orb" | "buddy" | "border";
-type Price = { price: number; discountPercent: number; finalPrice: number };
+type Price = {
+  price: number;
+  discountPercent: number;
+  finalPrice: number;
+  currency: StoreCurrency;
+};
 type StoreItem = {
   key: string;
   id: string;
@@ -79,11 +87,24 @@ type StoreItem = {
   price: Price;
   owned: boolean;
   locked: boolean;
-  description: string;
+  description?: string;
 };
 
 type RarityFilter = ItemRarity | "all";
 type SortOrder = "featured" | "low-to-high" | "high-to-low";
+
+const currencyLabel = (currency: StoreCurrency) =>
+  currency === "diamond" ? "DIAMONDS" : "COINS";
+const currencyName = (currency: StoreCurrency) =>
+  currency === "diamond" ? "Diamonds" : "Coins";
+const currencyIcon = (currency: StoreCurrency) =>
+  currency === "diamond" ? diamondIcon : coinIcon;
+
+// Coins are sorted before diamonds since the two can't be compared.
+const comparePrices = (a: StoreItem, b: StoreItem) =>
+  Number(a.price.currency === "diamond") -
+    Number(b.price.currency === "diamond") ||
+  a.price.finalPrice - b.price.finalPrice;
 
 export default function StoreScreen() {
   const { width } = useWindowDimensions();
@@ -181,7 +202,6 @@ export default function StoreScreen() {
         price: getSkinPricing(hero.id, skin.id),
         owned: inventory.skins.includes(`${hero.id}:${skin.id}`),
         locked: false,
-        description: `A unique look for ${hero.name}.`,
       })),
     );
     const orbs = ORB_SKINS.filter((orb) => orb.id !== DEFAULT_ORB_SKIN_ID).map(
@@ -196,7 +216,6 @@ export default function StoreScreen() {
         price: getOrbPricing(orb.id),
         owned: inventory.orbSkins.includes(orb.id),
         locked: false,
-        description: "A new look for your loyal orb companion.",
       }),
     );
     const buddies = BUDDIES.map((buddy) => ({
@@ -225,7 +244,6 @@ export default function StoreScreen() {
       price: getProfileBorderPricing(border.id),
       owned: inventory.borders.includes(border.id),
       locked: false,
-      description: "A decorative frame for your player profile.",
     }));
     return [...heroes, ...skins, ...orbs, ...buddies, ...borders];
   }, [inventory, playerLevel.level]);
@@ -245,15 +263,20 @@ export default function StoreScreen() {
       return true;
     });
     if (sortOrder === "low-to-high") {
-      visible.sort((a, b) => a.price.finalPrice - b.price.finalPrice);
+      visible.sort(comparePrices);
     } else if (sortOrder === "high-to-low") {
-      visible.sort((a, b) => b.price.finalPrice - a.price.finalPrice);
+      visible.sort((a, b) => comparePrices(b, a));
     }
     return visible;
   }, [allItems, heroFilter, ownedOnly, rarity, sortOrder, tab]);
 
   const selectedItem =
     items.find((item) => item.key === selectedKey) ?? items[0] ?? null;
+
+  const getBalance = (item: StoreItem) =>
+    item.price.currency === "diamond" ? diamondBalance : coinBalance;
+  const cannotAffordSelected =
+    !!selectedItem && getBalance(selectedItem) < selectedItem.price.finalPrice;
 
   const purchaseItem = async (item: StoreItem) => {
     if (item.owned || item.locked || purchasingItem) return;
@@ -266,20 +289,27 @@ export default function StoreScreen() {
       );
       return;
     }
-    if (coinBalance < item.price.finalPrice) {
-      setMessage("Not enough coins yet. Play a match to earn more!");
+    const isDiamond = item.price.currency === "diamond";
+    const notEnoughMessage = isDiamond
+      ? "Not enough diamonds yet."
+      : "Not enough coins yet. Play a match to earn more!";
+    if (getBalance(item) < item.price.finalPrice) {
+      setMessage(notEnoughMessage);
       return;
     }
 
     setPurchasingItem(item.id);
     setMessage("");
-    let coinsSpent = false;
+    let currencySpent = false;
     try {
-      if (!(await spendCoins(item.price.finalPrice))) {
-        setMessage("Not enough coins yet. Play a match to earn more!");
+      const spent = isDiamond
+        ? await spendDiamonds(item.price.finalPrice)
+        : await spendCoins(item.price.finalPrice);
+      if (!spent) {
+        setMessage(notEnoughMessage);
         return;
       }
-      coinsSpent = item.price.finalPrice > 0;
+      currencySpent = item.price.finalPrice > 0;
       const nextInventory: PlayerInventory = {
         ...inventory,
         heroes:
@@ -311,8 +341,10 @@ export default function StoreScreen() {
       setInventory(nextInventory);
       setMessage(`${item.name} added to your collection!`);
     } catch {
-      if (coinsSpent)
-        await awardCoins(item.price.finalPrice).catch(() => undefined);
+      if (currencySpent) {
+        const refund = isDiamond ? awardDiamonds : awardCoins;
+        await refund(item.price.finalPrice).catch(() => undefined);
+      }
       setMessage("Purchase could not be saved. Please try again.");
     } finally {
       setPurchasingItem(null);
@@ -536,7 +568,7 @@ export default function StoreScreen() {
                         <Pressable
                           key={item.key}
                           accessibilityRole="button"
-                          accessibilityLabel={`${item.name}, ${item.owned ? "owned" : `${item.price.finalPrice} coins`}`}
+                          accessibilityLabel={`${item.name}, ${item.owned ? "owned" : `${item.price.finalPrice} ${item.price.currency === "diamond" ? "diamonds" : "coins"}`}`}
                           accessibilityState={{ selected }}
                           onPress={() => {
                             setSelectedKey(item.key);
@@ -591,18 +623,32 @@ export default function StoreScreen() {
                               </Text>
                             </View>
                           )}
-                          <Text
-                            numberOfLines={1}
-                            style={
-                              item.owned ? styles.ownedLabel : styles.itemPrice
-                            }
-                          >
-                            {item.owned
-                              ? "OWNED"
-                              : item.locked
-                                ? "LEVEL 10"
-                                : `${item.price.finalPrice.toLocaleString()} COINS`}
-                          </Text>
+                          {item.owned || item.locked ? (
+                            <Text
+                              numberOfLines={1}
+                              style={
+                                item.owned
+                                  ? styles.ownedLabel
+                                  : styles.itemPrice
+                              }
+                            >
+                              {item.owned ? "OWNED" : "LEVEL 10"}
+                            </Text>
+                          ) : (
+                            <View style={styles.priceRow}>
+                              <Image
+                                source={currencyIcon(item.price.currency)}
+                                style={styles.itemPriceIcon}
+                                contentFit="contain"
+                                accessibilityLabel={currencyName(
+                                  item.price.currency,
+                                )}
+                              />
+                              <Text numberOfLines={1} style={styles.itemPrice}>
+                                {item.price.finalPrice.toLocaleString()}
+                              </Text>
+                            </View>
+                          )}
                         </Pressable>
                       );
                     })}
@@ -646,9 +692,11 @@ export default function StoreScreen() {
                       {selectedItem.rarity.toUpperCase()}
                     </Text>
                     <Text style={styles.detailTitle}>{selectedItem.name}</Text>
-                    <Text style={styles.detailSubtitle}>
-                      {selectedItem.subtitle}
-                    </Text>
+                    {selectedItem.kind === "skin" && (
+                      <Text style={styles.detailSubtitle}>
+                        {selectedItem.subtitle}
+                      </Text>
+                    )}
                     {selectedItem.kind === "hero" &&
                       selectedItem.profilePicture && (
                         <View style={styles.detailProfilePictureBonus}>
@@ -666,23 +714,49 @@ export default function StoreScreen() {
                           </Text>
                         </View>
                       )}
-                    <Text numberOfLines={4} style={styles.detailDescription}>
-                      {selectedItem.description}
-                    </Text>
+                    {!!selectedItem.description && (
+                      <Text numberOfLines={4} style={styles.detailDescription}>
+                        {selectedItem.description}
+                      </Text>
+                    )}
                     {!selectedItem.owned &&
                       selectedItem.price.discountPercent > 0 && (
-                        <Text style={styles.discountText}>
-                          {selectedItem.price.price} coins ·{" "}
-                          {selectedItem.price.discountPercent}% off
-                        </Text>
+                        <View style={styles.discountRow}>
+                          <Image
+                            source={currencyIcon(selectedItem.price.currency)}
+                            style={styles.discountIcon}
+                            contentFit="contain"
+                            accessibilityLabel={currencyName(
+                              selectedItem.price.currency,
+                            )}
+                          />
+                          <Text style={styles.discountText}>
+                            {selectedItem.price.price.toLocaleString()} ·{" "}
+                            {selectedItem.price.discountPercent}% off
+                          </Text>
+                        </View>
                       )}
-                    <Text style={styles.detailPrice}>
-                      {selectedItem.owned
-                        ? "IN YOUR COLLECTION"
-                        : selectedItem.locked
-                          ? "UNLOCKS AT LEVEL 10"
-                          : `${selectedItem.price.finalPrice.toLocaleString()} COINS`}
-                    </Text>
+                    {selectedItem.owned || selectedItem.locked ? (
+                      <Text style={styles.detailPrice}>
+                        {selectedItem.owned
+                          ? "IN YOUR COLLECTION"
+                          : "UNLOCKS AT LEVEL 10"}
+                      </Text>
+                    ) : (
+                      <View style={styles.priceRow}>
+                        <Image
+                          source={currencyIcon(selectedItem.price.currency)}
+                          style={styles.detailPriceIcon}
+                          contentFit="contain"
+                          accessibilityLabel={currencyName(
+                            selectedItem.price.currency,
+                          )}
+                        />
+                        <Text style={styles.detailPrice}>
+                          {selectedItem.price.finalPrice.toLocaleString()}
+                        </Text>
+                      </View>
+                    )}
                     {!selectedItem.owned && (
                       <Pressable
                         accessibilityRole="button"
@@ -690,19 +764,19 @@ export default function StoreScreen() {
                           disabled:
                             !!purchasingItem ||
                             selectedItem.locked ||
-                            coinBalance < selectedItem.price.finalPrice,
+                            cannotAffordSelected,
                         }}
                         disabled={
                           !!purchasingItem ||
                           selectedItem.locked ||
-                          coinBalance < selectedItem.price.finalPrice
+                          cannotAffordSelected
                         }
                         onPress={() => void purchaseItem(selectedItem)}
                         style={[
                           styles.buyButton,
                           (!!purchasingItem ||
                             selectedItem.locked ||
-                            coinBalance < selectedItem.price.finalPrice) &&
+                            cannotAffordSelected) &&
                             styles.disabledButton,
                         ]}
                       >
@@ -711,8 +785,8 @@ export default function StoreScreen() {
                             ? "BUYING…"
                             : selectedItem.locked
                               ? "LEVEL 10 REQUIRED"
-                              : coinBalance < selectedItem.price.finalPrice
-                                ? "NOT ENOUGH COINS"
+                              : cannotAffordSelected
+                                ? `NOT ENOUGH ${currencyLabel(selectedItem.price.currency)}`
                                 : "BUY ITEM"}
                         </Text>
                       </Pressable>
@@ -1037,11 +1111,25 @@ const styles = StyleSheet.create({
     textAlign: "center",
   },
   discountText: {
-    marginTop: 7,
     color: "#fcd34d",
     fontSize: 9,
     fontWeight: "800",
   },
+  discountRow: {
+    marginTop: 7,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 3,
+  },
+  discountIcon: { width: 11, height: 11 },
+  priceRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 4,
+  },
+  itemPriceIcon: { width: 12, height: 12 },
+  detailPriceIcon: { width: 16, height: 16 },
   detailPrice: {
     marginTop: 8,
     color: "#bef264",

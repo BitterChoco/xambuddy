@@ -3,7 +3,10 @@ import { readRemoteAssetJson } from "@/services/remote-assets";
 type PriceRule = {
   price: number;
   discountPercent: number;
+  currency?: string;
 };
+
+export type StoreCurrency = "coin" | "diamond";
 
 type StorePricing = {
   defaults: {
@@ -28,7 +31,20 @@ export async function initializeRemoteStorePricing() {
   );
 }
 
+function normalizeCurrency(value: unknown): StoreCurrency | undefined {
+  if (typeof value !== "string") return undefined;
+  const currency = value.trim().toLowerCase();
+  if (currency === "diamond" || currency === "diamonds") return "diamond";
+  if (currency === "coin" || currency === "coins") return "coin";
+  return undefined;
+}
+
 function sanitizeRule(rule: PriceRule | undefined, fallback: PriceRule) {
+  // A rule without a currency inherits the fallback's, then defaults to coins.
+  const currency: StoreCurrency =
+    normalizeCurrency(rule?.currency) ??
+    normalizeCurrency(fallback.currency) ??
+    "coin";
   const price = Number.isFinite(rule?.price)
     ? Math.max(0, Math.floor(rule?.price ?? fallback.price))
     : fallback.price;
@@ -45,6 +61,7 @@ function sanitizeRule(rule: PriceRule | undefined, fallback: PriceRule) {
   return {
     price,
     discountPercent,
+    currency,
     finalPrice: Math.floor((price * (100 - discountPercent)) / 100),
   };
 }

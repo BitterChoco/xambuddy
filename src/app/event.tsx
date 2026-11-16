@@ -3,24 +3,36 @@ import { Image } from "expo-image";
 import { router } from "expo-router";
 import { useCallback, useEffect, useState } from "react";
 import {
-    ActivityIndicator,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TextInput,
-    View,
+  ActivityIndicator,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import {
-    loadRedeemCodes,
-    redeemCode,
-    type RedeemCode,
+  loadRedeemCodes,
+  redeemCode,
+  type RedeemCode,
 } from "@/services/redeem-codes";
 import { getRemoteAssetSource } from "@/services/remote-assets";
+import {
+  claimLoginReward,
+  getLoginRoadmapState,
+  loadLoginRewards,
+  type LoginReward,
+  type LoginRoadmapState,
+} from "@/services/weekly-login";
 
 const eventBackdrop = require("@/assets/images/background_1.png");
 const eventIcon = getRemoteAssetSource("game/icons/calendar_1.png");
+const weeklyRewardIcons = {
+  coin: getRemoteAssetSource("game/icons/coin_1.png"),
+  exp: getRemoteAssetSource("game/icons/xp_1.png"),
+  diamond: getRemoteAssetSource("game/icons/diamond_1.png"),
+};
 
 export default function EventScreen() {
   const [activeTab, setActiveTab] = useState<"events" | "redeem">("events");
@@ -30,6 +42,42 @@ export default function EventScreen() {
   const [messageIsSuccess, setMessageIsSuccess] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isRedeeming, setIsRedeeming] = useState(false);
+  const [weeklyRewards, setWeeklyRewards] = useState<LoginReward[]>([]);
+  const [weeklyState, setWeeklyState] = useState<LoginRoadmapState | null>(
+    null,
+  );
+  const [weeklyMessage, setWeeklyMessage] = useState("");
+  const [isClaimingWeekly, setIsClaimingWeekly] = useState(false);
+
+  useEffect(() => {
+    let isMounted = true;
+    void loadLoginRewards()
+      .then(async (rewards) => {
+        const state = await getLoginRoadmapState(rewards);
+        if (!isMounted) return;
+        setWeeklyRewards(rewards);
+        setWeeklyState(state);
+      })
+      .catch(() => undefined);
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  const claimWeekly = async () => {
+    if (isClaimingWeekly) return;
+    setIsClaimingWeekly(true);
+    try {
+      setWeeklyState(await claimLoginReward(weeklyRewards));
+      setWeeklyMessage(
+        "Reward sent to your email. Open the mailbox to claim it.",
+      );
+    } catch {
+      setWeeklyMessage("Could not claim your reward. Please try again.");
+    } finally {
+      setIsClaimingWeekly(false);
+    }
+  };
 
   const refreshCodes = useCallback(async () => {
     setIsLoading(true);
@@ -163,30 +211,113 @@ export default function EventScreen() {
             keyboardShouldPersistTaps="handled"
           >
             {activeTab === "events" ? (
-              <View style={styles.featuredEvent}>
-                <View style={styles.eventBadge}>
-                  <Text style={styles.eventBadgeText}>
-                    LIMITED-TIME REWARDS
+              <View style={styles.eventsColumn}>
+                {weeklyRewards.length > 0 && weeklyState && (
+                  <View style={styles.weeklyPanel}>
+                    <Text style={styles.eventBadgeText}>
+                      DAILY LOGIN REWARDS
+                    </Text>
+                    <ScrollView
+                      horizontal
+                      showsHorizontalScrollIndicator={false}
+                      contentContainerStyle={styles.roadmapRow}
+                    >
+                      {weeklyRewards.map((reward, index) => {
+                        const completed =
+                          reward.day <= weeklyState.completedDays;
+                        const canClaim =
+                          reward.day === weeklyState.claimableDay;
+                        return (
+                          <View key={reward.day} style={styles.roadmapStep}>
+                            {index > 0 && (
+                              <View
+                                style={[
+                                  styles.roadmapLine,
+                                  completed && styles.roadmapLineDone,
+                                ]}
+                              />
+                            )}
+                            <Pressable
+                              accessibilityRole="button"
+                              accessibilityLabel={`Day ${reward.day} reward, ${completed ? "collected" : canClaim ? "tap to claim" : "locked"}`}
+                              accessibilityState={{ disabled: !canClaim }}
+                              disabled={!canClaim || isClaimingWeekly}
+                              onPress={() => void claimWeekly()}
+                              style={styles.roadmapNodeWrap}
+                            >
+                              <View
+                                style={[
+                                  styles.roadmapNode,
+                                  completed && styles.roadmapNodeDone,
+                                  canClaim && styles.roadmapNodeActive,
+                                ]}
+                              >
+                                <Text
+                                  style={[
+                                    styles.roadmapNodeText,
+                                    completed && styles.roadmapNodeTextDone,
+                                  ]}
+                                >
+                                  {completed ? "✓" : reward.day}
+                                </Text>
+                              </View>
+                              <Text style={styles.roadmapDay}>
+                                {canClaim ? "CLAIM" : `DAY ${reward.day}`}
+                              </Text>
+                              {reward.rewards.map((item) => (
+                                <View
+                                  key={item.id}
+                                  style={styles.roadmapReward}
+                                >
+                                  <Image
+                                    source={weeklyRewardIcons[item.id]}
+                                    style={styles.roadmapRewardIcon}
+                                    contentFit="contain"
+                                  />
+                                  <Text style={styles.roadmapAmount}>
+                                    {item.amount.toLocaleString()}
+                                  </Text>
+                                </View>
+                              ))}
+                            </Pressable>
+                          </View>
+                        );
+                      })}
+                    </ScrollView>
+                    {!!weeklyMessage && (
+                      <Text style={[styles.feedback, styles.successMessage]}>
+                        {weeklyMessage}
+                      </Text>
+                    )}
+                  </View>
+                )}
+                <View style={styles.featuredEvent}>
+                  <View style={styles.eventBadge}>
+                    <Text style={styles.eventBadgeText}>
+                      LIMITED-TIME REWARDS
+                    </Text>
+                  </View>
+                  <Text style={styles.eventTitle}>
+                    A gift for your next adventure
                   </Text>
-                </View>
-                <Text style={styles.eventTitle}>
-                  A gift for your next adventure
-                </Text>
-                <Text style={styles.eventDescription}>
-                  Redeem a limited-time code for bonus coins and XP. Each code
-                  can be used once per device.
-                </Text>
-                <View style={styles.eventFooter}>
-                  <Pressable
-                    accessibilityRole="button"
-                    onPress={() => {
-                      setMessage("");
-                      setActiveTab("redeem");
-                    }}
-                    style={styles.primaryButton}
-                  >
-                    <Text style={styles.primaryButtonText}>REDEEM A CODE</Text>
-                  </Pressable>
+                  <Text style={styles.eventDescription}>
+                    Redeem a limited-time code for bonus coins and XP. Each code
+                    can be used once per device.
+                  </Text>
+                  <View style={styles.eventFooter}>
+                    <Pressable
+                      accessibilityRole="button"
+                      onPress={() => {
+                        setMessage("");
+                        setActiveTab("redeem");
+                      }}
+                      style={styles.primaryButton}
+                    >
+                      <Text style={styles.primaryButtonText}>
+                        REDEEM A CODE
+                      </Text>
+                    </Pressable>
+                  </View>
                 </View>
               </View>
             ) : (
@@ -366,6 +497,69 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     padding: 12,
   },
+  eventsColumn: {
+    width: "100%",
+    maxWidth: 620,
+    alignSelf: "center",
+    gap: 10,
+  },
+  weeklyPanel: {
+    padding: 14,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "rgba(163, 230, 53, 0.35)",
+    backgroundColor: "rgba(15, 35, 25, 0.94)",
+  },
+  roadmapRow: {
+    alignItems: "flex-start",
+    paddingTop: 12,
+    paddingBottom: 2,
+  },
+  roadmapStep: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+  },
+  roadmapLine: {
+    width: 26,
+    height: 4,
+    marginTop: 15,
+    borderRadius: 2,
+    backgroundColor: "rgba(148, 163, 184, 0.3)",
+  },
+  roadmapLineDone: { backgroundColor: "#a3e635" },
+  roadmapNodeWrap: { width: 58, alignItems: "center" },
+  roadmapNode: {
+    width: 34,
+    height: 34,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 17,
+    borderWidth: 2,
+    borderColor: "rgba(148, 163, 184, 0.4)",
+    backgroundColor: "rgba(2, 12, 9, 0.95)",
+  },
+  roadmapNodeDone: { borderColor: "#a3e635", backgroundColor: "#a3e635" },
+  roadmapNodeActive: {
+    borderColor: "#facc15",
+    backgroundColor: "rgba(250, 204, 21, 0.2)",
+  },
+  roadmapNodeText: { color: "#94a3b8", fontSize: 13, fontWeight: "900" },
+  roadmapNodeTextDone: { color: "#14220b" },
+  roadmapDay: {
+    marginTop: 4,
+    color: "#cbd5e1",
+    fontSize: 8,
+    fontWeight: "900",
+    letterSpacing: 0.6,
+  },
+  roadmapReward: {
+    marginTop: 3,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 3,
+  },
+  roadmapRewardIcon: { width: 14, height: 14 },
+  roadmapAmount: { color: "#f0fdf4", fontSize: 10, fontWeight: "900" },
   featuredEvent: {
     width: "100%",
     maxWidth: 620,

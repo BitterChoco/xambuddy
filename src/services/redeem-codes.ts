@@ -1,13 +1,13 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
-import { addMail } from "@/services/mailbox";
+import { addMail, isRewardId } from "@/services/mailbox";
 import { fetchRemoteAssetJson } from "@/services/remote-assets";
 
 const REDEEM_CODES_PATH = "game/constants/redeem-codes.json";
 const REDEEMED_CODES_KEY = "wild-paw.redeemed-codes";
 
 type RedeemReward = {
-  id: "coin" | "exp";
+  id: "coin" | "exp" | "diamond";
   amount: number;
 };
 
@@ -50,7 +50,7 @@ export async function loadRedeemCodes() {
     const rewards = item.rewards.filter(
       (reward): reward is RedeemReward =>
         !!reward &&
-        (reward.id === "coin" || reward.id === "exp") &&
+        isRewardId(reward.id) &&
         Number.isSafeInteger(reward.amount) &&
         reward.amount > 0,
     );

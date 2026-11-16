@@ -22,7 +22,10 @@ const mailIcon = getRemoteAssetSource("game/icons/email_1.png");
 const rewardIcons = {
   coin: getRemoteAssetSource("game/icons/coin_1.png"),
   exp: getRemoteAssetSource("game/icons/xp_1.png"),
+  diamond: getRemoteAssetSource("game/icons/diamond_1.png"),
 };
+
+const rewardLabels = { coin: "Coins", exp: "XP", diamond: "Diamonds" };
 
 function formatMailDate(timestamp: number) {
   return new Date(timestamp).toLocaleDateString(undefined, {
@@ -44,7 +47,9 @@ export default function MailScreen() {
   const canDeleteRead = mails.some((mail) => mail.read);
 
   const showClaimed = (totals: ClaimedTotals) => {
-    if (totals.coin > 0 || totals.exp > 0) setClaimedSummary(totals);
+    if (totals.coin > 0 || totals.exp > 0 || totals.diamond > 0) {
+      setClaimedSummary(totals);
+    }
   };
 
   const markAllAsRead = async () => {
@@ -223,9 +228,7 @@ export default function MailScreen() {
                             source={rewardIcons[reward.id]}
                             style={styles.rewardIcon}
                             contentFit="contain"
-                            accessibilityLabel={
-                              reward.id === "coin" ? "Coins" : "XP"
-                            }
+                            accessibilityLabel={rewardLabels[reward.id]}
                           />
                           <Text style={styles.rewardAmount}>
                             {reward.amount.toLocaleString()}
@@ -279,6 +282,7 @@ export default function MailScreen() {
                         [
                           { id: "exp", amount: claimedSummary.exp },
                           { id: "coin", amount: claimedSummary.coin },
+                          { id: "diamond", amount: claimedSummary.diamond },
                         ] as const
                       )
                         .filter((reward) => reward.amount > 0)
@@ -288,9 +292,7 @@ export default function MailScreen() {
                               source={rewardIcons[reward.id]}
                               style={styles.rewardIcon}
                               contentFit="contain"
-                              accessibilityLabel={
-                                reward.id === "coin" ? "Coins" : "XP"
-                              }
+                              accessibilityLabel={rewardLabels[reward.id]}
                             />
                             <Text style={styles.rewardAmount}>
                               {reward.amount.toLocaleString()}

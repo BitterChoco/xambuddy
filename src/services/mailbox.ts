@@ -2,11 +2,21 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useEffect, useState } from "react";
 
 import { awardCoins } from "@/constants/coin-wallet";
+import { awardDiamonds } from "@/constants/diamond-wallet";
 import { awardPlayerXp } from "@/constants/player-experience";
 
 const MAILBOX_KEY = "wild-paw.mailbox";
 
-export type MailReward = { id: "coin" | "exp"; amount: number };
+export type MailReward = { id: "coin" | "exp" | "diamond"; amount: number };
+
+export const isRewardId = (id: unknown): id is MailReward["id"] =>
+  id === "coin" || id === "exp" || id === "diamond";
+
+async function awardReward(id: MailReward["id"], amount: number) {
+  if (id === "coin") await awardCoins(amount);
+  else if (id === "diamond") await awardDiamonds(amount);
+  else await awardPlayerXp(amount);
+}
 
 export type MailMessage = {
   id: string;
@@ -101,17 +111,18 @@ export function deleteMail(id: string) {
   );
 }
 
-export type ClaimedTotals = { coin: number; exp: number };
+export type ClaimedTotals = { coin: number; exp: number; diamond: number };
 
 async function bulkUpdate(
   update: (mails: MailMessage[]) => MailMessage[],
   isClaimable: (mail: MailMessage) => boolean,
 ): Promise<ClaimedTotals> {
-  const totals: ClaimedTotals = { coin: 0, exp: 0 };
+  const totals: ClaimedTotals = { coin: 0, exp: 0, diamond: 0 };
   await updateMails((mails) => {
     // Reset so a re-run of the updater never double counts.
     totals.coin = 0;
     totals.exp = 0;
+    totals.diamond = 0;
     for (const mail of mails) {
       if (mail.claimed || !isClaimable(mail)) continue;
       for (const reward of mail.rewards) totals[reward.id] += reward.amount;
@@ -121,6 +132,7 @@ async function bulkUpdate(
   // Marked claimed before awarding so a failure can't grant rewards twice.
   if (totals.coin > 0) await awardCoins(totals.coin);
   if (totals.exp > 0) await awardPlayerXp(totals.exp);
+  if (totals.diamond > 0) await awardDiamonds(totals.diamond);
   return totals;
 }
 
@@ -151,8 +163,7 @@ export async function claimMail(id: string) {
     ),
   );
   for (const reward of target.rewards) {
-    if (reward.id === "coin") await awardCoins(reward.amount);
-    else await awardPlayerXp(reward.amount);
+    await awardReward(reward.id, reward.amount);
   }
 }
 

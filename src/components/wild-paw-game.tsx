@@ -76,6 +76,8 @@ type Enemy = {
   damage: number;
   color: string;
   isBoss: boolean;
+  level?: number;
+  bulletImpactTimer?: number;
   arenaBossId?: string;
   isBossAdd?: boolean;
   scoreReward?: number;
@@ -149,6 +151,7 @@ type Bullet = {
   damage: number;
   vx: number;
   vy: number;
+  isHighDamage?: boolean;
 };
 
 type GrenadeProjectile = {
@@ -331,6 +334,7 @@ type GameState = {
   bossAddWarningTimer: number;
   bossAddSpawnSide: BossAddSpawnSide;
   bossEntrySide: ArenaSide;
+  bossHitId: number;
 };
 
 const ARENA_WIDTH = 640;
@@ -338,13 +342,14 @@ const ARENA_HEIGHT = 360;
 const PLAYER_RADIUS = 18;
 const MAX_HEALTH = 100;
 const PLAYER_SPEED = 140;
-const SPEED_BOOST_DURATION = 30;
+const SPEED_BOOST_DURATION = 120;
 const SPEED_BOOST_MULTIPLIER = 1.55;
-const RAPID_FIRE_DURATION = 30;
+const RAPID_FIRE_DURATION = 120;
 const NORMAL_FIRE_COOLDOWN = 0.22;
 const RAPID_FIRE_COOLDOWN = 0.11;
-const HIGH_DAMAGE_DURATION = 30;
+const HIGH_DAMAGE_DURATION = 120;
 const HIGH_DAMAGE_MULTIPLIER = 2;
+const ENEMY_HEALTH_PER_LEVEL = 0.25;
 const DASH_COOLDOWN = 2.2;
 const BULLET_SPEED = 260;
 const GRENADE_SPEED = 250;
@@ -372,6 +377,11 @@ const bulletImage = getRemoteAssetSource("game/icons/bullet_1.png");
 const bulletProjectileImage = getRemoteAssetSource(
   "game/weapon/weapon_1-2.png",
 );
+const highDamageBulletImage = getRemoteAssetSource(
+  "game/weapon/weapon_1-3.png",
+);
+const bulletImpactImage = getRemoteAssetSource("game/weapon/weapon_1-4.png");
+const BULLET_IMPACT_DURATION = 0.2;
 const bombImage = getRemoteAssetSource("game/icons/bomb_1.png");
 const dashImage = getRemoteAssetSource("game/icons/dash_1.png");
 const ghostImage = getRemoteAssetSource("game/icons/ghost_1.png");
@@ -403,6 +413,10 @@ const playerHurtSounds = [
   getRemoteAssetSource("game/sound/player_hurt_3.mp3"),
 ];
 const PLAYER_HURT_SOUND_COOLDOWN_MS = 1000;
+const BOSS_LAUGH_COOLDOWN_MS = 5000;
+const bossLaughSound = getRemoteAssetSource(
+  "game/sound/enemy_laugh_boss_1.mp3",
+);
 
 function getWaveEnemyCount(wave: number) {
   return 4 + wave;
@@ -1287,9 +1301,16 @@ function advanceGrenadeProjectiles(
   };
 }
 
+function getEnemyLevel(wave: number) {
+  // Enemies level up each time the arena changes after a boss wave.
+  return Math.floor(Math.max(0, wave - 1) / WAVES_PER_ARENA) + 1;
+}
+
 function makeEnemy(wave: number, id: number): Enemy {
   const isBoss = wave > 1 && wave % 3 === 0 && Math.random() > 0.6;
   const bossBonus = isBoss ? 2.8 : 1;
+  const level = getEnemyLevel(wave);
+  const levelHealthMultiplier = 1 + (level - 1) * ENEMY_HEALTH_PER_LEVEL;
   const radius = isBoss ? 28 : 15 + Math.random() * 7;
   const side = Math.floor(Math.random() * 4);
   let x = 0;
@@ -1320,17 +1341,23 @@ function makeEnemy(wave: number, id: number): Enemy {
     x,
     y,
     radius,
-    health: (isBoss ? 140 : 28) * bossBonus,
-    maxHealth: (isBoss ? 140 : 28) * bossBonus,
+    health: (isBoss ? 140 : 28) * bossBonus * levelHealthMultiplier,
+    maxHealth: (isBoss ? 140 : 28) * bossBonus * levelHealthMultiplier,
     speed: (isBoss ? 26 : 44) * bossBonus,
     damage: isBoss ? 14 : 8,
     color: isBoss ? "#f97316" : "#34d399",
     isBoss,
+    level,
   };
 }
 
-function makeBossAddEnemy(side: BossAddSpawnSide): Enemy {
+function makeBossAddEnemy(side: BossAddSpawnSide, wave: number): Enemy {
   const enemy = makeEnemy(1, Date.now() + Math.random());
+  const level = getEnemyLevel(wave);
+  const levelHealthMultiplier = 1 + (level - 1) * ENEMY_HEALTH_PER_LEVEL;
+  enemy.level = level;
+  enemy.health *= levelHealthMultiplier;
+  enemy.maxHealth *= levelHealthMultiplier;
   enemy.isBossAdd = true;
   const minX = enemy.radius;
   const maxX = ARENA_WIDTH - enemy.radius;
@@ -1686,6 +1713,7 @@ function createInitialGame(
     bossAddWarningTimer: 0,
     bossAddSpawnSide: null,
     bossEntrySide: "top",
+    bossHitId: 0,
   };
 }
 
@@ -1872,6 +1900,7 @@ export function WildPawGame({
   const [battleControlSettings, setBattleControlSettings] =
     useState<BattleControlSettings>(DEFAULT_BATTLE_CONTROLS);
   const [bossAddWarningOpacity] = useState(() => new Animated.Value(1));
+  const [bossEntryMarkerOpacity] = useState(() => new Animated.Value(1));
   const [aimDirection, setAimDirection] = useState<Vector>({ x: 1, y: 0 });
   const [earnedCoins, setEarnedCoins] = useState(0);
   const [earnedXp, setEarnedXp] = useState(0);
@@ -2015,6 +2044,12 @@ export function WildPawGame({
   const vibrationPreferenceLoadedRef = useRef(false);
   const lastDamageEventIdRef = useRef<number | null>(null);
   const lastPlayerHurtSoundAtRef = useRef(0);
+  const lastBossLaughAtRef = useRef(0);
+  const knownBossPhaseRef = useRef<BossPhase>("idle");
+  const knownBossHitIdRef = useRef(0);
+  const bossLaughPlayerRef = useRef<ReturnType<
+    typeof createAudioPlayer
+  > | null>(null);
   const hasDownedPlayer = game.player.isDead || !!game.joinPlayer?.isDead;
   const hasEquippedOrb =
     (game.player.orbEquipped && !game.player.isDead) ||
@@ -2079,6 +2114,30 @@ export function WildPawGame({
   }, [bossAddWarningOpacity, game.bossAddSpawnSide]);
 
   useEffect(() => {
+    if (game.bossPhase !== "warning") {
+      bossEntryMarkerOpacity.setValue(1);
+      return;
+    }
+
+    const flicker = Animated.loop(
+      Animated.sequence([
+        Animated.timing(bossEntryMarkerOpacity, {
+          toValue: 0.15,
+          duration: 220,
+          useNativeDriver: true,
+        }),
+        Animated.timing(bossEntryMarkerOpacity, {
+          toValue: 1,
+          duration: 220,
+          useNativeDriver: true,
+        }),
+      ]),
+    );
+    flicker.start();
+    return () => flicker.stop();
+  }, [bossEntryMarkerOpacity, game.bossPhase]);
+
+  useEffect(() => {
     let isMounted = true;
     void getVibrationEnabled().then((enabled) => {
       if (isMounted) {
@@ -2099,6 +2158,9 @@ export function WildPawGame({
       createAudioPlayer(sound),
     );
     const enemyBossHurtPlayer = createAudioPlayer(enemyBossHurtSound);
+    const bossLaughPlayer = createAudioPlayer(bossLaughSound);
+    bossLaughPlayer.volume = soundEffectsVolumeRef.current;
+    bossLaughPlayerRef.current = bossLaughPlayer;
     const playerHurtPlayers = playerHurtSounds.map((sound) =>
       createAudioPlayer(sound),
     );
@@ -2132,6 +2194,9 @@ export function WildPawGame({
       }
       enemyBossHurtPlayer.pause();
       enemyBossHurtPlayer.remove();
+      bossLaughPlayer.pause();
+      bossLaughPlayer.remove();
+      bossLaughPlayerRef.current = null;
       for (const player of playerHurtPlayers) {
         player.pause();
         player.remove();
@@ -2162,6 +2227,9 @@ export function WildPawGame({
       }
       if (enemyBossHurtPlayerRef.current) {
         enemyBossHurtPlayerRef.current.volume = volume;
+      }
+      if (bossLaughPlayerRef.current) {
+        bossLaughPlayerRef.current.volume = volume;
       }
       for (const player of playerHurtPlayersRef.current) {
         player.volume = volume;
@@ -2351,6 +2419,26 @@ export function WildPawGame({
       );
     }
   }, [game.damageNumbers, localPlayerId]);
+
+  useEffect(() => {
+    const enteredPhase =
+      game.bossPhase === "entrance" && knownBossPhaseRef.current !== "entrance";
+    const wasHit = game.bossHitId > knownBossHitIdRef.current;
+    knownBossPhaseRef.current = game.bossPhase;
+    knownBossHitIdRef.current = game.bossHitId;
+    if (!enteredPhase && !wasHit) return;
+
+    const now = Date.now();
+    if (
+      !soundEffectsLoadedRef.current ||
+      soundEffectsVolumeRef.current <= 0 ||
+      now - lastBossLaughAtRef.current < BOSS_LAUGH_COOLDOWN_MS
+    ) {
+      return;
+    }
+    lastBossLaughAtRef.current = now;
+    replaySoundEffect(bossLaughPlayerRef.current);
+  }, [game.bossPhase, game.bossHitId]);
 
   useEffect(() => {
     if (!hasDownedPlayer && !hasEquippedOrb && !localPlayer.buddyId) {
@@ -3648,6 +3736,7 @@ export function WildPawGame({
                 radius: 5,
                 speed: BULLET_SPEED,
                 damage: getEffectiveBulletDamage(player),
+                isHighDamage: player.highDamageTimer > 0,
                 vx: direction.x,
                 vy: direction.y,
               },
@@ -3677,6 +3766,7 @@ export function WildPawGame({
                   radius: 5,
                   speed: BULLET_SPEED,
                   damage: getEffectiveBulletDamage(joinPlayer),
+                  isHighDamage: joinPlayer.highDamageTimer > 0,
                   vx: direction.x,
                   vy: direction.y,
                 },
@@ -3948,7 +4038,7 @@ export function WildPawGame({
             bossAddWarningTimer = Math.max(0, bossAddWarningTimer - delta);
             if (bossAddWarningTimer === 0) {
               bossAddEnemies = Array.from({ length: BOSS_ADD_COUNT }, () =>
-                makeBossAddEnemy(warningSide),
+                makeBossAddEnemy(warningSide, previous.wave),
               );
               bossAddSpawnSide = null;
               bossAddSpawnTimer = BOSS_ADD_FIRST_WARNING_DELAY;
@@ -3994,6 +4084,10 @@ export function WildPawGame({
               knockbackX: knockbackX * knockbackDecay,
               knockbackY: knockbackY * knockbackDecay,
               hitFlashTimer: Math.max(0, (enemy.hitFlashTimer ?? 0) - delta),
+              bulletImpactTimer: Math.max(
+                0,
+                (enemy.bulletImpactTimer ?? 0) - delta,
+              ),
             };
           };
 
@@ -4228,6 +4322,7 @@ export function WildPawGame({
               radius: 5,
               speed: BULLET_SPEED,
               damage: getEffectiveBulletDamage(player),
+              isHighDamage: player.highDamageTimer > 0,
               vx: direction.x,
               vy: direction.y,
             },
@@ -4257,6 +4352,7 @@ export function WildPawGame({
                 radius: 5,
                 speed: BULLET_SPEED,
                 damage: getEffectiveBulletDamage(joinPlayer),
+                isHighDamage: joinPlayer.highDamageTimer > 0,
                 vx: direction.x,
                 vy: direction.y,
               },
@@ -4319,6 +4415,7 @@ export function WildPawGame({
             if (hitDistanceSquared <= radiusSum * radiusSum) {
               enemy = applyEnemyHit(enemy, bullet, enemy.isBoss ? 40 : 260);
               enemy.health -= bullet.damage;
+              enemy.bulletImpactTimer = BULLET_IMPACT_DURATION;
               bulletHitIds.add(bullet.id);
               enemyHit = true;
               damageNumbers.push({
@@ -4459,6 +4556,7 @@ export function WildPawGame({
           spawnCooldown = Math.max(0.75, 1.4 - wave * 0.08);
         }
 
+        let bossHit = false;
         const damageOnePlayer = (
           currentPlayer: PlayerState | null,
           hostPlayer: boolean,
@@ -4466,6 +4564,7 @@ export function WildPawGame({
         ) => {
           if (!currentPlayer || currentPlayer.isDead) return currentPlayer;
           let damageTaken = arenaBossDamage;
+          if (arenaBossDamage > 0) bossHit = true;
           for (const enemy of enemies) {
             const dx = currentPlayer.x - enemy.x;
             const dy = currentPlayer.y - enemy.y;
@@ -4475,6 +4574,7 @@ export function WildPawGame({
                 Math.random() * 100 >=
                 getBuddyBonus(currentPlayer.buddyId, "dodgeChance")
               ) {
+                if (enemy.arenaBossId) bossHit = true;
                 damageTaken +=
                   enemy.damage *
                   (1 - getBuddyBonus(currentPlayer.buddyId, "defense") / 100) *
@@ -4806,6 +4906,7 @@ export function WildPawGame({
           bossAddWarningTimer,
           bossAddSpawnSide,
           bossEntrySide,
+          bossHitId: previous.bossHitId + (bossHit ? 1 : 0),
         };
 
         return nextState;
@@ -5234,7 +5335,7 @@ export function WildPawGame({
                 accessibilityLabel={`${game.bossName} is coming in ${Math.ceil(game.bossPhaseTimer)} seconds`}
                 style={styles.bossWarningOverlay}
               >
-                <View
+                <Animated.View
                   style={[
                     styles.bossEntryMarker,
                     game.bossEntrySide === "top"
@@ -5244,10 +5345,11 @@ export function WildPawGame({
                         : game.bossEntrySide === "bottom"
                           ? styles.bossEntryMarkerBottom
                           : styles.bossEntryMarkerLeft,
+                    { opacity: bossEntryMarkerOpacity },
                   ]}
                 >
                   <Text style={styles.bossEntryMarkerText}>!</Text>
-                </View>
+                </Animated.View>
                 <Text style={styles.bossWarningEyebrow}>
                   WAVE {game.wave} CLEARED
                 </Text>
@@ -5575,7 +5677,11 @@ export function WildPawGame({
               <Image
                 key={bullet.id}
                 pointerEvents="none"
-                source={bulletProjectileImage}
+                source={
+                  bullet.isHighDamage
+                    ? highDamageBulletImage
+                    : bulletProjectileImage
+                }
                 contentFit="contain"
                 style={[
                   styles.bullet,
@@ -5654,28 +5760,44 @@ export function WildPawGame({
               const isElite = enemy.isBoss && !isArenaBoss;
               const healthBarWidth = isArenaBoss ? 116 : 44;
               const healthBarHeight = isArenaBoss ? 12 : 10;
+              const healthBarLeft = clamp(
+                enemy.x - healthBarWidth / 2,
+                2,
+                ARENA_WIDTH - healthBarWidth - 2,
+              );
+              const healthBarTop = clamp(
+                enemy.y - enemy.radius - healthBarHeight - 8,
+                2,
+                ARENA_HEIGHT - healthBarHeight - 2,
+              );
               const isHitFlashOn =
                 (enemy.hitFlashTimer ?? 0) > 0 &&
                 Math.floor((enemy.hitFlashTimer ?? 0) * 24) % 2 === 0;
 
               return (
                 <View key={enemy.id}>
+                  {!isArenaBoss && enemy.level !== undefined && (
+                    <View
+                      pointerEvents="none"
+                      style={[
+                        styles.enemyLevelBadge,
+                        {
+                          left: Math.max(0, healthBarLeft - 11),
+                          top: healthBarTop + (healthBarHeight - 15) / 2,
+                        },
+                      ]}
+                    >
+                      <Text style={styles.enemyLevelText}>{enemy.level}</Text>
+                    </View>
+                  )}
                   <View
                     style={[
                       styles.enemyHealthBarOuter,
                       isArenaBoss && styles.arenaBossHealthBar,
                       isElite && styles.eliteEnemyHealthBar,
                       {
-                        left: clamp(
-                          enemy.x - healthBarWidth / 2,
-                          2,
-                          ARENA_WIDTH - healthBarWidth - 2,
-                        ),
-                        top: clamp(
-                          enemy.y - enemy.radius - healthBarHeight - 8,
-                          2,
-                          ARENA_HEIGHT - healthBarHeight - 2,
-                        ),
+                        left: healthBarLeft,
+                        top: healthBarTop,
                         width: healthBarWidth,
                       },
                     ]}
@@ -5738,6 +5860,24 @@ export function WildPawGame({
                             : "Enemy"
                       }
                     />
+                    {(enemy.bulletImpactTimer ?? 0) > 0 && (
+                      <Image
+                        pointerEvents="none"
+                        source={bulletImpactImage}
+                        contentFit="contain"
+                        style={[
+                          styles.enemyImpact,
+                          {
+                            opacity: clamp(
+                              (enemy.bulletImpactTimer ?? 0) /
+                                BULLET_IMPACT_DURATION,
+                              0,
+                              1,
+                            ),
+                          },
+                        ]}
+                      />
+                    )}
                   </View>
                 </View>
               );
@@ -7086,7 +7226,7 @@ export function WildPawGame({
             </View>
           </View>
         )}
-        {game.warpTransitionTimer > 0 && game.isRunning && (
+        {game.warpTransitionTimer > 0 && game.isRunning && !game.isPaused && (
           <View
             pointerEvents="none"
             style={[
@@ -7095,7 +7235,7 @@ export function WildPawGame({
             ]}
           />
         )}
-        {game.warpTransitionTimer > 0 && game.isRunning && (
+        {game.warpTransitionTimer > 0 && game.isRunning && !game.isPaused && (
           <View
             pointerEvents="none"
             accessibilityLiveRegion="polite"
@@ -7952,6 +8092,14 @@ const styles = StyleSheet.create({
     position: "absolute",
     zIndex: 5,
   },
+  enemyImpact: {
+    position: "absolute",
+    left: "15%",
+    top: "15%",
+    width: "70%",
+    height: "70%",
+    zIndex: 3,
+  },
   enemyHitFlash: {
     tintColor: "#ef4444",
   },
@@ -7968,6 +8116,23 @@ const styles = StyleSheet.create({
     textShadowColor: "rgba(0, 0, 0, 0.9)",
     textShadowOffset: { width: 1, height: 1 },
     textShadowRadius: 2,
+  },
+  enemyLevelBadge: {
+    position: "absolute",
+    width: 15,
+    height: 15,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#2563eb",
+    zIndex: 2,
+  },
+  enemyLevelText: {
+    color: "#fff",
+    fontSize: 8,
+    fontWeight: "900",
+    lineHeight: 10,
+    textAlign: "center",
   },
   enemyHealthBarOuter: {
     position: "absolute",
