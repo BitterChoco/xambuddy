@@ -42,6 +42,7 @@ import { Image } from "expo-image";
 import { router } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  Animated,
   BackHandler,
   Platform,
   StyleSheet,
@@ -76,6 +77,7 @@ type Enemy = {
   color: string;
   isBoss: boolean;
   arenaBossId?: string;
+  isBossAdd?: boolean;
   scoreReward?: number;
   hitFlashTimer?: number;
   knockbackX?: number;
@@ -97,6 +99,8 @@ type EnemyDeathEffect = {
 type ArenaBossPattern = "artillery" | "charger";
 type BossPhase = "idle" | "warning" | "entrance" | "active";
 type BossAttackPhase = "cooldown" | "telegraph" | "dash";
+type ArenaSide = "top" | "right" | "bottom" | "left";
+type BossAddSpawnSide = ArenaSide | null;
 type ArenaBossConfig = {
   id: string;
   name: string;
@@ -173,6 +177,7 @@ type ConsumableDrop = {
   x: number;
   y: number;
   life: number;
+  pickupAvailableAt?: number;
 };
 
 type DamageNumber = {
@@ -322,6 +327,10 @@ type GameState = {
   bossDashHasHit: boolean;
   bossProjectiles: BossProjectile[];
   bossAreaEffects: BossAreaEffect[];
+  bossAddSpawnTimer: number;
+  bossAddWarningTimer: number;
+  bossAddSpawnSide: BossAddSpawnSide;
+  bossEntrySide: ArenaSide;
 };
 
 const ARENA_WIDTH = 640;
@@ -368,6 +377,7 @@ const dashImage = getRemoteAssetSource("game/icons/dash_1.png");
 const ghostImage = getRemoteAssetSource("game/icons/ghost_1.png");
 const coinImage = getRemoteAssetSource("game/icons/coin_1.png");
 const trophyImage = getRemoteAssetSource("game/icons/trophy_1.png");
+const xpImage = getRemoteAssetSource("game/icons/xp_1.png");
 const homeIcon = getRemoteAssetSource("game/icons/home_1.png");
 const playIcon = getRemoteAssetSource("game/icons/play_1.png");
 const pauseIcon = getRemoteAssetSource("game/icons/pause_1.png");
@@ -481,6 +491,12 @@ const ENEMY_SPRITE_ASSETS = {
   ],
 } as const;
 const WAVES_PER_ARENA = 10;
+const BOSS_ADD_COUNT = 10;
+const BOSS_ADD_SPAWN_INTERVAL = 10;
+const BOSS_ADD_WARNING_DURATION = 2;
+const BOSS_CHEST_PICKUP_DELAY_MS = 3000;
+const BOSS_ADD_FIRST_WARNING_DELAY =
+  BOSS_ADD_SPAWN_INTERVAL - BOSS_ADD_WARNING_DURATION;
 function getWaveCountdownDuration(wave: number) {
   return wave % WAVES_PER_ARENA === 0
     ? BOSS_WAVE_COUNTDOWN_DURATION
@@ -956,6 +972,7 @@ function makeEnemyDrops(
       y,
       life:
         chestConfig.stayDurationSeconds + chestConfig.flickerDurationSeconds,
+      pickupAvailableAt: Date.now() + BOSS_CHEST_PICKUP_DELAY_MS,
     };
     placedDrops.push(chestDrop);
     newDrops.push(chestDrop);
@@ -984,7 +1001,11 @@ function advanceItemDrops(
     const touchingPlayer =
       !player.isDead &&
       Math.hypot(drop.x - player.x, drop.y - player.y) <= config.pickupRadius;
-    if (touchingPlayer && drop.kind === "chest") {
+    if (
+      touchingPlayer &&
+      drop.kind === "chest" &&
+      Date.now() >= (drop.pickupAvailableAt ?? 0)
+    ) {
       rewardPopupTriggered = true;
       continue;
     }
@@ -1308,14 +1329,64 @@ function makeEnemy(wave: number, id: number): Enemy {
   };
 }
 
-function makeArenaBoss(config: ArenaBossConfig, wave: number): Enemy {
+function makeBossAddEnemy(side: BossAddSpawnSide): Enemy {
+  const enemy = makeEnemy(1, Date.now() + Math.random());
+  enemy.isBossAdd = true;
+  const minX = enemy.radius;
+  const maxX = ARENA_WIDTH - enemy.radius;
+  const minY = enemy.radius;
+  const maxY = ARENA_HEIGHT - enemy.radius;
+  switch (side) {
+    case "top":
+      enemy.x = minX + Math.random() * (maxX - minX);
+      enemy.y = minY;
+      break;
+    case "right":
+      enemy.x = maxX;
+      enemy.y = minY + Math.random() * (maxY - minY);
+      break;
+    case "bottom":
+      enemy.x = minX + Math.random() * (maxX - minX);
+      enemy.y = maxY;
+      break;
+    case "left":
+      enemy.x = minX;
+      enemy.y = minY + Math.random() * (maxY - minY);
+      break;
+    case null:
+      break;
+  }
+  return enemy;
+}
+
+const BOSS_ENTRY_REST = { x: ARENA_WIDTH / 2, y: 92 };
+
+function getBossEntryStart(side: ArenaSide, radius: number): Vector {
+  switch (side) {
+    case "top":
+      return { x: ARENA_WIDTH / 2, y: -radius };
+    case "bottom":
+      return { x: ARENA_WIDTH / 2, y: ARENA_HEIGHT + radius };
+    case "left":
+      return { x: -radius, y: ARENA_HEIGHT / 2 };
+    case "right":
+      return { x: ARENA_WIDTH + radius, y: ARENA_HEIGHT / 2 };
+  }
+}
+
+function makeArenaBoss(
+  config: ArenaBossConfig,
+  wave: number,
+  side: ArenaSide,
+): Enemy {
+  const start = getBossEntryStart(side, 42);
   const encounterNumber = Math.max(1, Math.floor(wave / WAVES_PER_ARENA));
   const health = config.health + (encounterNumber - 1) * 250;
   return {
     id: Date.now() + Math.random(),
     imageAsset: getRandomEnemySpriteAsset("boss"),
-    x: ARENA_WIDTH / 2,
-    y: -86,
+    x: start.x,
+    y: start.y,
     radius: 42,
     health,
     maxHealth: health,
@@ -1611,6 +1682,10 @@ function createInitialGame(
     bossDashHasHit: false,
     bossProjectiles: [],
     bossAreaEffects: [],
+    bossAddSpawnTimer: 0,
+    bossAddWarningTimer: 0,
+    bossAddSpawnSide: null,
+    bossEntrySide: "top",
   };
 }
 
@@ -1790,9 +1865,13 @@ export function WildPawGame({
     }
     return initial;
   });
+  const [dismissedBossChestId, setDismissedBossChestId] = useState<
+    number | null
+  >(null);
   const [joystick, setJoystick] = useState({ x: 0, y: 0, active: false });
   const [battleControlSettings, setBattleControlSettings] =
     useState<BattleControlSettings>(DEFAULT_BATTLE_CONTROLS);
+  const [bossAddWarningOpacity] = useState(() => new Animated.Value(1));
   const [aimDirection, setAimDirection] = useState<Vector>({ x: 1, y: 0 });
   const [earnedCoins, setEarnedCoins] = useState(0);
   const [earnedXp, setEarnedXp] = useState(0);
@@ -1916,6 +1995,13 @@ export function WildPawGame({
         : false;
   const localPlayer =
     (localPlayerId === "join" ? game.joinPlayer : game.player) ?? game.player;
+  const bossChest = game.itemDrops.find((drop) => drop.kind === "chest");
+  const showBossChestConversation =
+    game.isRunning &&
+    !game.isPaused &&
+    game.powerUpChoices.length === 0 &&
+    !!bossChest &&
+    dismissedBossChestId !== bossChest.id;
   const powerUpChoiceKey = `${game.wave}:${game.powerUpChoices
     .map((choice) => choice.id)
     .join("|")}`;
@@ -1967,6 +2053,30 @@ export function WildPawGame({
       isMounted = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (!game.bossAddSpawnSide) {
+      bossAddWarningOpacity.setValue(1);
+      return;
+    }
+
+    const flicker = Animated.loop(
+      Animated.sequence([
+        Animated.timing(bossAddWarningOpacity, {
+          toValue: 0.18,
+          duration: 180,
+          useNativeDriver: true,
+        }),
+        Animated.timing(bossAddWarningOpacity, {
+          toValue: 1,
+          duration: 180,
+          useNativeDriver: true,
+        }),
+      ]),
+    );
+    flicker.start();
+    return () => flicker.stop();
+  }, [bossAddWarningOpacity, game.bossAddSpawnSide]);
 
   useEffect(() => {
     let isMounted = true;
@@ -2501,6 +2611,9 @@ export function WildPawGame({
         bossDashHasHit: false,
         bossProjectiles: [],
         bossAreaEffects: [],
+        bossAddSpawnTimer: 0,
+        bossAddWarningTimer: 0,
+        bossAddSpawnSide: null,
         powerUpChoices: [],
         warpPending: false,
         message: `${powerUp.name} selected! Warping to another location`,
@@ -3687,6 +3800,11 @@ export function WildPawGame({
         let bossHealth = previous.bossHealth;
         let bossHealthMax = previous.bossHealthMax;
         let bossName = previous.bossName;
+        let bossAddSpawnTimer = previous.bossAddSpawnTimer;
+        let bossAddWarningTimer = previous.bossAddWarningTimer;
+        let bossAddSpawnSide = previous.bossAddSpawnSide;
+        let bossEntrySide = previous.bossEntrySide;
+        let bossAddEnemies: Enemy[] = [];
         let bossProjectiles: BossProjectile[] = previous.bossProjectiles
           .map((projectile) => ({
             ...projectile,
@@ -3724,6 +3842,9 @@ export function WildPawGame({
             bossPhase = "active";
             bossAttackPhase = "cooldown";
             bossAttackTimer = 2.5;
+            bossAddSpawnTimer = BOSS_ADD_FIRST_WARNING_DELAY;
+            bossAddWarningTimer = 0;
+            bossAddSpawnSide = null;
             message = `${bossName} is ready to attack!`;
           }
         } else if (bossPhase === "active") {
@@ -3818,6 +3939,40 @@ export function WildPawGame({
           }
         }
 
+        if (
+          bossPhase === "active" &&
+          previous.enemies.some((enemy) => enemy.arenaBossId === bossConfigId)
+        ) {
+          const warningSide = bossAddSpawnSide;
+          if (warningSide !== null) {
+            bossAddWarningTimer = Math.max(0, bossAddWarningTimer - delta);
+            if (bossAddWarningTimer === 0) {
+              bossAddEnemies = Array.from({ length: BOSS_ADD_COUNT }, () =>
+                makeBossAddEnemy(warningSide),
+              );
+              bossAddSpawnSide = null;
+              bossAddSpawnTimer = BOSS_ADD_FIRST_WARNING_DELAY;
+              message = "Enemies are joining the boss fight!";
+            }
+          } else {
+            bossAddSpawnTimer = Math.max(0, bossAddSpawnTimer - delta);
+            if (bossAddSpawnTimer === 0) {
+              const sides: ArenaSide[] = ["top", "right", "bottom", "left"];
+              bossAddSpawnSide =
+                sides[Math.floor(Math.random() * sides.length)];
+              bossAddWarningTimer = BOSS_ADD_WARNING_DURATION;
+            }
+          }
+        } else if (bossPhase !== "active") {
+          bossAddSpawnTimer = 0;
+          bossAddWarningTimer = 0;
+          bossAddSpawnSide = null;
+        } else {
+          bossAddSpawnTimer = 0;
+          bossAddWarningTimer = 0;
+          bossAddSpawnSide = null;
+        }
+
         let enemies = previous.enemies.map((enemy) => {
           const knockbackX = enemy.knockbackX ?? 0;
           const knockbackY = enemy.knockbackY ?? 0;
@@ -3851,13 +4006,22 @@ export function WildPawGame({
               );
               const wiggle =
                 Math.sin((BOSS_ENTRANCE_DURATION - bossPhaseTimer) * 22) *
-                22 *
+                8 *
                 (1 - progress);
+              const entryStart = getBossEntryStart(
+                previous.bossEntrySide,
+                enemy.radius,
+              );
               return applyHitMotion(
                 {
                   ...enemy,
-                  x: ARENA_WIDTH / 2 + wiggle,
-                  y: -enemy.radius + (92 + enemy.radius) * progress,
+                  x:
+                    entryStart.x +
+                    (BOSS_ENTRY_REST.x - entryStart.x) * progress +
+                    wiggle,
+                  y:
+                    entryStart.y +
+                    (BOSS_ENTRY_REST.y - entryStart.y) * progress,
                 },
                 false,
               );
@@ -3970,9 +4134,15 @@ export function WildPawGame({
           });
         });
 
+        enemies.push(...bossAddEnemies);
+
         if (previous.bossPhase === "warning" && bossPhase === "entrance") {
           const config = BOSS_CONFIGS.find((boss) => boss.id === bossConfigId);
-          if (config) enemies.push(makeArenaBoss(config, previous.wave));
+          if (config) {
+            enemies.push(
+              makeArenaBoss(config, previous.wave, previous.bossEntrySide),
+            );
+          }
         }
 
         const projectileHitIds = new Set<number>();
@@ -4233,6 +4403,19 @@ export function WildPawGame({
           if (guestOrbAttack.deathEffect) {
             enemyDeathEffects.push(guestOrbAttack.deathEffect);
           }
+        }
+
+        const arenaBossDefeated =
+          previous.enemies.some((enemy) => enemy.arenaBossId) &&
+          !enemies.some((enemy) => enemy.arenaBossId);
+        if (arenaBossDefeated) {
+          bossDefeatedThisTick = true;
+          const defeatedBossAdds = enemies.filter((enemy) => enemy.isBossAdd);
+          enemyDeathEffects.push(...defeatedBossAdds.map(makeEnemyDeathEffect));
+          enemies = enemies.filter((enemy) => !enemy.isBossAdd);
+          bossAddSpawnTimer = 0;
+          bossAddWarningTimer = 0;
+          bossAddSpawnSide = null;
         }
 
         if (wave > 1 && wave % 3 === 0 && bossSpawnedAtWave !== wave) {
@@ -4500,6 +4683,9 @@ export function WildPawGame({
           bossDashHasHit = false;
           bossProjectiles = [];
           bossAreaEffects = [];
+          bossAddSpawnTimer = 0;
+          bossAddWarningTimer = 0;
+          bossAddSpawnSide = null;
           message = `Wave ${wave - 1} cleared! Prepare for wave ${wave}`;
         };
 
@@ -4519,6 +4705,9 @@ export function WildPawGame({
           ) {
             const config = getArenaBossForWave(previous.wave);
             bossPhase = "warning";
+            bossEntrySide = (["top", "right", "bottom", "left"] as const)[
+              Math.floor(Math.random() * 4)
+            ];
             bossPhaseTimer = BOSS_WARNING_DURATION;
             bossConfigId = config.id;
             bossName = config.name;
@@ -4531,6 +4720,9 @@ export function WildPawGame({
             bossAttackTimer = 0;
             bossProjectiles = [];
             bossAreaEffects = [];
+            bossAddSpawnTimer = 0;
+            bossAddWarningTimer = 0;
+            bossAddSpawnSide = null;
             message = `WARNING! ${config.name} is coming!`;
           } else if (
             majorBossWasDefeated &&
@@ -4550,6 +4742,9 @@ export function WildPawGame({
             bossDashHasHit = false;
             bossProjectiles = [];
             bossAreaEffects = [];
+            bossAddSpawnTimer = 0;
+            bossAddWarningTimer = 0;
+            bossAddSpawnSide = null;
             message = "Boss defeated! Collect the chest to warp";
           } else if (majorBossWasDefeated) {
             bossHealth = 0;
@@ -4607,6 +4802,10 @@ export function WildPawGame({
           bossDashHasHit,
           bossProjectiles,
           bossAreaEffects,
+          bossAddSpawnTimer,
+          bossAddWarningTimer,
+          bossAddSpawnSide,
+          bossEntrySide,
         };
 
         return nextState;
@@ -5035,31 +5234,20 @@ export function WildPawGame({
                 accessibilityLabel={`${game.bossName} is coming in ${Math.ceil(game.bossPhaseTimer)} seconds`}
                 style={styles.bossWarningOverlay}
               >
-                {Array.from({ length: 5 }, (_, index) => {
-                  const sideIndex = (index + (game.wave % 4)) % 4;
-                  const sides = [
-                    { x: 0.15 + ((game.wave + index) % 3) * 0.2, y: -0.08 },
-                    { x: 0.2 + ((game.wave + index * 2) % 3) * 0.2, y: 1.08 },
-                    { x: -0.12, y: 0.15 + ((game.wave + index * 3) % 3) * 0.2 },
-                    { x: 1.12, y: 0.15 + ((game.wave + index * 2) % 3) * 0.2 },
-                  ];
-                  const point = sides[sideIndex];
-                  return (
-                    <Text
-                      key={`${game.wave}-${index}`}
-                      style={[
-                        styles.bossWarningMarker,
-                        {
-                          left: point.x * ARENA_WIDTH,
-                          top: point.y * ARENA_HEIGHT,
-                          transform: [{ scale: 1 + (index % 2) * 0.2 }],
-                        },
-                      ]}
-                    >
-                      !
-                    </Text>
-                  );
-                })}
+                <View
+                  style={[
+                    styles.bossEntryMarker,
+                    game.bossEntrySide === "top"
+                      ? styles.bossEntryMarkerTop
+                      : game.bossEntrySide === "right"
+                        ? styles.bossEntryMarkerRight
+                        : game.bossEntrySide === "bottom"
+                          ? styles.bossEntryMarkerBottom
+                          : styles.bossEntryMarkerLeft,
+                  ]}
+                >
+                  <Text style={styles.bossEntryMarkerText}>!</Text>
+                </View>
                 <Text style={styles.bossWarningEyebrow}>
                   WAVE {game.wave} CLEARED
                 </Text>
@@ -5071,6 +5259,32 @@ export function WildPawGame({
                 <Text style={styles.bossWarningHint}>GET READY TO FIGHT</Text>
               </View>
             )}
+
+            {game.bossPhase === "active" &&
+              game.bossAddSpawnSide &&
+              game.bossAddWarningTimer > 0 && (
+                <Animated.View
+                  pointerEvents="none"
+                  accessibilityLiveRegion="assertive"
+                  accessibilityLabel={`10 enemies incoming from the ${game.bossAddSpawnSide}`}
+                  style={[
+                    styles.bossAddsWarning,
+                    game.bossAddSpawnSide === "top"
+                      ? styles.bossAddsWarningTop
+                      : game.bossAddSpawnSide === "right"
+                        ? styles.bossAddsWarningRight
+                        : game.bossAddSpawnSide === "bottom"
+                          ? styles.bossAddsWarningBottom
+                          : styles.bossAddsWarningLeft,
+                    { opacity: bossAddWarningOpacity },
+                  ]}
+                >
+                  <Text style={styles.bossAddsWarningMark}>!</Text>
+                  <Text style={styles.bossAddsWarningLabel}>
+                    MORE ENEMIES INCOMING
+                  </Text>
+                </Animated.View>
+              )}
 
             {game.bossPhase === "active" &&
               game.bossAttackPhase === "telegraph" &&
@@ -6053,6 +6267,29 @@ export function WildPawGame({
           </View>
         </View>
 
+        {showBossChestConversation && bossChest && (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Look at that! The boss dropped a chest. Let's pick it up to see what's inside. Dismiss conversation."
+            onPress={() => setDismissedBossChestId(bossChest.id)}
+            style={styles.bossChestConversation}
+          >
+            <Image
+              source={
+                PROFILE_PICTURES[localPlayer.hero] ??
+                getSkinImage(localPlayer.hero, localPlayer.skinId)
+              }
+              contentFit="cover"
+              style={styles.bossChestConversationPortrait}
+              accessibilityLabel={`${localPlayer.name}'s hero`}
+            />
+            <Text style={styles.bossChestConversationText}>
+              Look at that! The boss dropped a chest. Let&apos;s pick it up to
+              see what&apos;s inside.
+            </Text>
+          </Pressable>
+        )}
+
         {grenadeAim?.cancelTargeted && (
           <View pointerEvents="none" style={styles.grenadeCancelHint}>
             <Text style={styles.grenadeCancelText}>RELEASE TO CANCEL</Text>
@@ -6117,7 +6354,12 @@ export function WildPawGame({
                 accessibilityLabel={`${earnedXp} XP earned`}
                 style={styles.gameOverStat}
               >
-                <Text style={styles.gameOverXpIcon}>XP</Text>
+                <Image
+                  source={xpImage}
+                  contentFit="contain"
+                  style={styles.gameOverStatIcon}
+                  accessibilityLabel="XP earned"
+                />
                 <Text style={styles.overlayText}>{earnedXp}</Text>
               </View>
             )}
@@ -7512,16 +7754,72 @@ const styles = StyleSheet.create({
     backgroundColor: "transparent",
     zIndex: 25,
   },
-  bossWarningMarker: {
+  bossEntryMarker: {
     position: "absolute",
-    color: "#ef4444",
-    fontSize: 44,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    borderWidth: 3,
+    borderColor: "#ef4444",
+    backgroundColor: "rgba(69, 10, 10, 0.85)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  bossEntryMarkerTop: { top: 6, left: ARENA_WIDTH / 2 - 22 },
+  bossEntryMarkerBottom: { bottom: 6, left: ARENA_WIDTH / 2 - 22 },
+  bossEntryMarkerLeft: { left: 6, top: ARENA_HEIGHT / 2 - 22 },
+  bossEntryMarkerRight: { right: 6, top: ARENA_HEIGHT / 2 - 22 },
+  bossEntryMarkerText: {
+    color: "#fca5a5",
+    fontSize: 28,
     fontWeight: "900",
-    lineHeight: 44,
-    textAlign: "center",
-    textShadowColor: "rgba(0, 0, 0, 0.9)",
-    textShadowOffset: { width: 0, height: 2 },
+    lineHeight: 32,
+  },
+  bossAddsWarning: {
+    position: "absolute",
+    zIndex: 30,
+    elevation: 30,
+    minWidth: 92,
+    height: 38,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 5,
+    paddingHorizontal: 8,
+    borderRadius: 10,
+    borderWidth: 2,
+    borderColor: "#ef4444",
+    backgroundColor: "rgba(69, 10, 10, 0.9)",
+  },
+  bossAddsWarningTop: {
+    top: 6,
+    left: ARENA_WIDTH / 2 - 46,
+  },
+  bossAddsWarningRight: {
+    top: ARENA_HEIGHT / 2 - 19,
+    right: 6,
+  },
+  bossAddsWarningBottom: {
+    bottom: 6,
+    left: ARENA_WIDTH / 2 - 46,
+  },
+  bossAddsWarningLeft: {
+    top: ARENA_HEIGHT / 2 - 19,
+    left: 6,
+  },
+  bossAddsWarningMark: {
+    color: "#fca5a5",
+    fontSize: 26,
+    fontWeight: "900",
+    lineHeight: 30,
+    textShadowColor: "#ef4444",
     textShadowRadius: 8,
+  },
+  bossAddsWarningLabel: {
+    color: "#fee2e2",
+    fontSize: 8,
+    fontWeight: "900",
+    letterSpacing: 0.8,
   },
   bossWarningEyebrow: {
     color: "#fecdd3",
@@ -8045,10 +8343,12 @@ const styles = StyleSheet.create({
   },
   waveCountdownGroup: {
     position: "absolute",
-    top: 10,
+    top: 0,
+    bottom: 0,
     left: 0,
     right: 0,
     alignItems: "center",
+    justifyContent: "center",
     zIndex: 10,
     gap: 8,
   },
@@ -8151,6 +8451,40 @@ const styles = StyleSheet.create({
     fontWeight: "900",
     letterSpacing: 1,
   },
+  bossChestConversation: {
+    position: "absolute",
+    left: "20%",
+    width: "60%",
+    bottom: 64,
+    minHeight: 68,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "rgba(187, 247, 208, 0.65)",
+    backgroundColor: "rgba(5, 18, 14, 0.58)",
+    zIndex: 45,
+    elevation: 45,
+  },
+  bossChestConversationPortrait: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: "rgba(5, 18, 14, 0.45)",
+  },
+  bossChestConversationText: {
+    flex: 1,
+    color: "#fff",
+    fontSize: 13,
+    fontWeight: "800",
+    lineHeight: 18,
+    textShadowColor: "rgba(0, 0, 0, 0.95)",
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 4,
+  },
   reviveActionPanel: {
     position: "absolute",
     left: 0,
@@ -8240,13 +8574,6 @@ const styles = StyleSheet.create({
   gameOverStatIcon: {
     width: 30,
     height: 30,
-  },
-  gameOverXpIcon: {
-    width: 30,
-    color: "#fde68a",
-    fontSize: 13,
-    fontWeight: "900",
-    textAlign: "center",
   },
   overlayActions: {
     flexDirection: "row",

@@ -1,7 +1,6 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
-import { awardCoins } from "@/constants/coin-wallet";
-import { awardPlayerXp } from "@/constants/player-experience";
+import { addMail } from "@/services/mailbox";
 import { fetchRemoteAssetJson } from "@/services/remote-assets";
 
 const REDEEM_CODES_PATH = "game/constants/redeem-codes.json";
@@ -14,6 +13,7 @@ type RedeemReward = {
 
 export type RedeemCode = {
   code: string;
+  message?: string;
   rewards: RedeemReward[];
   expiry: string;
 };
@@ -56,7 +56,17 @@ export async function loadRedeemCodes() {
     );
     const code = item.code.trim().toUpperCase();
     return code && rewards.length > 0
-      ? [{ code, rewards, expiry: item.expiry }]
+      ? [
+          {
+            code,
+            message:
+              typeof item.message === "string" && item.message.trim()
+                ? item.message.trim()
+                : undefined,
+            rewards,
+            expiry: item.expiry,
+          },
+        ]
       : [];
   });
 }
@@ -98,13 +108,13 @@ async function redeemCodeNow(
   }
 
   try {
-    for (const reward of redeemCode.rewards) {
-      if (reward.id === "coin") {
-        await awardCoins(reward.amount);
-      } else {
-        await awardPlayerXp(reward.amount);
-      }
-    }
+    await addMail({
+      title: "Code Redemption",
+      message:
+        redeemCode.message ??
+        "Thank you for redeeming your code! Here are your rewards.",
+      rewards: redeemCode.rewards,
+    });
     await AsyncStorage.setItem(
       REDEEMED_CODES_KEY,
       JSON.stringify([...redeemedCodes, code]),
@@ -116,15 +126,10 @@ async function redeemCodeNow(
     };
   }
 
-  const rewardSummary = redeemCode.rewards
-    .map(
-      (reward) =>
-        `${reward.amount.toLocaleString()} ${reward.id === "coin" ? "coins" : "XP"}`,
-    )
-    .join(" and ");
   return {
     success: true,
-    message: `Code redeemed! You received ${rewardSummary}.`,
+    message:
+      "Code redeemed! Your rewards were sent to your email. Open the mailbox to claim them.",
   };
 }
 

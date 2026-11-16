@@ -1,24 +1,26 @@
+import { NewBadge } from "@/components/ui/new-badge";
 import { SoundPressable as Pressable } from "@/components/ui/sound-pressable";
 import { Image } from "expo-image";
 import {
-    ScrollView,
-    StyleSheet,
-    Text,
-    useWindowDimensions,
-    View,
+  ScrollView,
+  StyleSheet,
+  Text,
+  useWindowDimensions,
+  View,
 } from "react-native";
 
 import {
-    getBuddy,
-    getBuddyBonusSummary,
-    getBuddyRarityColor,
+  getBuddy,
+  getBuddyBonusSummary,
+  getBuddyRarityColor,
 } from "@/constants/buddy-catalog";
 import {
-    getHeroImage,
-    getSkinImage,
-    type HeroRecord,
-    type SkinRecord,
+  getHeroImage,
+  getSkinImage,
+  type HeroRecord,
+  type SkinRecord,
 } from "@/constants/game-catalog";
+import type { ItemKind } from "@/constants/new-items";
 import { getOrbRarityColor, ORB_SKINS } from "@/constants/orb-catalog";
 import type { PlayerInventory } from "@/constants/player-inventory";
 import { getRemoteAssetSource } from "@/services/remote-assets";
@@ -46,6 +48,9 @@ type HeroSelectionScreenProps = {
   onEquipOrbSkin: (skinId: string) => void;
   onEquipBuddy: (buddyId: string) => void;
   onOpenStore: (tab: "skin" | "buddy") => void;
+  isNew: (kind: ItemKind, id: string) => boolean;
+  hasNew: Record<ItemKind, boolean>;
+  onItemSeen: (kind: ItemKind, id: string) => void;
   onBack: () => void;
 };
 
@@ -92,14 +97,17 @@ export function HeroSelectionScreen({
   onEquipOrbSkin,
   onEquipBuddy,
   onOpenStore,
+  isNew,
+  hasNew,
+  onItemSeen,
   onBack,
 }: HeroSelectionScreenProps) {
   const { width } = useWindowDimensions();
   const isCompact = width < 760;
-  const tabs: { id: HeroSelectionTab; label: string }[] = [
-    { id: "hero", label: "Heroes" },
-    { id: "orb", label: "Orb" },
-    { id: "buddy", label: "Buddies" },
+  const tabs: { id: HeroSelectionTab; label: string; badge: boolean }[] = [
+    { id: "hero", label: "Heroes", badge: hasNew.hero || hasNew.skin },
+    { id: "orb", label: "Orb", badge: hasNew.orb },
+    { id: "buddy", label: "Buddies", badge: hasNew.buddy },
   ];
 
   const renderCatalog = () => {
@@ -129,13 +137,17 @@ export function HeroSelectionScreen({
                     accessibilityRole="button"
                     accessibilityLabel={`${entry.name}, ${selected ? "selected" : "select hero"}`}
                     accessibilityState={{ selected }}
-                    onPress={() => onSelectHero(entry.id)}
+                    onPress={() => {
+                      onItemSeen("hero", entry.id);
+                      onSelectHero(entry.id);
+                    }}
                     style={[
                       styles.itemCard,
                       styles.horizontalItemCard,
                       selected && styles.itemCardSelected,
                     ]}
                   >
+                    {isNew("hero", entry.id) && <NewBadge />}
                     <Image
                       source={getRemoteAssetSource(
                         `game/functions/card/hero_card_${entry.rarity ?? "common"}.png`,
@@ -190,13 +202,17 @@ export function HeroSelectionScreen({
                       accessibilityRole="button"
                       accessibilityLabel={`${selected ? "Unequip" : "Equip"} ${skin.name} skin`}
                       accessibilityState={{ selected }}
-                      onPress={() => onSelectSkin(skin.id)}
+                      onPress={() => {
+                        onItemSeen("skin", `${hero.id}:${skin.id}`);
+                        onSelectSkin(skin.id);
+                      }}
                       style={[
                         styles.itemCard,
                         styles.horizontalItemCard,
                         selected && styles.itemCardSelected,
                       ]}
                     >
+                      {isNew("skin", `${hero.id}:${skin.id}`) && <NewBadge />}
                       <Image
                         source={getRemoteAssetSource(
                           `game/functions/card/hero_card_${skin.rarity ?? "common"}.png`,
@@ -308,13 +324,17 @@ export function HeroSelectionScreen({
                     accessibilityLabel={`${selected ? "Equipped" : "Equip"} ${orb.name}`}
                     accessibilityState={{ disabled: playerLevel < 5, selected }}
                     disabled={playerLevel < 5}
-                    onPress={() => onEquipOrbSkin(orb.id)}
+                    onPress={() => {
+                      onItemSeen("orb", orb.id);
+                      onEquipOrbSkin(orb.id);
+                    }}
                     style={[
                       styles.itemCard,
                       selected && styles.itemCardSelected,
                       playerLevel < 5 && styles.lockedCard,
                     ]}
                   >
+                    {isNew("orb", orb.id) && <NewBadge />}
                     <Image
                       source={getRemoteAssetSource(
                         `game/functions/card/hero_card_${orb.rarity}.png`,
@@ -401,13 +421,17 @@ export function HeroSelectionScreen({
               accessibilityRole="button"
               accessibilityLabel={`${selected ? "Unequip" : "Equip"} ${buddy.name}; ${getBuddyBonusSummary(buddy)}`}
               accessibilityState={{ selected }}
-              onPress={() => onEquipBuddy(buddy.id)}
+              onPress={() => {
+                onItemSeen("buddy", buddy.id);
+                onEquipBuddy(buddy.id);
+              }}
               style={[
                 styles.itemCard,
                 styles.buddyCard,
                 selected && styles.itemCardSelected,
               ]}
             >
+              {isNew("buddy", buddy.id) && <NewBadge />}
               <Image
                 source={getRemoteAssetSource(
                   `game/functions/card/hero_card_${buddy.rarity}.png`,
@@ -508,6 +532,7 @@ export function HeroSelectionScreen({
                 >
                   {tab.label}
                 </Text>
+                {tab.badge && <NewBadge style={{ top: 2, right: 2 }} />}
               </Pressable>
             ))}
           </ScrollView>

@@ -261,7 +261,9 @@ export function ControlLayoutEditor({
             <Text style={styles.enemyText}>Enemies remaining: 8</Text>
           </View>
           <View pointerEvents="none" style={styles.pauseHudBox}>
-            <Text style={styles.pauseGlyph}>Ⅱ</Text>
+            <View style={styles.pauseGlyphFrame}>
+              <Text style={styles.pauseGlyph}>Ⅱ</Text>
+            </View>
             <Text style={styles.zoneLabel}>PAUSE</Text>
           </View>
           <View pointerEvents="none" style={styles.countdownHudBox}>
@@ -529,14 +531,18 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 2,
   },
-  pauseGlyph: {
-    width: 38,
-    height: 38,
-    overflow: "hidden",
-    borderRadius: 99,
-    borderWidth: 2,
+  pauseGlyphFrame: {
+    width: 40,
+    height: 40,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 8,
+    borderWidth: 2.5,
+    borderStyle: "dashed",
     borderColor: "#7dd3fc",
     backgroundColor: "rgba(15, 23, 42, 0.82)",
+  },
+  pauseGlyph: {
     color: "#fff",
     fontSize: 19,
     fontWeight: "900",

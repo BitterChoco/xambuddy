@@ -36,12 +36,12 @@ export type BattleControlSettings = {
 };
 
 const RIGHTY_CONTROL_POSITIONS: Record<BattleControlId, ControlSide> = {
-  joystick: { x: 0.15, y: 0.72, size: 1, opacity: 1 },
-  fire: { x: 0.85, y: 0.72, size: 1, opacity: 1 },
-  gun: { x: 0.78, y: 0.94, size: 1, opacity: 1 },
-  grenade: { x: 0.86, y: 0.94, size: 1, opacity: 1 },
-  heal: { x: 0.955, y: 0.94, size: 1, opacity: 1 },
-  dash: { x: 0.95, y: 0.48, size: 1, opacity: 1 },
+  joystick: { x: 0.134, y: 0.707, size: 1, opacity: 1 },
+  fire: { x: 0.816, y: 0.631, size: 1, opacity: 1 },
+  gun: { x: 0.732, y: 0.798, size: 1, opacity: 1 },
+  grenade: { x: 0.797, y: 0.863, size: 1, opacity: 1 },
+  heal: { x: 0.882, y: 0.84, size: 1, opacity: 1 },
+  dash: { x: 0.91, y: 0.462, size: 1, opacity: 1 },
 };
 
 export const DEFAULT_BATTLE_CONTROLS: BattleControlSettings = {
@@ -153,15 +153,21 @@ export function normalizeBattleControlSettings(
     Record<BattleControlId, { x: number; y: number }[]>
   > = {
     joystick: [
+      { x: 0.15, y: 0.72 },
       { x: 0.1, y: 0.72 },
       { x: 0.1, y: 0.88 },
       { x: 0.045, y: 0.94 },
     ],
     fire: [
+      { x: 0.85, y: 0.72 },
       { x: 0.9, y: 0.72 },
       { x: 0.955, y: 0.72 },
     ],
+    gun: [{ x: 0.78, y: 0.94 }],
+    grenade: [{ x: 0.86, y: 0.94 }],
+    heal: [{ x: 0.955, y: 0.94 }],
     dash: [
+      { x: 0.95, y: 0.48 },
       { x: 0.9, y: 0.53 },
       { x: 0.78, y: 0.79 },
     ],

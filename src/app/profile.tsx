@@ -1,3 +1,4 @@
+import { NewBadge } from "@/components/ui/new-badge";
 import { ProfileBorderOverlay } from "@/components/ui/profile-border-overlay";
 import { SoundPressable as Pressable } from "@/components/ui/sound-pressable";
 import {
@@ -10,6 +11,7 @@ import {
     PROFILE_PICTURES,
     type ProfilePictureId,
 } from "@/constants/game-catalog";
+import { useNewItems } from "@/constants/new-items";
 import {
     getPlayerLevelProgress,
     getPlayerXp,
@@ -51,6 +53,7 @@ export default function ProfileScreen() {
   const [isLoaded, setIsLoaded] = useState(false);
   const [saveMessage, setSaveMessage] = useState("");
   const playerLevel = getPlayerLevelProgress(playerXp);
+  const { isNew, markSeen, hasNew } = useNewItems(inventory, isLoaded);
   const selectedPicture = PROFILE_PICTURES[profilePicture];
 
   useEffect(() => {
@@ -308,6 +311,7 @@ export default function ProfileScreen() {
                   >
                     {tab.label}
                   </Text>
+                  {hasNew[tab.id] && <NewBadge style={{ top: 2, right: 2 }} />}
                 </Pressable>
               ))}
             </View>
@@ -324,6 +328,7 @@ export default function ProfileScreen() {
                         accessibilityLabel={`${picture.name} profile picture`}
                         accessibilityState={{ selected }}
                         onPress={() => {
+                          markSeen("picture", picture.id);
                           setProfilePicture(picture.id);
                           setSaveMessage("");
                         }}
@@ -332,6 +337,7 @@ export default function ProfileScreen() {
                           selected && styles.optionCardSelected,
                         ]}
                       >
+                        {isNew("picture", picture.id) && <NewBadge />}
                         <View
                           style={[
                             styles.optionImageFrame,
@@ -367,12 +373,16 @@ export default function ProfileScreen() {
                           accessibilityRole="button"
                           accessibilityLabel={`${border.name} profile border`}
                           accessibilityState={{ selected }}
-                          onPress={() => selectBorder(border.id)}
+                          onPress={() => {
+                            markSeen("border", border.id);
+                            selectBorder(border.id);
+                          }}
                           style={[
                             styles.optionCard,
                             selected && styles.optionCardSelected,
                           ]}
                         >
+                          {isNew("border", border.id) && <NewBadge />}
                           <View
                             style={[
                               styles.optionImageFrame,

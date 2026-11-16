@@ -1,3 +1,4 @@
+import { NewBadge } from "@/components/ui/new-badge";
 import { SoundPressable as Pressable } from "@/components/ui/sound-pressable";
 import { Image } from "expo-image";
 import { useEffect, useState } from "react";
@@ -12,6 +13,7 @@ import {
 import type { BundledImage } from "@/constants/game-catalog";
 
 type MainMenuScreenProps = {
+  hasNewItems?: boolean;
   heroImage?: BundledImage;
   orbImage?: BundledImage;
   buddyImage?: BundledImage;
@@ -20,6 +22,7 @@ type MainMenuScreenProps = {
 };
 
 export function MainMenuScreen({
+  hasNewItems,
   heroImage,
   orbImage,
   buddyImage,
@@ -241,6 +244,7 @@ export function MainMenuScreen({
           ]}
         >
           <Text style={styles.heroButtonText}>LOADOUT</Text>
+          {hasNewItems && <NewBadge />}
         </Pressable>
       </View>
 

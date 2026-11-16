@@ -3,19 +3,19 @@ import { Image } from "expo-image";
 import { router } from "expo-router";
 import { useCallback, useEffect, useState } from "react";
 import {
-  ActivityIndicator,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
+    ActivityIndicator,
+    ScrollView,
+    StyleSheet,
+    Text,
+    TextInput,
+    View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import {
-  loadRedeemCodes,
-  redeemCode,
-  type RedeemCode,
+    loadRedeemCodes,
+    redeemCode,
+    type RedeemCode,
 } from "@/services/redeem-codes";
 import { getRemoteAssetSource } from "@/services/remote-assets";
 
@@ -202,7 +202,6 @@ export default function EventScreen() {
                     setCodeInput(value.toUpperCase());
                     setMessage("");
                   }}
-                  onSubmitEditing={() => void submitCode()}
                   autoCapitalize="characters"
                   autoCorrect={false}
                   editable={!isRedeeming}

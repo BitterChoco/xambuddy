@@ -3,6 +3,7 @@ import {
   type HeroSelectionTab,
 } from "@/components/hero-selection-screen";
 import { MainMenuScreen } from "@/components/main-menu-screen";
+import { NewBadge } from "@/components/ui/new-badge";
 import { ProfileBorderOverlay } from "@/components/ui/profile-border-overlay";
 import { SoundPressable as Pressable } from "@/components/ui/sound-pressable";
 import { getBuddy } from "@/constants/buddy-catalog";
@@ -26,6 +27,7 @@ import {
   type HeroRecord,
   type ProfilePictureId,
 } from "@/constants/game-catalog";
+import { useNewItems } from "@/constants/new-items";
 import { getOrbSkin } from "@/constants/orb-catalog";
 import {
   getPlayerLevelProgress,
@@ -44,6 +46,7 @@ import {
   probeLocalServer,
   startLocalHostServer,
 } from "@/services/local-multiplayer-network";
+import { useMailbox } from "@/services/mailbox";
 import { getRemoteAssetSource } from "@/services/remote-assets";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Image } from "expo-image";
@@ -119,6 +122,7 @@ function ProfilePicture({
   picture,
   border,
   level,
+  hasNew,
   onPress,
   onStorePress,
   onSettingsPress,
@@ -127,6 +131,7 @@ function ProfilePicture({
   picture: ProfilePictureId;
   border: string;
   level: number;
+  hasNew: boolean;
   onPress: () => void;
   onStorePress: () => void;
   onSettingsPress: () => void;
@@ -149,6 +154,7 @@ function ProfilePicture({
             accessibilityLabel={`${picture} profile portrait`}
           />
           <ProfileBorderOverlay borderId={border} />
+          {hasNew && <NewBadge style={{ top: -5, right: -5, zIndex: 20 }} />}
         </View>
         <View style={styles.profileIdentity}>
           <Text style={styles.profileLevelBadge}>LVL {level}</Text>
@@ -327,6 +333,12 @@ export function WildPawMenu() {
     DEFAULT_PLAYER_INVENTORY,
   );
   const [inventoryLoaded, setInventoryLoaded] = useState(false);
+  const { unreadCount: unreadMailCount } = useMailbox();
+  const {
+    isNew: isNewItem,
+    markSeen: markItemSeen,
+    hasNew: hasNewItems,
+  } = useNewItems(inventory, inventoryLoaded);
   const [selectionTab, setSelectionTab] = useState<HeroSelectionTab>("hero");
   const [coinBalance, setCoinBalance] = useState(0);
   const [diamondBalance, setDiamondBalance] = useState(0);
@@ -856,6 +868,12 @@ export function WildPawMenu() {
 
   const renderMainMenu = () => (
     <MainMenuScreen
+      hasNewItems={
+        hasNewItems.hero ||
+        hasNewItems.skin ||
+        hasNewItems.orb ||
+        hasNewItems.buddy
+      }
       heroImage={getSkinImage(hero.id, selectedSkin.id)}
       orbImage={
         inventory.equippedOrb && playerLevel.level >= 5
@@ -1085,6 +1103,9 @@ export function WildPawMenu() {
       onOpenStore={(tab) =>
         router.push({ pathname: "/store", params: { tab } } as Href)
       }
+      isNew={isNewItem}
+      hasNew={hasNewItems}
+      onItemSeen={markItemSeen}
       onBack={() => setScreen("main")}
     />
   );
@@ -1119,6 +1140,7 @@ export function WildPawMenu() {
                   onPress={() => router.push("/mail" as Href)}
                   style={styles.menuShortcutTile}
                 >
+                  {unreadMailCount > 0 && <NewBadge />}
                   <Image
                     source={emailImage}
                     style={styles.menuShortcutIcon}
@@ -1169,6 +1191,7 @@ export function WildPawMenu() {
             picture={profilePicture}
             border={profileBorder}
             level={playerLevel.level}
+            hasNew={hasNewItems.picture || hasNewItems.border}
             onPress={() => router.push("/profile" as Href)}
             onStorePress={() => router.push("/store" as Href)}
             onSettingsPress={() => router.push("/settings" as Href)}

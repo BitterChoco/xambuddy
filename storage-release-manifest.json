@@ -120,7 +120,7 @@
     {
       "path": "assets/game/constants/drop-config.json",
       "size": 1469,
-      "sha256": "81991de08825ebee208f66d1904f1d03b07b3b9fb1e2689f1185ee5570f55156"
+      "sha256": "fe259ccc31ff6d25a3639a84692803ee9d1c7e18b107936d391159123d08caaa"
     },
     {
       "path": "assets/game/constants/heroes.json",
@@ -139,8 +139,8 @@
     },
     {
       "path": "assets/game/constants/redeem-codes.json",
-      "size": 732,
-      "sha256": "80fc4f9909004179b02d8f4f801602cd2d661b703d4f7fc0f20aad1fa66ff8bf"
+      "size": 901,
+      "sha256": "e25697877c61345d687c8d82ecabcd5637df76b919f84ce5eaa4c05e114cb20c"
     },
     {
       "path": "assets/game/constants/store-pricing.json",
@@ -239,8 +239,8 @@
     },
     {
       "path": "assets/game/functions/item_border_1.png",
-      "size": 31723,
-      "sha256": "bb17b9c26223c12082b20ae45678440b7bb67652881d0fb3184101c26b1eda6a"
+      "size": 128129,
+      "sha256": "135a601920f79e6348627313b1408feb2c8e7fbf6977b9b684f6977a9dd43a7b"
     },
     {
       "path": "assets/game/functions/minimize_1.png",
@@ -306,6 +306,11 @@
       "path": "assets/game/heroes/type/rabbit.png",
       "size": 1001319,
       "sha256": "d87ba959e5288cca76cfa967f0122e2a18e2b276f1b3e0f09d72cb888545eedb"
+    },
+    {
+      "path": "assets/game/icons/bomb_1.png",
+      "size": 46856,
+      "sha256": "c946d979b9df507ae161b8444d4ee497bd164b026cf34b1fd5865fe680d77818"
     },
     {
       "path": "assets/game/icons/boots_fast_1.png",
@@ -416,6 +421,11 @@
       "path": "assets/game/icons/trophy_1.png",
       "size": 86100,
       "sha256": "fd348ffa8a72b2c84bbe0dbb37537b217afd299770497cb8f96f3011b199b1ab"
+    },
+    {
+      "path": "assets/game/icons/xp_1.png",
+      "size": 43415,
+      "sha256": "f2b4e610e75421e8e44b8b5651950d6aa1888b24b7ccf4765030d7c1b9b0acdd"
     },
     {
       "path": "assets/game/music/battle_1.mp3",
