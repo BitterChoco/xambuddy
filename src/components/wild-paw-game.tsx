@@ -373,7 +373,11 @@ const ORB_ATTACK_DAMAGE = 10;
 const ORB_BEAM_DURATION = 0.16;
 const heartImage = getRemoteAssetSource("game/icons/health_1.png");
 const bootsFastImage = getRemoteAssetSource("game/icons/boots_fast_1.png");
-const bulletImage = getRemoteAssetSource("game/icons/bullet_1.png");
+const rapidFireIcon = getRemoteAssetSource("game/icons/bullet_fast_1.png");
+const highDamageIcon = getRemoteAssetSource(
+  "game/icons/bullet_high_damage_1.png",
+);
+const medkitIcon = getRemoteAssetSource("game/icons/medkit_1.png");
 const bulletProjectileImage = getRemoteAssetSource(
   "game/weapon/weapon_1-2.png",
 );
@@ -385,7 +389,7 @@ const BULLET_IMPACT_DURATION = 0.2;
 const bombImage = getRemoteAssetSource("game/icons/bomb_1.png");
 const dashImage = getRemoteAssetSource("game/icons/dash_1.png");
 const ghostImage = getRemoteAssetSource("game/icons/ghost_1.png");
-const coinImage = getRemoteAssetSource("game/icons/coin_1.png");
+const coinImage = getRemoteAssetSource("game/icons/coins_1.png");
 const trophyImage = getRemoteAssetSource("game/icons/trophy_1.png");
 const xpImage = getRemoteAssetSource("game/icons/xp_1.png");
 const homeIcon = getRemoteAssetSource("game/icons/home_1.png");
@@ -1188,7 +1192,13 @@ function ActiveBuffBadge({ buff }: { buff: ActiveBuff }) {
         ]}
       />
       <Image
-        source={buff.kind === "speed" ? bootsFastImage : bulletImage}
+        source={
+          buff.kind === "speed"
+            ? bootsFastImage
+            : buff.kind === "rapidFire"
+              ? rapidFireIcon
+              : highDamageIcon
+        }
         style={styles.activeBuffIcon}
         contentFit="contain"
       />
@@ -2024,6 +2034,10 @@ export function WildPawGame({
         : false;
   const localPlayer =
     (localPlayerId === "join" ? game.joinPlayer : game.player) ?? game.player;
+  const currentBulletImage =
+    localPlayer.highDamageTimer > 0
+      ? highDamageBulletImage
+      : bulletProjectileImage;
   const bossChest = game.itemDrops.find((drop) => drop.kind === "chest");
   const showBossChestConversation =
     game.isRunning &&
@@ -5973,13 +5987,19 @@ export function WildPawGame({
                     />
                   ) : drop.kind === "rapidFire" ? (
                     <Image
-                      source={bulletImage}
+                      source={rapidFireIcon}
                       contentFit="contain"
                       style={styles.consumableDropImage}
                     />
                   ) : drop.kind === "highDamage" ? (
                     <Image
-                      source={bulletImage}
+                      source={highDamageIcon}
+                      contentFit="contain"
+                      style={styles.consumableDropImage}
+                    />
+                  ) : drop.kind === "medkit" ? (
+                    <Image
+                      source={medkitIcon}
                       contentFit="contain"
                       style={styles.consumableDropImage}
                     />
@@ -5995,21 +6015,6 @@ export function WildPawGame({
                       contentFit="contain"
                       style={styles.consumableDropImage}
                     />
-                  )}
-                  {drop.kind === "medkit" && (
-                    <Text style={styles.medkitPlus}>+</Text>
-                  )}
-                  {drop.kind === "rapidFire" && (
-                    <View style={styles.rapidFireDropBadge}>
-                      <Text style={styles.rapidFireDropBadgeText}>
-                        &gt;&gt;
-                      </Text>
-                    </View>
-                  )}
-                  {drop.kind === "highDamage" && (
-                    <View style={styles.highDamageDropBadge}>
-                      <Text style={styles.rapidFireDropBadgeText}>+</Text>
-                    </View>
                   )}
                 </View>
               );
@@ -6821,7 +6826,7 @@ export function WildPawGame({
                         {selectedWeapon === "gun" ? (
                           <Image
                             pointerEvents="none"
-                            source={bulletImage}
+                            source={currentBulletImage}
                             contentFit="contain"
                             style={styles.fireButtonBackgroundIcon}
                           />
@@ -6872,7 +6877,7 @@ export function WildPawGame({
                         ]}
                       >
                         <Image
-                          source={bulletImage}
+                          source={currentBulletImage}
                           contentFit="contain"
                           style={styles.gunButtonIcon}
                         />
@@ -6931,7 +6936,7 @@ export function WildPawGame({
                       <View
                         accessible
                         accessibilityRole="button"
-                        accessibilityLabel={`Use heal, ${localPlayer.heals} remaining`}
+                        accessibilityLabel={`Use medkit, ${localPlayer.heals} remaining`}
                         accessibilityState={{
                           disabled: localPlayer.heals <= 0,
                         }}
@@ -6942,7 +6947,7 @@ export function WildPawGame({
                         ]}
                       >
                         <Image
-                          source={heartImage}
+                          source={medkitIcon}
                           contentFit="contain"
                           style={styles.healButtonIcon}
                         />
@@ -7015,7 +7020,6 @@ export function WildPawGame({
                             pointerEvents="none"
                             source={dashImage}
                             contentFit="contain"
-                            tintColor="#fff"
                             style={styles.dashReadyIcon}
                           />
                         )}
@@ -8196,50 +8200,6 @@ const styles = StyleSheet.create({
   buffDropBorder: {
     borderColor: "#60a5fa",
   },
-  rapidFireDropBadge: {
-    position: "absolute",
-    top: -5,
-    right: -6,
-    minWidth: 17,
-    height: 12,
-    paddingHorizontal: 2,
-    borderRadius: 999,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#f97316",
-    borderWidth: 1,
-    borderColor: "#fff7ed",
-    zIndex: 2,
-  },
-  rapidFireDropBadgeText: {
-    color: "#fff",
-    fontSize: 7,
-    lineHeight: 9,
-    fontWeight: "900",
-  },
-  highDamageDropBadge: {
-    position: "absolute",
-    top: -5,
-    right: -6,
-    width: 13,
-    height: 13,
-    borderRadius: 999,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#7e22ce",
-    borderWidth: 1,
-    borderColor: "#f3e8ff",
-    zIndex: 2,
-  },
-  medkitPlus: {
-    position: "absolute",
-    color: "#fff",
-    fontSize: 15,
-    lineHeight: 16,
-    fontWeight: "900",
-    textShadowColor: "#bd1724",
-    textShadowRadius: 3,
-  },
   healNumber: {
     left: 0,
     right: 0,
@@ -8618,9 +8578,9 @@ const styles = StyleSheet.create({
   },
   bossChestConversation: {
     position: "absolute",
-    left: "20%",
-    width: "60%",
-    bottom: 64,
+    left: "25%",
+    width: "45%",
+    top: 15,
     minHeight: 68,
     flexDirection: "row",
     alignItems: "center",

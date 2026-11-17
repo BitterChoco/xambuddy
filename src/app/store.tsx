@@ -1,3 +1,4 @@
+import { BackIcon } from "@/components/ui/back-icon";
 import { SoundPressable as Pressable } from "@/components/ui/sound-pressable";
 import { Image } from "expo-image";
 import { router, useLocalSearchParams } from "expo-router";
@@ -64,7 +65,7 @@ import { getRemoteAssetSource } from "@/services/remote-assets";
 
 const backdrop = require("@/assets/images/background_1.png");
 const storeIcon = getRemoteAssetSource("game/icons/shop_1.png");
-const coinIcon = getRemoteAssetSource("game/icons/coin_1.png");
+const coinIcon = getRemoteAssetSource("game/icons/coins_1.png");
 const diamondIcon = getRemoteAssetSource("game/icons/diamond_1.png");
 
 type StoreTab = "hero" | "skin" | "orb" | "buddy" | "border";
@@ -386,7 +387,7 @@ export default function StoreScreen() {
             onPress={() => router.back()}
             style={styles.backButton}
           >
-            <Text style={styles.backButtonText}>‹ MENU</Text>
+            <BackIcon />
           </Pressable>
           <View style={styles.titleGroup}>
             <Text style={styles.eyebrow}>WILD PAW · MARKET</Text>

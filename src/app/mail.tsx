@@ -1,3 +1,4 @@
+import { BackIcon } from "@/components/ui/back-icon";
 import { SoundPressable as Pressable } from "@/components/ui/sound-pressable";
 import { Image } from "expo-image";
 import { router } from "expo-router";
@@ -19,8 +20,9 @@ import { getRemoteAssetSource } from "@/services/remote-assets";
 
 const mailBackdrop = require("@/assets/images/background_1.png");
 const mailIcon = getRemoteAssetSource("game/icons/email_1.png");
+const trashIcon = getRemoteAssetSource("game/icons/trash_1.png");
 const rewardIcons = {
-  coin: getRemoteAssetSource("game/icons/coin_1.png"),
+  coin: getRemoteAssetSource("game/icons/coins_1.png"),
   exp: getRemoteAssetSource("game/icons/xp_1.png"),
   diamond: getRemoteAssetSource("game/icons/diamond_1.png"),
 };
@@ -138,7 +140,7 @@ export default function MailScreen() {
             onPress={() => router.back()}
             style={styles.backButton}
           >
-            <Text style={styles.backButtonText}>‹ MENU</Text>
+            <BackIcon />
           </Pressable>
           <View style={styles.titleGroup}>
             <Text style={styles.eyebrow}>WILD PAW · MESSAGES</Text>
@@ -358,7 +360,12 @@ export default function MailScreen() {
                     onPress={() => confirmDelete(mail)}
                     style={styles.trashButton}
                   >
-                    <Text style={styles.trashIcon}>🗑</Text>
+                    <Image
+                      source={trashIcon}
+                      style={styles.trashIcon}
+                      contentFit="contain"
+                      pointerEvents="none"
+                    />
                   </Pressable>
                 )}
               </Pressable>
@@ -590,7 +597,7 @@ const styles = StyleSheet.create({
     letterSpacing: 0.6,
   },
   trashButton: { padding: 4 },
-  trashIcon: { fontSize: 16 },
+  trashIcon: { width: 20, height: 20 },
   inboxBackText: {
     color: "#bef264",
     fontSize: 11,
@@ -599,7 +606,6 @@ const styles = StyleSheet.create({
   },
   mailRow: {
     width: "100%",
-    maxWidth: 520,
     alignSelf: "flex-start",
     flexDirection: "row",
     alignItems: "center",

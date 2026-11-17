@@ -79,7 +79,7 @@ function normalizeLocalHostAddress(value: string) {
 
 const buttonImage = getRemoteAssetSource("game/functions/button_1.png");
 const menuBackground = require("@/assets/images/background_1.png");
-const coinImage = getRemoteAssetSource("game/icons/coin_1.png");
+const coinImage = getRemoteAssetSource("game/icons/coins_1.png");
 const diamondImage = getRemoteAssetSource("game/icons/diamond_1.png");
 const PROFILE_STORAGE_KEY = "wild-paw.player-profile";
 const shopImage = getRemoteAssetSource("game/icons/shop_1.png");

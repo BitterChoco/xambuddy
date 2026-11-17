@@ -1,3 +1,4 @@
+import { BackIcon } from "@/components/ui/back-icon";
 import { SoundPressable as Pressable } from "@/components/ui/sound-pressable";
 import { Image } from "expo-image";
 import { router } from "expo-router";
@@ -35,8 +36,9 @@ import {
 
 const eventBackdrop = require("@/assets/images/background_1.png");
 const eventIcon = getRemoteAssetSource("game/icons/calendar_1.png");
+const watchAdsIcon = getRemoteAssetSource("game/icons/watch_ads_1.png");
 const weeklyRewardIcons = {
-  coin: getRemoteAssetSource("game/icons/coin_1.png"),
+  coin: getRemoteAssetSource("game/icons/coins_1.png"),
   exp: getRemoteAssetSource("game/icons/xp_1.png"),
   diamond: getRemoteAssetSource("game/icons/diamond_1.png"),
 };
@@ -200,7 +202,7 @@ export default function EventScreen() {
             onPress={() => router.back()}
             style={styles.backButton}
           >
-            <Text style={styles.backButtonText}>‹ MENU</Text>
+            <BackIcon />
           </Pressable>
           <View style={styles.titleGroup}>
             <Text style={styles.eyebrow}>WILD PAW · COMMUNITY</Text>
@@ -378,18 +380,23 @@ export default function EventScreen() {
                                   canClaim && styles.roadmapNodeActive,
                                 ]}
                               >
-                                <Text
-                                  style={[
-                                    styles.roadmapNodeText,
-                                    completed && styles.roadmapNodeTextDone,
-                                  ]}
-                                >
-                                  {completed
-                                    ? "✓"
-                                    : canClaim
-                                      ? "▶"
-                                      : reward.slot}
-                                </Text>
+                                {canClaim ? (
+                                  <Image
+                                    source={watchAdsIcon}
+                                    style={styles.watchAdsIcon}
+                                    contentFit="contain"
+                                    pointerEvents="none"
+                                  />
+                                ) : (
+                                  <Text
+                                    style={[
+                                      styles.roadmapNodeText,
+                                      completed && styles.roadmapNodeTextDone,
+                                    ]}
+                                  >
+                                    {completed ? "✓" : reward.slot}
+                                  </Text>
+                                )}
                               </View>
                               <Text style={styles.roadmapDay}>
                                 {canClaim ? "CLAIM" : `AD ${reward.slot}`}
@@ -676,6 +683,7 @@ const styles = StyleSheet.create({
   },
   roadmapNodeText: { color: "#94a3b8", fontSize: 13, fontWeight: "900" },
   roadmapNodeTextDone: { color: "#14220b" },
+  watchAdsIcon: { width: 24, height: 24 },
   roadmapDay: {
     marginTop: 4,
     color: "#cbd5e1",

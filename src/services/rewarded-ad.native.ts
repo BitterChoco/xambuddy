@@ -1,10 +1,4 @@
-import { Platform } from "react-native";
-import mobileAds, {
-    AdEventType,
-    RewardedAd,
-    RewardedAdEventType,
-    TestIds,
-} from "react-native-google-mobile-ads";
+import { Platform, TurboModuleRegistry } from "react-native";
 
 import { REWARDED_AD_UNIT_IDS } from "@/constants/ads-config";
 
@@ -14,7 +8,9 @@ const AD_LOAD_TIMEOUT_MS = 20000;
 
 let initialization: Promise<unknown> | null = null;
 
-function ensureInitialized() {
+function ensureInitialized(
+  mobileAds: typeof import("react-native-google-mobile-ads").default,
+) {
   initialization ??= mobileAds()
     .initialize()
     .catch((error: unknown) => {
@@ -24,18 +20,41 @@ function ensureInitialized() {
   return initialization;
 }
 
-function getUnitId() {
+function getUnitId(testUnitId: string) {
   const productionId =
     Platform.OS === "ios"
       ? REWARDED_AD_UNIT_IDS.ios
       : REWARDED_AD_UNIT_IDS.android;
-  return __DEV__ || !productionId ? TestIds.REWARDED : productionId;
+  // App IDs contain "~"; rewarded ad unit IDs contain "/".
+  return __DEV__ || !/^ca-app-pub-\d+\/\d+$/.test(productionId)
+    ? testUnitId
+    : productionId;
 }
 
 // Loads and shows one rewarded ad; resolves "earned" only if it was watched.
-export function showRewardedAd(): Promise<RewardedAdResult> {
+export async function showRewardedAd(): Promise<RewardedAdResult> {
+  // Expo Go and outdated native builds do not include this module. Avoid
+  // importing the library until we know its native implementation exists.
+  if (!TurboModuleRegistry.get("RNGoogleMobileAdsModule")) {
+    return "unavailable";
+  }
+
+  let ads: typeof import("react-native-google-mobile-ads");
+  try {
+    ads = await import("react-native-google-mobile-ads");
+  } catch {
+    return "unavailable";
+  }
+  const {
+    default: mobileAds,
+    AdEventType,
+    RewardedAd,
+    RewardedAdEventType,
+    TestIds,
+  } = ads;
+
   return new Promise((resolve) => {
-    const ad = RewardedAd.createForAdRequest(getUnitId());
+    const ad = RewardedAd.createForAdRequest(getUnitId(TestIds.REWARDED));
     const unsubscribers: (() => void)[] = [];
     let earned = false;
     let settled = false;
@@ -64,7 +83,7 @@ export function showRewardedAd(): Promise<RewardedAdResult> {
     );
 
     loadTimer = setTimeout(() => finish("unavailable"), AD_LOAD_TIMEOUT_MS);
-    ensureInitialized()
+    ensureInitialized(mobileAds)
       .then(() => ad.load())
       .catch(() => finish("unavailable"));
   });

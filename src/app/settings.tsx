@@ -1,3 +1,4 @@
+import { BackIcon } from "@/components/ui/back-icon";
 import { SoundPressable as Pressable } from "@/components/ui/sound-pressable";
 import Slider from "@react-native-community/slider";
 import { Image } from "expo-image";
@@ -8,23 +9,29 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { ControlLayoutEditor } from "../components/control-layout-editor";
 
 import {
-  createBattleControlPreset,
-  getBattleControlSettings,
-  getMusicVolume,
-  getSoundEffectsVolume,
-  getVibrationEnabled,
-  saveBattleControlSettings,
-  saveMusicVolume,
-  saveSoundEffectsVolume,
-  saveVibrationEnabled,
-  updateMusicVolume,
-  updateSoundEffectsVolume,
-  type BattleControlSettings,
+    createBattleControlPreset,
+    getBattleControlSettings,
+    getMusicVolume,
+    getSoundEffectsVolume,
+    getVibrationEnabled,
+    saveBattleControlSettings,
+    saveMusicVolume,
+    saveSoundEffectsVolume,
+    saveVibrationEnabled,
+    updateMusicVolume,
+    updateSoundEffectsVolume,
+    type BattleControlSettings,
 } from "@/constants/player-settings";
 import { getRemoteAssetSource } from "@/services/remote-assets";
 
 const settingsBackdrop = require("@/assets/images/background_1.png");
 const settingsIcon = getRemoteAssetSource("game/icons/settings_1.png");
+const vibrationIcon = getRemoteAssetSource("game/icons/vibrate_1.png");
+const generalTabIcon = getRemoteAssetSource(
+  "game/icons/general_settings_1.png",
+);
+const audioTabIcon = getRemoteAssetSource("game/icons/audio_1.png");
+const controlsTabIcon = getRemoteAssetSource("game/icons/controller_1.png");
 
 export default function SettingsScreen() {
   const [activeTab, setActiveTab] = useState<"general" | "audio" | "controls">(
@@ -100,7 +107,7 @@ export default function SettingsScreen() {
             onPress={() => router.back()}
             style={styles.backButton}
           >
-            <Text style={styles.backButtonText}>‹ MENU</Text>
+            <BackIcon />
           </Pressable>
           <View style={styles.titleGroup}>
             <Text style={styles.eyebrow}>WILD PAW · PREFERENCES</Text>
@@ -118,6 +125,7 @@ export default function SettingsScreen() {
           <View style={styles.tabs}>
             <Pressable
               accessibilityRole="tab"
+              accessibilityLabel="General"
               accessibilityState={{ selected: activeTab === "general" }}
               onPress={() => setActiveTab("general")}
               style={[
@@ -125,17 +133,16 @@ export default function SettingsScreen() {
                 activeTab === "general" && styles.tabButtonSelected,
               ]}
             >
-              <Text
-                style={[
-                  styles.tabText,
-                  activeTab === "general" && styles.tabTextSelected,
-                ]}
-              >
-                General
-              </Text>
+              <Image
+                source={generalTabIcon}
+                style={styles.tabIcon}
+                contentFit="contain"
+                pointerEvents="none"
+              />
             </Pressable>
             <Pressable
               accessibilityRole="tab"
+              accessibilityLabel="Audio"
               accessibilityState={{ selected: activeTab === "audio" }}
               onPress={() => setActiveTab("audio")}
               style={[
@@ -143,17 +150,16 @@ export default function SettingsScreen() {
                 activeTab === "audio" && styles.tabButtonSelected,
               ]}
             >
-              <Text
-                style={[
-                  styles.tabText,
-                  activeTab === "audio" && styles.tabTextSelected,
-                ]}
-              >
-                Audio
-              </Text>
+              <Image
+                source={audioTabIcon}
+                style={styles.tabIcon}
+                contentFit="contain"
+                pointerEvents="none"
+              />
             </Pressable>
             <Pressable
               accessibilityRole="tab"
+              accessibilityLabel="Control"
               accessibilityState={{ selected: activeTab === "controls" }}
               onPress={() => setActiveTab("controls")}
               style={[
@@ -161,14 +167,12 @@ export default function SettingsScreen() {
                 activeTab === "controls" && styles.tabButtonSelected,
               ]}
             >
-              <Text
-                style={[
-                  styles.tabText,
-                  activeTab === "controls" && styles.tabTextSelected,
-                ]}
-              >
-                Control
-              </Text>
+              <Image
+                source={controlsTabIcon}
+                style={styles.tabIcon}
+                contentFit="contain"
+                pointerEvents="none"
+              />
             </Pressable>
           </View>
           <ScrollView
@@ -179,6 +183,12 @@ export default function SettingsScreen() {
             {activeTab === "general" ? (
               <View style={styles.settingsPanel}>
                 <View style={styles.vibrationRow}>
+                  <Image
+                    source={vibrationIcon}
+                    style={styles.vibrationIcon}
+                    contentFit="contain"
+                    pointerEvents="none"
+                  />
                   <View style={styles.optionCopy}>
                     <Text style={styles.optionTitle}>Vibration</Text>
                     <Text style={styles.optionDescription}>
@@ -454,8 +464,7 @@ const styles = StyleSheet.create({
     borderColor: "rgba(190, 242, 100, 0.8)",
     backgroundColor: "rgba(54, 83, 20, 0.72)",
   },
-  tabText: { color: "#9bb7aa", fontSize: 11, fontWeight: "800" },
-  tabTextSelected: { color: "#f0fdf4" },
+  tabIcon: { width: 26, height: 26 },
   settingsScroll: { flex: 1 },
   settingsScrollContent: {
     flexGrow: 1,
@@ -493,6 +502,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 12,
   },
+  vibrationIcon: { width: 32, height: 32 },
   optionCopy: {
     flex: 1,
     gap: 2,

@@ -1,3 +1,4 @@
+import { BackIcon } from "@/components/ui/back-icon";
 import { NewBadge } from "@/components/ui/new-badge";
 import { SoundPressable as Pressable } from "@/components/ui/sound-pressable";
 import { Image } from "expo-image";
@@ -54,7 +55,7 @@ type HeroSelectionScreenProps = {
   onBack: () => void;
 };
 
-const coinIcon = getRemoteAssetSource("game/icons/coin_1.png");
+const coinIcon = getRemoteAssetSource("game/icons/coins_1.png");
 const diamondIcon = getRemoteAssetSource("game/icons/diamond_1.png");
 
 function Artwork({
@@ -478,7 +479,7 @@ export function HeroSelectionScreen({
           onPress={onBack}
           style={styles.backButton}
         >
-          <Text style={styles.backButtonText}>‹ MENU</Text>
+          <BackIcon />
         </Pressable>
         <View style={styles.titleGroup}>
           <Text style={styles.eyebrow}>WILD PAW · COLLECTION</Text>

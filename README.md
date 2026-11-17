@@ -37,6 +37,21 @@ published at `wild-paw/data/assets/game/constants/heroes.json`.
    npx expo start
    ```
 
+## Rewarded ads
+
+Google Mobile Ads is not included in Expo Go. The event screen remains usable
+there, but ad rewards are unavailable until the app is rebuilt and installed
+with the native ads module. For an Android development build, apply the config
+plugin to the existing generated project with `npx expo prebuild --platform android`,
+then build and install it with `npx expo run:android`. If using EAS, create and
+install a new development build instead. Restarting Metro alone does not update
+an installed native app. Back up any manual native changes before prebuilding.
+
+The ad configuration currently uses Google's test app IDs. Before release, set
+the platform app IDs in `app.json` and the separate rewarded ad unit IDs in
+`src/constants/ads-config.ts`. App IDs contain `~`; ad unit IDs contain `/`.
+Invalid or missing ad unit IDs fall back to Google's test ad unit.
+
 ## Local multiplayer
 
 In the installed Android or iOS app, choose **Local Multiplayer → Host Match →

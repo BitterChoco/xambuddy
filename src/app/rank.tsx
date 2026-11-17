@@ -1,3 +1,4 @@
+import { BackIcon } from "@/components/ui/back-icon";
 import { SoundPressable as Pressable } from "@/components/ui/sound-pressable";
 import {
     DEFAULT_PROFILE_PICTURE,
@@ -113,7 +114,7 @@ export default function RankScreen() {
             onPress={() => router.back()}
             style={styles.backButton}
           >
-            <Text style={styles.backButtonText}>‹ MENU</Text>
+            <BackIcon />
           </Pressable>
           <View style={styles.titleGroup}>
             <Text style={styles.eyebrow}>WILD PAW · COMMUNITY</Text>

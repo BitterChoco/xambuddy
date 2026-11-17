@@ -1,3 +1,4 @@
+import { BackIcon } from "@/components/ui/back-icon";
 import { NewBadge } from "@/components/ui/new-badge";
 import { ProfileBorderOverlay } from "@/components/ui/profile-border-overlay";
 import { SoundPressable as Pressable } from "@/components/ui/sound-pressable";
@@ -177,7 +178,7 @@ export default function ProfileScreen() {
             onPress={() => router.back()}
             style={styles.backButton}
           >
-            <Text style={styles.backButtonText}>‹ MENU</Text>
+            <BackIcon />
           </Pressable>
           <View style={styles.titleGroup}>
             <Text style={styles.eyebrow}>WILD PAW · PLAYER</Text>

@@ -1,3 +1,4 @@
+import { BackIcon } from "@/components/ui/back-icon";
 import { SoundPressable as Pressable } from "@/components/ui/sound-pressable";
 import { Image } from "expo-image";
 import { router } from "expo-router";
@@ -121,7 +122,7 @@ function PressableBack() {
       onPress={() => router.back()}
       style={styles.backButton}
     >
-      <Text style={styles.backButtonText}>‹ MENU</Text>
+      <BackIcon />
     </Pressable>
   );
 }
