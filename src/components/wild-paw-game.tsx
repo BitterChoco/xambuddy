@@ -35,7 +35,10 @@ import {
   stopLocalHostServer,
 } from "@/services/local-multiplayer-network";
 import type { MultiplayerSocket } from "@/services/local-multiplayer.types";
-import { getRemoteAssetSource } from "@/services/remote-assets";
+import {
+  getEnemySpriteAssetSource,
+  getRemoteAssetSource,
+} from "@/services/remote-assets";
 import { showRewardedAd } from "@/services/rewarded-ad";
 import { createAudioPlayer } from "expo-audio";
 import * as Haptics from "expo-haptics";
@@ -58,6 +61,7 @@ import {
   useTapGesture,
 } from "react-native-gesture-handler";
 import { SafeAreaView } from "react-native-safe-area-context";
+import AnimatedSprite from "./ui/sprite";
 
 const MULTIPLAYER_SOCKET_OPEN = 1;
 
@@ -592,10 +596,6 @@ function createArtilleryBossPosition(currentPosition: Vector): Vector {
 function getRandomEnemySpriteAsset(kind: keyof typeof ENEMY_SPRITE_ASSETS) {
   const assets = ENEMY_SPRITE_ASSETS[kind];
   return assets[Math.floor(Math.random() * assets.length)];
-}
-
-function getEnemySpriteSource(enemy: Enemy) {
-  return getRemoteAssetSource(enemy.imageAsset);
 }
 
 function getEnemyFacing(enemy: Enemy, target: { x: number } | null) {
@@ -5896,7 +5896,7 @@ export function WildPawGame({
                     >
                       {isArenaBoss
                         ? `${bossConfig.name} · ${Math.ceil(enemy.health).toLocaleString()}`
-                        : Math.ceil(enemy.health)}
+                        : `${Math.ceil(enemy.health)} / ${enemy.maxHealth}`}
                     </Text>
                   </View>
 
@@ -5914,24 +5914,14 @@ export function WildPawGame({
                       },
                     ]}
                   >
-                    <Image
-                      pointerEvents="none"
-                      source={getEnemySpriteSource(enemy)}
-                      style={[
-                        styles.enemySprite,
-                        isHitFlashOn && styles.enemyHitFlash,
-                        {
-                          transform: [{ scaleX: enemyFacing }],
-                        },
-                      ]}
-                      contentFit="contain"
-                      accessibilityLabel={
-                        isArenaBoss
-                          ? "Big boss enemy"
-                          : enemy.isBoss
-                            ? "Elite enemy"
-                            : "Enemy"
-                      }
+                    <AnimatedSprite
+                      source={getEnemySpriteAssetSource(enemy.imageAsset)}
+                      totalFrames={8}
+                      frameSize={64}
+                      facing={enemyFacing}
+                      animationSpeed={120}
+                      displaySize={enemy.radius * 2}
+                      style={[isHitFlashOn && styles.enemyHitFlash]}
                     />
                     {(enemy.bulletImpactTimer ?? 0) > 0 && (
                       <Image
@@ -8185,8 +8175,6 @@ const styles = StyleSheet.create({
     right: 0,
     top: 0,
     bottom: 0,
-    width: "100%",
-    height: "100%",
   },
   enemyDeathSprite: {
     position: "absolute",
@@ -8207,11 +8195,11 @@ const styles = StyleSheet.create({
     position: "absolute",
     inset: 0,
     color: "#fef2f2",
-    fontSize: 8,
+    fontSize: 6,
     fontWeight: "900",
     letterSpacing: 0.2,
     textAlign: "center",
-    lineHeight: 8,
+    lineHeight: 6,
     zIndex: 5,
     textShadowColor: "rgba(0, 0, 0, 0.9)",
     textShadowOffset: { width: 1, height: 1 },
@@ -8219,9 +8207,12 @@ const styles = StyleSheet.create({
   },
   enemyLevelBadge: {
     position: "absolute",
-    width: 15,
-    height: 15,
-    borderRadius: 8,
+    width: 12,
+    height: 12,
+    marginTop: -1,
+    borderRadius: 2,
+    borderWidth: 1,
+    borderColor: "black",
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: "#2563eb",
@@ -8236,11 +8227,11 @@ const styles = StyleSheet.create({
   },
   enemyHealthBarOuter: {
     position: "absolute",
-    height: 10,
-    borderRadius: 999,
+    height: 8,
+    borderRadius: 2,
     backgroundColor: "rgba(15, 23, 42, 0.82)",
-    borderWidth: 2,
-    borderColor: "#7f1d1d",
+    borderWidth: 1,
+    borderColor: "black",
     overflow: "hidden",
     zIndex: 1,
     justifyContent: "center",
@@ -8251,7 +8242,7 @@ const styles = StyleSheet.create({
     left: 0,
     top: 0,
     bottom: 0,
-    borderRadius: 999,
+    borderRadius: 2,
     backgroundColor: "#ef4444",
   },
   damageNumber: {

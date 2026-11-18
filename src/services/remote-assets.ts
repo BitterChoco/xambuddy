@@ -187,6 +187,12 @@ async function getManifest(onProgress: ProgressCallback) {
   }
 }
 
+export function getEnemySpriteAssetSource(enemyPath: string) {
+  return getRemoteAssetSource(
+    enemyPath.replace("/enemy/", "/sprite/").replace("enemy_", "sprite_enemy_"),
+  );
+}
+
 export function getRemoteAssetSource(path: string) {
   const safePath = path.replace(/^\/+/, "");
   const uri =
