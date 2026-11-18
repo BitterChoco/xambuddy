@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "Wild Paw: Bloom Wars",
-    "slug": "xambuddy",
+    "slug": "wild-paw",
     "version": "1.0.0",
     "orientation": "landscape",
     "icon": "./assets/images/icon_1.png",
@@ -29,7 +29,11 @@
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
       "predictiveBackGestureEnabled": false,
-      "package": "com.bitterchoco.wildpaw"
+      "package": "com.bitterchoco.wildpaw",
+      "permissions": [
+        "android.permission.MODIFY_AUDIO_SETTINGS",
+        "android.permission.REQUEST_INSTALL_PACKAGES"
+      ]
     },
     "web": {
       "output": "server",
@@ -64,8 +68,16 @@
       [
         "react-native-google-mobile-ads",
         {
-          "androidAppId": "ca-app-pub-3940256099942544~3347511713",
+          "androidAppId": "ca-app-pub-4648627365063740~6212558585",
           "iosAppId": "ca-app-pub-3940256099942544~1458002511"
+        }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "enableMinifyInReleaseBuilds": false
+          }
         }
       ]
     ],
@@ -83,8 +95,9 @@
         "hidden": true
       },
       "eas": {
-        "projectId": "3eaa9e46-4ad9-4682-81d7-5f200ec5d608"
+        "projectId": "dc434ae5-9ea6-4811-bd0e-997c61d42c41"
       }
-    }
+    },
+    "owner": "wasabi05s-team"
   }
 }

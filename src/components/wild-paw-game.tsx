@@ -36,12 +36,14 @@ import {
 } from "@/services/local-multiplayer-network";
 import type { MultiplayerSocket } from "@/services/local-multiplayer.types";
 import { getRemoteAssetSource } from "@/services/remote-assets";
+import { showRewardedAd } from "@/services/rewarded-ad";
 import { createAudioPlayer } from "expo-audio";
 import * as Haptics from "expo-haptics";
 import { Image } from "expo-image";
 import { router } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  ActivityIndicator,
   Animated,
   BackHandler,
   Platform,
@@ -392,6 +394,7 @@ const ghostImage = getRemoteAssetSource("game/icons/ghost_1.png");
 const coinImage = getRemoteAssetSource("game/icons/coins_1.png");
 const trophyImage = getRemoteAssetSource("game/icons/trophy_1.png");
 const xpImage = getRemoteAssetSource("game/icons/xp_1.png");
+const watchAdsImage = getRemoteAssetSource("game/icons/watch_ads_1.png");
 const homeIcon = getRemoteAssetSource("game/icons/home_1.png");
 const playIcon = getRemoteAssetSource("game/icons/play_1.png");
 const pauseIcon = getRemoteAssetSource("game/icons/pause_1.png");
@@ -1914,6 +1917,12 @@ export function WildPawGame({
   const [aimDirection, setAimDirection] = useState<Vector>({ x: 1, y: 0 });
   const [earnedCoins, setEarnedCoins] = useState(0);
   const [earnedXp, setEarnedXp] = useState(0);
+  const [isDoublingRewards, setIsDoublingRewards] = useState(false);
+  const [hasDoubledRewards, setHasDoubledRewards] = useState(false);
+  const [doubleRewardsMessage, setDoubleRewardsMessage] = useState("");
+  const [doubleRewardsStatus, setDoubleRewardsStatus] = useState<
+    "loading" | "success" | "error" | null
+  >(null);
   const [isFireHeld, setIsFireHeld] = useState(false);
   const [ghostAnimationTime, setGhostAnimationTime] = useState(0);
   const [selectedWeapon, setSelectedWeapon] = useState<"gun" | "grenade">(
@@ -2578,6 +2587,7 @@ export function WildPawGame({
   });
   const coinsAwardedRef = useRef(false);
   const xpAwardedRef = useRef(false);
+  const doubleRewardsClaimedRef = useRef(false);
   const highScoreRecordedRef = useRef(false);
   const multiplayerSocketRef = useRef<MultiplayerSocket | null>(null);
   const gameRef = useRef(game);
@@ -2770,8 +2780,13 @@ export function WildPawGame({
     coinsAwardedRef.current = false;
     xpAwardedRef.current = false;
     highScoreRecordedRef.current = false;
+    doubleRewardsClaimedRef.current = false;
     setEarnedCoins(0);
     setEarnedXp(0);
+    setIsDoublingRewards(false);
+    setHasDoubledRewards(false);
+    setDoubleRewardsMessage("");
+    setDoubleRewardsStatus(null);
     setGame((previous) => {
       const restarted = createInitialGame(
         selectedHero,
@@ -3340,6 +3355,50 @@ export function WildPawGame({
     isMultiplayerLobby,
     localPlayer.buddyId,
   ]);
+
+  const doubleGameOverRewards = async () => {
+    if (
+      isDoublingRewards ||
+      doubleRewardsClaimedRef.current ||
+      (earnedCoins <= 0 && earnedXp <= 0)
+    ) {
+      return;
+    }
+
+    setIsDoublingRewards(true);
+    setDoubleRewardsMessage("Checking for an available ad…");
+    setDoubleRewardsStatus("loading");
+    const adResult = await showRewardedAd().catch(() => "unavailable" as const);
+    if (adResult !== "earned") {
+      setDoubleRewardsMessage(
+        adResult === "dismissed"
+          ? "Watch the full ad to double your rewards."
+          : "No ads are available right now. Please try again later.",
+      );
+      setDoubleRewardsStatus("error");
+      setIsDoublingRewards(false);
+      return;
+    }
+
+    // Lock this run before awarding so a storage error cannot permit a duplicate.
+    doubleRewardsClaimedRef.current = true;
+    setHasDoubledRewards(true);
+    try {
+      if (earnedCoins > 0) await awardCoins(earnedCoins);
+      if (earnedXp > 0) await awardPlayerXp(earnedXp);
+      setEarnedCoins((amount) => amount * 2);
+      setEarnedXp((amount) => amount * 2);
+      setDoubleRewardsMessage("Rewards doubled!");
+      setDoubleRewardsStatus("success");
+    } catch {
+      setDoubleRewardsMessage(
+        "The ad was completed, but the bonus could not be saved.",
+      );
+      setDoubleRewardsStatus("error");
+    } finally {
+      setIsDoublingRewards(false);
+    }
+  };
 
   const togglePause = useCallback(() => {
     const socket = multiplayerSocketRef.current;
@@ -6546,6 +6605,29 @@ export function WildPawGame({
               </View>
             ) : (
               <View style={styles.overlayActions}>
+                {(earnedCoins > 0 || earnedXp > 0) && !hasDoubledRewards && (
+                  <Pressable
+                    style={styles.doubleRewardsButton}
+                    onPress={() => void doubleGameOverRewards()}
+                    disabled={isDoublingRewards}
+                    accessibilityRole="button"
+                    accessibilityLabel="Watch an ad to double Garden Overrun rewards"
+                    accessibilityState={{ disabled: isDoublingRewards }}
+                  >
+                    {isDoublingRewards ? (
+                      <ActivityIndicator size="small" color="#fff" />
+                    ) : (
+                      <Image
+                        source={watchAdsImage}
+                        style={styles.doubleRewardsIcon}
+                        contentFit="contain"
+                      />
+                    )}
+                    <Text style={styles.doubleRewardsButtonText}>
+                      {isDoublingRewards ? "Loading ad…" : "Double rewards"}
+                    </Text>
+                  </Pressable>
+                )}
                 <Pressable style={styles.restartButton} onPress={resetGame}>
                   <Text style={styles.restartText}>Retry</Text>
                 </Pressable>
@@ -6562,6 +6644,20 @@ export function WildPawGame({
                   />
                 </Pressable>
               </View>
+            )}
+            {!game.isPaused && !!doubleRewardsMessage && (
+              <Text
+                style={[
+                  styles.doubleRewardsMessage,
+                  doubleRewardsStatus === "success"
+                    ? styles.doubleRewardsMessageSuccess
+                    : doubleRewardsStatus === "loading"
+                      ? styles.doubleRewardsMessageLoading
+                      : styles.doubleRewardsMessageError,
+                ]}
+              >
+                {doubleRewardsMessage}
+              </Text>
             )}
           </View>
         )}
@@ -8705,6 +8801,42 @@ const styles = StyleSheet.create({
     flexWrap: "wrap",
     gap: 10,
     justifyContent: "center",
+  },
+  doubleRewardsButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    backgroundColor: "#7c3aed",
+    borderWidth: 1,
+    borderColor: "#c4b5fd",
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderRadius: 12,
+  },
+  doubleRewardsIcon: {
+    width: 22,
+    height: 22,
+  },
+  doubleRewardsButtonText: {
+    color: "#fff",
+    fontSize: 14,
+    fontWeight: "800",
+  },
+  doubleRewardsMessage: {
+    marginTop: 8,
+    fontSize: 13,
+    fontWeight: "700",
+    textAlign: "center",
+  },
+  doubleRewardsMessageSuccess: {
+    color: "#bef264",
+  },
+  doubleRewardsMessageLoading: {
+    color: "#e2e8f0",
+  },
+  doubleRewardsMessageError: {
+    color: "#fca5a5",
   },
   restartButton: {
     backgroundColor: "#22c55e",

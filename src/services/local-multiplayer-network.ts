@@ -13,19 +13,24 @@ export function getLastProbeError() {
 export async function probeLocalServer(
   address: string,
   timeoutMs = 1800,
+  attempts = 2,
 ): Promise<boolean> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const response = await fetch(`http://${address}:8765/health`, {
-      signal: controller.signal,
-    });
-    return response.ok;
-  } catch {
-    return false;
-  } finally {
-    clearTimeout(timeout);
+  for (let attempt = 0; attempt < Math.max(1, attempts); attempt += 1) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(`http://${address}:8765/health`, {
+        signal: controller.signal,
+      });
+      if (response.ok) return true;
+    } catch {
+      // Retry until the requested attempt count is exhausted.
+    } finally {
+      clearTimeout(timeout);
+    }
   }
+
+  return false;
 }
 
 export function createMultiplayerSocket(address: string): MultiplayerSocket {

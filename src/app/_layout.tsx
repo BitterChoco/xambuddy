@@ -4,17 +4,23 @@ import { initializeRemoteGameCatalogs } from "@/constants/game-catalog";
 import { initializeRemoteGameConfiguration } from "@/constants/game-configuration";
 import { initializeDefaultPlayerInventory } from "@/constants/player-inventory";
 import {
-    getMusicVolume,
-    subscribeToMusicVolume,
+  getMusicVolume,
+  subscribeToMusicVolume,
 } from "@/constants/player-settings";
 import { initializeRemoteStorePricing } from "@/constants/store-pricing";
 import "@/global.css";
 import {
-    createInitialAssetLoadingState,
-    getRemoteAssetSource,
-    loadRemoteAssets,
-    type AssetLoadingState,
+  checkAndInstallAndroidUpdate,
+  launchAndroidUpdateInstaller,
+  type AppUpdateProgress,
+} from "@/services/app-update";
+import {
+  createInitialAssetLoadingState,
+  getRemoteAssetSource,
+  loadRemoteAssets,
+  type AssetLoadingState,
 } from "@/services/remote-assets";
+import * as Application from "expo-application";
 import { createAudioPlayer, setAudioModeAsync } from "expo-audio";
 import { Image } from "expo-image";
 import { useNetworkState } from "expo-network";
@@ -30,6 +36,32 @@ const loadingScreenImage = require("@/assets/images/loading_screen.jpg");
 const loadingMusic = require("@/assets/sound/turning_pages-lantern-in-the-glade-600973.mp3");
 const menuMusic = getRemoteAssetSource("game/music/menu_1.mp3");
 const battleMusic = getRemoteAssetSource("game/music/battle_1.mp3");
+
+type AppUpdateState = AppUpdateProgress & {
+  status:
+    | "checking"
+    | "downloading"
+    | "installing"
+    | "required"
+    | "error"
+    | "complete";
+  error: string | null;
+  apkUri: string | null;
+  version: string | null;
+};
+
+function createInitialAppUpdateState(): AppUpdateState {
+  return {
+    status: "checking",
+    progress: 0,
+    downloadedBytes: 0,
+    totalBytes: 0,
+    detail: "Checking for app updates…",
+    error: null,
+    apkUri: null,
+    version: null,
+  };
+}
 
 if (Platform.OS !== "web") {
   void SplashScreen.preventAutoHideAsync().catch(() => undefined);
@@ -60,6 +92,9 @@ export default function RootLayout() {
   const [assetLoadingState, setAssetLoadingState] = useState<AssetLoadingState>(
     createInitialAssetLoadingState,
   );
+  const [appUpdateState, setAppUpdateState] = useState<AppUpdateState>(
+    createInitialAppUpdateState,
+  );
   const [assetLoadAttempt, setAssetLoadAttempt] = useState(0);
   const [musicVolume, setMusicVolume] = useState(0.5);
   const [isAudioModeReady, setIsAudioModeReady] = useState(false);
@@ -68,6 +103,11 @@ export default function RootLayout() {
   const isInternetUnavailable =
     networkState.isConnected === false ||
     networkState.isInternetReachable === false;
+  const isInternetWarningVisible =
+    isInternetUnavailable &&
+    appUpdateState.status !== "required" &&
+    appUpdateState.status !== "installing";
+  const isInternetUnavailableRef = useRef(isInternetUnavailable);
 
   useEffect(() => {
     if (Platform.OS !== "android") return;
@@ -79,9 +119,59 @@ export default function RootLayout() {
   }, []);
 
   useEffect(() => {
+    isInternetUnavailableRef.current = isInternetUnavailable;
+  }, [isInternetUnavailable]);
+
+  useEffect(() => {
     let isMounted = true;
+    let updateCheckComplete = false;
     void (async () => {
       try {
+        setAppUpdateState(createInitialAppUpdateState());
+        const updateResult = await checkAndInstallAndroidUpdate(
+          Application.nativeApplicationVersion ?? "0.0.0",
+          (progress) => {
+            if (!isMounted) return;
+            setAppUpdateState((current) => ({
+              ...current,
+              ...progress,
+              status:
+                progress.detail.startsWith("Downloading") ||
+                progress.detail.startsWith("Resuming")
+                  ? "downloading"
+                  : "checking",
+              error: null,
+            }));
+          },
+        );
+        if (!isMounted) return;
+        if (updateResult.status === "install-required") {
+          setAppUpdateState((current) => ({
+            ...current,
+            status: "installing",
+            detail: `Installing app update ${updateResult.version}… Confirm installation in Android.`,
+            apkUri: updateResult.apkUri,
+            version: updateResult.version,
+            error: null,
+          }));
+          await launchAndroidUpdateInstaller(updateResult.apkUri);
+          if (!isMounted) return;
+          setAppUpdateState((current) => ({
+            ...current,
+            status: "required",
+            detail: `Update ${updateResult.version} is required. Complete installation in Android, then reopen Wild Paw.`,
+          }));
+          return;
+        }
+        setAppUpdateState((current) => ({
+          ...current,
+          status: "complete",
+          progress: 100,
+          detail: "The app is up to date.",
+          error: null,
+        }));
+        updateCheckComplete = true;
+
         await loadRemoteAssets((state) => {
           if (isMounted && !state.isComplete) setAssetLoadingState(state);
         });
@@ -108,13 +198,30 @@ export default function RootLayout() {
         }));
       } catch (error: unknown) {
         if (!isMounted) return;
+        const message = isInternetUnavailableRef.current
+          ? "An internet connection is required to start Wild Paw. Connect to Wi-Fi or mobile data and retry."
+          : error instanceof Error
+            ? error.message
+            : "Unable to complete startup.";
+        if (updateCheckComplete) {
+          setAssetLoadingState((current) => ({
+            ...current,
+            detail: "Asset download failed.",
+            error: message,
+            isComplete: false,
+          }));
+          return;
+        }
+        setAppUpdateState((current) => ({
+          ...current,
+          status: "error",
+          detail: "Unable to check or install the app update.",
+          error: message,
+        }));
         setAssetLoadingState((current) => ({
           ...current,
-          detail: "Asset download failed.",
-          error:
-            error instanceof Error
-              ? error.message
-              : "Unable to download game assets.",
+          detail: "Startup is paused until the app update check succeeds.",
+          error: null,
           isComplete: false,
         }));
       }
@@ -216,6 +323,49 @@ export default function RootLayout() {
     setAssetLoadAttempt((attempt) => attempt + 1);
   };
 
+  const retryAppUpdate = () => {
+    if (appUpdateState.status === "required" && appUpdateState.apkUri) {
+      setAppUpdateState((current) => ({
+        ...current,
+        status: "installing",
+        detail: `Opening installer for update ${current.version}…`,
+        error: null,
+      }));
+      void launchAndroidUpdateInstaller(appUpdateState.apkUri)
+        .then(() => {
+          setAppUpdateState((current) => ({
+            ...current,
+            status: "required",
+            detail: `Update ${current.version} is required. Complete installation in Android, then reopen Wild Paw.`,
+          }));
+        })
+        .catch((error: unknown) => {
+          setAppUpdateState((current) => ({
+            ...current,
+            status: "error",
+            error:
+              error instanceof Error
+                ? error.message
+                : "Unable to open the Android installer.",
+          }));
+        });
+      return;
+    }
+
+    retryAssetDownload();
+  };
+
+  const isAppUpdateBlocking = appUpdateState.status !== "complete";
+  const visibleProgress = isAppUpdateBlocking
+    ? appUpdateState.progress
+    : assetLoadingState.progress;
+  const visibleDownloadedBytes = isAppUpdateBlocking
+    ? appUpdateState.downloadedBytes
+    : assetLoadingState.downloadedBytes;
+  const visibleTotalDownloadBytes = isAppUpdateBlocking
+    ? appUpdateState.totalBytes
+    : assetLoadingState.totalDownloadBytes;
+
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <View style={{ flex: 1 }} onLayout={() => setIsAppLayoutReady(true)}>
@@ -290,9 +440,13 @@ export default function RootLayout() {
                   textShadowRadius: 3,
                 }}
               >
-                {assetLoadingState.error ?? assetLoadingState.detail}
+                {isInternetWarningVisible
+                  ? "An internet connection is required to start Wild Paw."
+                  : isAppUpdateBlocking
+                    ? (appUpdateState.error ?? appUpdateState.detail)
+                    : (assetLoadingState.error ?? assetLoadingState.detail)}
               </Text>
-              {isInternetUnavailable && (
+              {isInternetWarningVisible && (
                 <Text
                   accessibilityRole="alert"
                   style={{
@@ -309,8 +463,8 @@ export default function RootLayout() {
                     fontWeight: "800",
                   }}
                 >
-                  ⚠ No internet connection. Connect to Wi-Fi or mobile data to
-                  download game assets.
+                  ⚠ Internet is needed to check app updates and download game
+                  content. Connect to Wi-Fi or mobile data, then retry.
                 </Text>
               )}
               <View
@@ -324,7 +478,7 @@ export default function RootLayout() {
               >
                 <View
                   style={{
-                    width: `${assetLoadingState.progress}%`,
+                    width: `${visibleProgress}%`,
                     height: "100%",
                     borderRadius: 8,
                     backgroundColor: "#34d399",
@@ -347,9 +501,11 @@ export default function RootLayout() {
                     textShadowRadius: 3,
                   }}
                 >
-                  {assetLoadingState.totalFiles > 0
-                    ? `${assetLoadingState.completedFiles}/${assetLoadingState.totalFiles} files`
-                    : "Release assets"}
+                  {isAppUpdateBlocking
+                    ? "App update"
+                    : assetLoadingState.totalFiles > 0
+                      ? `${assetLoadingState.completedFiles}/${assetLoadingState.totalFiles} files`
+                      : "Release assets"}
                 </Text>
                 <Text
                   style={{
@@ -361,7 +517,7 @@ export default function RootLayout() {
                     textShadowRadius: 3,
                   }}
                 >
-                  {assetLoadingState.progress}%
+                  {visibleProgress}%
                 </Text>
               </View>
               <Text
@@ -375,13 +531,18 @@ export default function RootLayout() {
                   textShadowRadius: 3,
                 }}
               >
-                {Platform.OS === "web"
-                  ? "Assets load on demand"
-                  : assetLoadingState.totalFiles === 0
-                    ? "Calculating download size…"
-                    : `${formatBytes(assetLoadingState.downloadedBytes)} / ${formatBytes(assetLoadingState.totalDownloadBytes)} downloaded`}
+                {isAppUpdateBlocking
+                  ? visibleTotalDownloadBytes > 0
+                    ? `${formatBytes(visibleDownloadedBytes)} / ${formatBytes(visibleTotalDownloadBytes)} downloaded`
+                    : "Checking the latest app version…"
+                  : Platform.OS === "web"
+                    ? "Assets load on demand"
+                    : assetLoadingState.totalFiles === 0
+                      ? "Calculating download size…"
+                      : `${formatBytes(assetLoadingState.downloadedBytes)} / ${formatBytes(assetLoadingState.totalDownloadBytes)} downloaded`}
               </Text>
-              {Platform.OS !== "web" &&
+              {!isAppUpdateBlocking &&
+                Platform.OS !== "web" &&
                 assetLoadingState.totalDownloadBytes > 0 &&
                 !assetLoadingState.isComplete && (
                   <Text
@@ -400,7 +561,27 @@ export default function RootLayout() {
                     /s
                   </Text>
                 )}
-              {assetLoadingState.error && (
+              {(appUpdateState.status === "error" ||
+                appUpdateState.status === "required") && (
+                <Pressable
+                  onPress={retryAppUpdate}
+                  style={{
+                    alignSelf: "flex-start",
+                    marginTop: 12,
+                    paddingHorizontal: 15,
+                    paddingVertical: 8,
+                    borderRadius: 9,
+                    backgroundColor: "#059669",
+                  }}
+                >
+                  <Text style={{ color: "white", fontWeight: "700" }}>
+                    {appUpdateState.status === "required"
+                      ? "Install update"
+                      : "Retry update check"}
+                  </Text>
+                </Pressable>
+              )}
+              {!isAppUpdateBlocking && assetLoadingState.error && (
                 <Pressable
                   onPress={retryAssetDownload}
                   style={{

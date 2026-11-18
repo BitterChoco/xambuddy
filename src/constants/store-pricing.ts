@@ -21,6 +21,7 @@ type StorePricing = {
   buddies?: Record<string, PriceRule>;
   buddyItems?: Record<string, PriceRule>;
   profileBorders?: Record<string, PriceRule>;
+  profilePictures?: Record<string, PriceRule>;
 };
 
 let pricing: StorePricing;
@@ -92,5 +93,13 @@ export function getProfileBorderPricing(borderId: string) {
   return sanitizeRule(pricing.profileBorders?.[borderId], {
     price: 300,
     discountPercent: 0,
+  });
+}
+
+export function getProfilePicturePricing(profilePictureId: string) {
+  return sanitizeRule(pricing.profilePictures?.[profilePictureId], {
+    price: 10_000,
+    discountPercent: 0,
+    currency: "coin",
   });
 }

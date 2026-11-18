@@ -1,7 +1,7 @@
 import {
-    getRemoteAssetSource,
-    hasRemoteAsset,
-    readRemoteAssetJson,
+  getRemoteAssetSource,
+  hasRemoteAsset,
+  readRemoteAssetJson,
 } from "@/services/remote-assets";
 
 export type BundledImage =
@@ -16,6 +16,7 @@ export type ProfilePictureRecord = {
   id: string;
   name: string;
   image: string;
+  rarity?: ItemRarity;
 };
 
 export type ProfileBorderRecord = {
@@ -113,6 +114,10 @@ export async function initializeRemoteGameCatalogs() {
     PROFILE_PICTURE_CHOICES.length,
     ...pictures.items.map((picture) => ({
       ...picture,
+      rarity:
+        picture.rarity && ITEM_RARITIES.includes(picture.rarity)
+          ? picture.rarity
+          : "common",
       source: getRemoteAssetSource(`game/profile/picture/${picture.image}`),
     })),
   );

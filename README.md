@@ -23,6 +23,27 @@ the manifest with the assets at `wild-paw/data/manifest.json`; keep the app's
 `storage-release-manifest.json` snapshot in sync. The hero catalog itself is
 published at `wild-paw/data/assets/game/constants/heroes.json`.
 
+## Android app updates
+
+The Android loading screen checks `wild-paw/data/app_manifest.json` before
+loading game assets. Publish an HTTPS EAS APK URL and a version greater than
+the installed app's `expo.version`, for example:
+
+```json
+{
+  "path": "https://expo.dev/artifacts/eas/<build-id>.apk",
+  "version": "1.0.1"
+}
+```
+
+Bump `expo.version` and build the APK with the same EAS signing credentials and
+a higher Android `versionCode` (preview builds auto-increment it). Android
+requires the user to confirm installation and may ask to allow installs from
+Wild Paw. The app remains on its loading screen until the update is installed;
+APK installation is only supported on Android, not iOS or Expo Go.
+
+APK downloads pause when the app is backgrounded or the internet connection drops. The partial download and resume state are saved so startup can continue the same update when the app is reopened and connectivity returns.
+
 ## Get started
 
 1. Install dependencies

@@ -60,6 +60,9 @@ export default function EventScreen() {
   const [adRewards, setAdRewards] = useState<AdReward[]>([]);
   const [adState, setAdState] = useState<AdState | null>(null);
   const [adMessage, setAdMessage] = useState("");
+  const [adMessageStatus, setAdMessageStatus] = useState<
+    "loading" | "success" | "error" | null
+  >(null);
   const [isClaimingAd, setIsClaimingAd] = useState(false);
 
   useEffect(() => {
@@ -80,20 +83,26 @@ export default function EventScreen() {
   const claimAd = async () => {
     if (isClaimingAd) return;
     setIsClaimingAd(true);
+    setAdMessage("Checking for an available ad…");
+    setAdMessageStatus("loading");
     try {
       const { state, outcome } = await claimAdReward(adRewards);
       setAdState(state);
-      setAdMessage(
+      const message =
         outcome === "claimed"
           ? "Reward sent to your email. Open the mailbox to claim it."
           : outcome === "dismissed"
             ? "Watch the full ad to earn the reward."
             : outcome === "unavailable"
-              ? "No ad is available right now. Please try again later."
-              : "",
+              ? "No ads are available right now. Please try again later."
+              : "";
+      setAdMessage(message);
+      setAdMessageStatus(
+        outcome === "claimed" ? "success" : outcome === "none" ? null : "error",
       );
     } catch {
       setAdMessage("Could not claim your reward. Please try again.");
+      setAdMessageStatus("error");
     } finally {
       setIsClaimingAd(false);
     }
@@ -367,7 +376,7 @@ export default function EventScreen() {
                             )}
                             <Pressable
                               accessibilityRole="button"
-                              accessibilityLabel={`Ad reward ${reward.slot}, ${completed ? "collected" : canClaim ? "tap to watch and claim" : "locked"}`}
+                              accessibilityLabel={`Ad reward ${reward.slot}, ${completed ? "collected" : canClaim ? (isClaimingAd ? "checking for an ad" : "tap to watch and claim") : "locked"}`}
                               accessibilityState={{ disabled: !canClaim }}
                               disabled={!canClaim || isClaimingAd}
                               onPress={() => void claimAd()}
@@ -380,7 +389,13 @@ export default function EventScreen() {
                                   canClaim && styles.roadmapNodeActive,
                                 ]}
                               >
-                                {canClaim ? (
+                                {canClaim && isClaimingAd ? (
+                                  <ActivityIndicator
+                                    size="small"
+                                    color="#d9f99d"
+                                    accessibilityLabel="Checking for an ad"
+                                  />
+                                ) : canClaim ? (
                                   <Image
                                     source={watchAdsIcon}
                                     style={styles.watchAdsIcon}
@@ -399,7 +414,11 @@ export default function EventScreen() {
                                 )}
                               </View>
                               <Text style={styles.roadmapDay}>
-                                {canClaim ? "CLAIM" : `AD ${reward.slot}`}
+                                {canClaim
+                                  ? isClaimingAd
+                                    ? "LOADING"
+                                    : "CLAIM"
+                                  : `AD ${reward.slot}`}
                               </Text>
                               {reward.rewards.map((item) => (
                                 <View
@@ -422,7 +441,16 @@ export default function EventScreen() {
                       })}
                     </ScrollView>
                     {!!adMessage && (
-                      <Text style={[styles.feedback, styles.successMessage]}>
+                      <Text
+                        style={[
+                          styles.feedback,
+                          adMessageStatus === "error"
+                            ? styles.errorMessage
+                            : adMessageStatus === "loading"
+                              ? styles.loadingMessage
+                              : styles.successMessage,
+                        ]}
+                      >
                         {adMessage}
                       </Text>
                     )}
@@ -801,6 +829,9 @@ const styles = StyleSheet.create({
   },
   successMessage: {
     color: "#bef264",
+  },
+  loadingMessage: {
+    color: "#e2e8f0",
   },
   errorMessage: {
     color: "#fca5a5",

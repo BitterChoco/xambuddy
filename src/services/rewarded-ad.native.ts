@@ -36,13 +36,17 @@ export async function showRewardedAd(): Promise<RewardedAdResult> {
   // Expo Go and outdated native builds do not include this module. Avoid
   // importing the library until we know its native implementation exists.
   if (!TurboModuleRegistry.get("RNGoogleMobileAdsModule")) {
+    console.warn(
+      "[RewardedAd] Native Google Mobile Ads module is missing. Rebuild and reinstall the Android app after adding the ads plugin.",
+    );
     return "unavailable";
   }
 
   let ads: typeof import("react-native-google-mobile-ads");
   try {
     ads = await import("react-native-google-mobile-ads");
-  } catch {
+  } catch (error) {
+    console.warn("[RewardedAd] Could not load the native ads package:", error);
     return "unavailable";
   }
   const {
@@ -79,12 +83,23 @@ export async function showRewardedAd(): Promise<RewardedAdResult> {
       ad.addAdEventListener(AdEventType.CLOSED, () => {
         finish(earned ? "earned" : "dismissed");
       }),
-      ad.addAdEventListener(AdEventType.ERROR, () => finish("unavailable")),
+      ad.addAdEventListener(AdEventType.ERROR, (error) => {
+        console.warn("[RewardedAd] Ad request failed:", error);
+        finish("unavailable");
+      }),
     );
 
-    loadTimer = setTimeout(() => finish("unavailable"), AD_LOAD_TIMEOUT_MS);
+    loadTimer = setTimeout(() => {
+      console.warn(
+        `[RewardedAd] No ad loaded within ${AD_LOAD_TIMEOUT_MS}ms. Check connectivity and AdMob app/unit ID configuration.`,
+      );
+      finish("unavailable");
+    }, AD_LOAD_TIMEOUT_MS);
     ensureInitialized(mobileAds)
       .then(() => ad.load())
-      .catch(() => finish("unavailable"));
+      .catch((error: unknown) => {
+        console.warn("[RewardedAd] Ads SDK initialization failed:", error);
+        finish("unavailable");
+      });
   });
 }

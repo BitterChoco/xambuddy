@@ -58,6 +58,7 @@ import {
   getHeroPricing,
   getOrbPricing,
   getProfileBorderPricing,
+  getProfilePicturePricing,
   getSkinPricing,
   type StoreCurrency,
 } from "@/constants/store-pricing";
@@ -68,7 +69,7 @@ const storeIcon = getRemoteAssetSource("game/icons/shop_1.png");
 const coinIcon = getRemoteAssetSource("game/icons/coins_1.png");
 const diamondIcon = getRemoteAssetSource("game/icons/diamond_1.png");
 
-type StoreTab = "hero" | "skin" | "orb" | "buddy" | "border";
+type StoreTab = "hero" | "skin" | "orb" | "buddy" | "border" | "picture";
 type Price = {
   price: number;
   discountPercent: number;
@@ -114,7 +115,8 @@ export default function StoreScreen() {
     requestedTab === "skin" ||
     requestedTab === "orb" ||
     requestedTab === "buddy" ||
-    requestedTab === "border"
+    requestedTab === "border" ||
+    requestedTab === "picture"
       ? requestedTab
       : "hero",
   );
@@ -246,7 +248,19 @@ export default function StoreScreen() {
       owned: inventory.borders.includes(border.id),
       locked: false,
     }));
-    return [...heroes, ...skins, ...orbs, ...buddies, ...borders];
+    const pictures = PROFILE_PICTURE_CHOICES.map((picture) => ({
+      key: `picture:${picture.id}`,
+      id: picture.id,
+      kind: "picture" as const,
+      name: picture.name,
+      subtitle: "Profile picture",
+      rarity: picture.rarity ?? "common",
+      image: picture.source,
+      price: getProfilePicturePricing(picture.id),
+      owned: inventory.profilePictures.includes(picture.id),
+      locked: false,
+    }));
+    return [...heroes, ...skins, ...orbs, ...buddies, ...borders, ...pictures];
   }, [inventory, playerLevel.level]);
 
   const items = useMemo(() => {
@@ -318,7 +332,8 @@ export default function StoreScreen() {
             ? [...inventory.heroes, item.id]
             : inventory.heroes,
         profilePictures:
-          item.kind === "hero" && item.profilePicture
+          item.kind === "picture" ||
+          (item.kind === "hero" && item.profilePicture)
             ? [...inventory.profilePictures, item.id]
             : inventory.profilePictures,
         skins:
@@ -368,6 +383,7 @@ export default function StoreScreen() {
     { id: "orb", label: "Orbs" },
     { id: "buddy", label: "Buddies" },
     { id: "border", label: "Borders" },
+    { id: "picture", label: "Pictures" },
   ];
 
   return (
